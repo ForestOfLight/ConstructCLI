@@ -12,6 +12,9 @@ toml.workspace = true
 directories.workspace = true
 tempfile.workspace = true
 nbtx.workspace = true
+bedrock_level.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tar.workspace = true
+flate2.workspace = true

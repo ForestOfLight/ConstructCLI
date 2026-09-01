@@ -1,0 +1,6 @@
+world.tar.gz is derived from bedrock-rs (crates/level/tests/level.tar.gz),
+Copyright the bedrock-crustaceans contributors, licensed under Apache-2.0:
+https://github.com/bedrock-crustaceans/bedrock-rs/blob/main/LICENSE
+
+Three structuretemplate_ keys were added for ConstructCLI's tests. The world
+is otherwise unmodified.
