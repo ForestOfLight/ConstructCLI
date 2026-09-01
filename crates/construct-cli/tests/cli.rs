@@ -111,3 +111,84 @@ fn no_installation_found_exits_3_and_lists_probed_paths() {
         "should name what it probed:\n{err}"
     );
 }
+
+/// Extract the shared fixture world and return its directory.
+fn fixture_world() -> (tempfile::TempDir, std::path::PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let gz = std::fs::File::open("../construct-core/tests/fixtures/world.tar.gz")
+        .expect("fixture missing");
+    tar::Archive::new(flate2::read::GzDecoder::new(gz))
+        .unpack(tmp.path())
+        .unwrap();
+    let world = tmp.path().join("test_level");
+    (tmp, world)
+}
+
+#[test]
+fn list_by_path_shows_structures_with_their_source() {
+    let (_tmp, world) = fixture_world();
+    let out = bin()
+        .args(["list", world.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("house"), "{text}");
+    assert!(text.contains("barn"), "{text}");
+    assert!(
+        text.contains("world"),
+        "source column should say world:\n{text}"
+    );
+}
+
+#[test]
+fn list_json_carries_schema_and_entries() {
+    let (_tmp, world) = fixture_world();
+    let out = bin()
+        .args(["list", world.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["schema"], 1);
+    let names: Vec<&str> = v["structures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"house"));
+    assert!(
+        names.contains(&"understudy:players"),
+        "non-default namespaces stay qualified"
+    );
+}
+
+#[test]
+fn list_source_pack_is_empty_in_stage_one() {
+    let (_tmp, world) = fixture_world();
+    let out = bin()
+        .args([
+            "list",
+            world.to_str().unwrap(),
+            "--source",
+            "pack",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["structures"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn list_of_a_missing_world_exits_3() {
+    let out = bin()
+        .args(["list", "definitely-not-a-world"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+}

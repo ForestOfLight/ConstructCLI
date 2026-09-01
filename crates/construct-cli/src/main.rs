@@ -101,8 +101,8 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
         Command::Worlds if installations.is_empty() => Err(no_installations()),
         Command::Worlds => commands::worlds::run(&worlds, out),
         Command::List { world } => {
-            let _ = resolve_world(world)?;
-            unimplemented!("added in the next tasks")
+            let w = resolve_world(world)?;
+            commands::list::run(&w, cli.source.map(Into::into), out)
         }
         Command::Export { .. } => {
             unimplemented!("added in the next tasks")

@@ -266,8 +266,10 @@ dependencies = [
  "anyhow",
  "clap",
  "construct-core",
+ "flate2",
  "serde",
  "serde_json",
+ "tar",
  "tempfile",
 ]
 
