@@ -17,6 +17,14 @@ pub enum CoreError {
         near: Vec<String>,
     },
 
+    #[error("malformed world reference: {reference}")]
+    MalformedReference {
+        reference: String,
+        /// True when the input looks like a filesystem path that was not found on
+        /// disk, so the CLI can say so instead of talking about world names.
+        looks_like_path: bool,
+    },
+
     #[error("{reference} matches {} worlds", candidates.len())]
     AmbiguousWorld {
         reference: String,

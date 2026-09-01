@@ -70,22 +70,12 @@ pub fn resolve(input: &str, worlds: &[World]) -> Result<World> {
 
     // Reject references with too many segments.
     if r.extra_segments {
-        let looks_like_path =
-            input.starts_with('/') || input.contains(':') || input.split('/').count() > 3;
-        return if looks_like_path {
-            Err(CoreError::WorldNotFound {
-                reference: input.to_string(),
-                near: vec![
-                    "Expected format: <installation>/<account>/<world>".to_string(),
-                    "Path not found on disk.".to_string(),
-                ],
-            })
-        } else {
-            Err(CoreError::WorldNotFound {
-                reference: input.to_string(),
-                near: vec!["Expected format: <installation>/<account>/<world>".to_string()],
-            })
-        };
+        // Detect if this looks like a filesystem path
+        let looks_like_path = input.starts_with('/') || input.contains(':');
+        return Err(CoreError::MalformedReference {
+            reference: input.to_string(),
+            looks_like_path,
+        });
     }
 
     let matches_segments = |w: &World| {
@@ -380,9 +370,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("empty");
         std::fs::create_dir_all(&dir).unwrap();
+        // An absolute path without level.dat is treated as a malformed reference,
+        // not a path to a world
         assert!(matches!(
             resolve(dir.to_str().unwrap(), &fixture()),
-            Err(CoreError::WorldNotFound { .. })
+            Err(CoreError::MalformedReference {
+                looks_like_path: true,
+                ..
+            })
         ));
     }
 
@@ -426,19 +421,25 @@ mod tests {
 
     #[test]
     fn a_reference_with_more_than_three_segments_is_rejected() {
+        let err = resolve("a/b/c/d/e/f/g", &fixture()).unwrap_err();
         assert!(matches!(
-            resolve("a/b/c/d/e/f/g", &fixture()),
-            Err(CoreError::WorldNotFound { reference: _, near })
-            if near.iter().any(|s| s.contains("<installation>/<account>/<world>"))
+            err,
+            CoreError::MalformedReference {
+                reference,
+                looks_like_path: false
+            } if reference == "a/b/c/d/e/f/g"
         ));
     }
 
     #[test]
     fn an_absolute_path_that_does_not_exist_reports_path_not_found() {
+        let err = resolve("/nonexistent/world/path", &fixture()).unwrap_err();
         assert!(matches!(
-            resolve("/nonexistent/world/path", &fixture()),
-            Err(CoreError::WorldNotFound { reference: _, near })
-            if near.iter().any(|s| s.contains("Path not found"))
+            err,
+            CoreError::MalformedReference {
+                reference,
+                looks_like_path: true
+            } if reference == "/nonexistent/world/path"
         ));
     }
 
@@ -461,5 +462,29 @@ mod tests {
         assert!(near[0].contains("test"));
         assert!(near[1].contains("test"));
         assert!(near[2].contains("test"));
+    }
+
+    #[test]
+    fn world_not_found_near_contains_only_world_names() {
+        let err = resolve("Amelx", &fixture()).unwrap_err();
+        let CoreError::WorldNotFound { near, .. } = err else {
+            panic!("expected WorldNotFound, got {err:?}");
+        };
+        // All entries should be real world names, not guidance text
+        for entry in &near {
+            assert!(
+                !entry.contains("Expected"),
+                "near should not contain guidance text: {entry}"
+            );
+            assert!(
+                !entry.contains("Path not found"),
+                "near should not contain guidance text: {entry}"
+            );
+            // Each entry should contain a world name and qualified form
+            assert!(
+                entry.contains("(") && entry.contains(")"),
+                "near entry should have format 'name (qualified)': {entry}"
+            );
+        }
     }
 }
