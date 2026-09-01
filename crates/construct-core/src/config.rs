@@ -46,7 +46,14 @@ pub const DEFAULT_KEEP: usize = 10;
 /// - `release`, `preview`, `legacy`, `mcpelauncher`: built-in installations (discovery layer, Task 6)
 /// - `path`: reserved for filesystem-path references (Task 6)
 /// - `env`: reserved for the CONSTRUCT_COM_MOJANG environment variable root
-const RESERVED_NAMES: &[&str] = &["release", "preview", "legacy", "mcpelauncher", "path", "env"];
+const RESERVED_NAMES: &[&str] = &[
+    "release",
+    "preview",
+    "legacy",
+    "mcpelauncher",
+    "path",
+    "env",
+];
 
 #[derive(Debug)]
 pub struct Loaded {
@@ -270,5 +277,100 @@ keep = 3
         let loaded = load(Some(Path::new("/nonexistent")), &env).unwrap();
         assert_eq!(loaded.config.roots.len(), 1);
         assert_eq!(loaded.config.roots[0].path, PathBuf::from("/tmp/env-root"));
+        assert_eq!(loaded.config.roots[0].name, "env");
+    }
+
+    #[test]
+    fn two_roots_with_the_same_name_are_rejected() {
+        let text = r#"
+[[roots]]
+name = "backup"
+path = "/tmp/backup1"
+
+[[roots]]
+name = "backup"
+path = "/tmp/backup2"
+"#;
+        let result = parse(text, Path::new("c.toml"));
+        assert!(matches!(result, Err(CoreError::BadConfig { .. })));
+        if let Err(CoreError::BadConfig { reason, .. }) = result {
+            assert!(
+                reason.contains("duplicate") && reason.contains("backup"),
+                "error should mention duplicate and name: {}",
+                reason
+            );
+        }
+    }
+
+    #[test]
+    fn a_root_named_release_is_rejected_as_reserved() {
+        let text = r#"
+[[roots]]
+name = "release"
+path = "/tmp/x"
+"#;
+        let result = parse(text, Path::new("c.toml"));
+        assert!(matches!(result, Err(CoreError::BadConfig { .. })));
+        if let Err(CoreError::BadConfig { reason, .. }) = result {
+            assert!(
+                reason.contains("reserved") && reason.contains("release"),
+                "error should mention reserved and release: {}",
+                reason
+            );
+        }
+    }
+
+    #[test]
+    fn a_root_named_path_is_rejected_as_reserved() {
+        let text = r#"
+[[roots]]
+name = "path"
+path = "/tmp/x"
+"#;
+        let result = parse(text, Path::new("c.toml"));
+        assert!(matches!(result, Err(CoreError::BadConfig { .. })));
+        if let Err(CoreError::BadConfig { reason, .. }) = result {
+            assert!(
+                reason.contains("reserved") && reason.contains("path"),
+                "error should mention reserved and path: {}",
+                reason
+            );
+        }
+    }
+
+    #[test]
+    fn a_root_named_env_is_rejected_as_reserved() {
+        let text = r#"
+[[roots]]
+name = "env"
+path = "/tmp/x"
+"#;
+        let result = parse(text, Path::new("c.toml"));
+        assert!(matches!(result, Err(CoreError::BadConfig { .. })));
+        if let Err(CoreError::BadConfig { reason, .. }) = result {
+            assert!(
+                reason.contains("reserved") && reason.contains("env"),
+                "error should mention reserved and env: {}",
+                reason
+            );
+        }
+    }
+
+    #[test]
+    fn a_valid_config_with_two_differently_named_roots_parses_cleanly() {
+        let text = r#"
+[[roots]]
+name = "backup"
+path = "/tmp/backup"
+
+[[roots]]
+name = "external"
+path = "/tmp/external"
+"#;
+        let (c, warnings) = parse(text, Path::new("c.toml")).unwrap();
+        assert_eq!(c.roots.len(), 2);
+        assert_eq!(c.roots[0].name, "backup");
+        assert_eq!(c.roots[1].name, "external");
+        assert!(warnings.is_empty());
     }
 }
