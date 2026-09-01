@@ -281,3 +281,155 @@ fn list_of_a_missing_world_exits_3() {
         .unwrap();
     assert_eq!(out.status.code(), Some(3));
 }
+
+#[test]
+fn export_without_o_writes_the_derived_name_into_cwd() {
+    let (_tmp, world) = fixture_world();
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .current_dir(dir.path())
+        .args(["export", world.to_str().unwrap(), "house"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let written = dir.path().join("house.mcstructure");
+    assert!(written.is_file());
+    // Byte transparency: the file is the database value, untouched.
+    assert_eq!(std::fs::read(&written).unwrap()[0], 0x0a);
+}
+
+#[test]
+fn export_with_o_uses_the_given_name() {
+    let (_tmp, world) = fixture_world();
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("custom.mcstructure");
+    let out = bin()
+        .args([
+            "export",
+            world.to_str().unwrap(),
+            "house",
+            "-o",
+            target.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(target.is_file());
+}
+
+#[test]
+fn export_refuses_an_existing_target_and_points_at_force() {
+    let (_tmp, world) = fixture_world();
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("taken.mcstructure");
+    std::fs::write(&target, b"existing").unwrap();
+
+    let out = bin()
+        .args([
+            "export",
+            world.to_str().unwrap(),
+            "house",
+            "-o",
+            target.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--force"));
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        b"existing",
+        "must not have overwritten"
+    );
+}
+
+#[test]
+fn export_force_overwrites() {
+    let (_tmp, world) = fixture_world();
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("taken.mcstructure");
+    std::fs::write(&target, b"existing").unwrap();
+
+    let out = bin()
+        .args([
+            "export",
+            world.to_str().unwrap(),
+            "house",
+            "-o",
+            target.to_str().unwrap(),
+            "--force",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_ne!(std::fs::read(&target).unwrap(), b"existing");
+}
+
+#[test]
+fn exporting_several_structures_writes_one_file_each() {
+    let (_tmp, world) = fixture_world();
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .current_dir(dir.path())
+        .args(["export", world.to_str().unwrap(), "house", "barn"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(dir.path().join("house.mcstructure").is_file());
+    assert!(dir.path().join("barn.mcstructure").is_file());
+}
+
+#[test]
+fn several_structures_with_o_is_a_usage_error() {
+    // -o names a single file; it cannot name several.
+    let (_tmp, world) = fixture_world();
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .args([
+            "export",
+            world.to_str().unwrap(),
+            "house",
+            "barn",
+            "-o",
+            dir.path().join("x.mcstructure").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn a_multi_export_refuses_before_writing_anything_if_one_target_exists() {
+    let (_tmp, world) = fixture_world();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("barn.mcstructure"), b"existing").unwrap();
+
+    let out = bin()
+        .current_dir(dir.path())
+        .args(["export", world.to_str().unwrap(), "house", "barn"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        !dir.path().join("house.mcstructure").exists(),
+        "must write nothing on refusal"
+    );
+}
+
+#[test]
+fn exporting_a_missing_structure_exits_3() {
+    let (_tmp, world) = fixture_world();
+    let out = bin()
+        .args(["export", world.to_str().unwrap(), "nope"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+}

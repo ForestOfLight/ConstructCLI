@@ -108,8 +108,30 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
             let w = resolve_world(world)?;
             commands::list::run(&w, cli.source.map(Into::into), out)
         }
-        Command::Export { .. } => {
-            unimplemented!("added in the next tasks")
+        Command::Export {
+            world,
+            structures,
+            output,
+        } => {
+            if structures.len() > 1 && output.is_some() {
+                // -o names a single file and cannot name several. Usage error,
+                // not a failure: nothing was attempted.
+                eprintln!(
+                    "error: -o takes a single output file, but {} structures were given\n\n\
+                     Drop -o to write one file per structure, or pass --merge (stage 3).",
+                    structures.len()
+                );
+                std::process::exit(2);
+            }
+            let w = resolve_world(world)?;
+            commands::export::run(
+                &w,
+                structures,
+                output.as_deref(),
+                cli.source.map(Into::into),
+                cli.force,
+                out,
+            )
         }
     }
 }
