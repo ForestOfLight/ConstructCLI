@@ -112,6 +112,95 @@ fn no_installation_found_exits_3_and_lists_probed_paths() {
     );
 }
 
+#[test]
+fn a_malformed_reference_is_exit_2_even_with_no_installations() {
+    // The resolve_world closure must not rewrite a MalformedReference into
+    // NoInstallations just because installations.is_empty() — the input was
+    // ill-formed regardless of how many installations exist.
+    let out = bin().args(["list", "a/b/c/d/e/f/g"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("malformed") || err.contains("Expected a world name"),
+        "should mention a malformed reference, not a missing installation:\n{err}"
+    );
+    assert!(
+        !err.contains("no Minecraft installation found"),
+        "must not be masked as NoInstallations:\n{err}"
+    );
+}
+
+#[test]
+fn a_path_looking_reference_that_does_not_exist_is_exit_2_with_no_installations() {
+    let out = bin()
+        .args(["list", "/nonexistent/deep/path"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("looks like a filesystem path"),
+        "should say it looks like a path:\n{err}"
+    );
+    assert!(
+        !err.contains("no Minecraft installation found"),
+        "must not be masked as NoInstallations:\n{err}"
+    );
+}
+
+#[test]
+fn a_bare_name_with_no_installations_is_genuinely_exit_3() {
+    // This one IS the right explanation: nothing was found, and there was
+    // nothing to search. Asserted with the message too, so a future
+    // over-correction that removes the masking entirely gets caught.
+    let out = bin().args(["list", "somename"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("no Minecraft installation found"),
+        "a genuinely-missing world with zero installations should say so:\n{err}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn an_unreadable_world_is_exit_1_not_3_with_no_installations() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let world = tmp.path().join("SomeWorld");
+    std::fs::create_dir_all(world.join("db")).unwrap();
+    std::fs::write(world.join("level.dat"), b"x").unwrap();
+    let level_dat = world.join("level.dat");
+
+    std::fs::set_permissions(&level_dat, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    // Verify the test setup: level.dat should not be readable. Skip if
+    // permissions cannot be enforced (e.g. running as root).
+    if std::fs::read(&level_dat).is_ok() {
+        std::fs::set_permissions(&level_dat, std::fs::Permissions::from_mode(0o644)).ok();
+        return;
+    }
+
+    let out = bin()
+        .args(["list", world.to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    std::fs::set_permissions(&level_dat, std::fs::Permissions::from_mode(0o644)).ok();
+
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("could not read"),
+        "should report the unreadable-world message:\n{err}"
+    );
+    assert!(
+        !err.contains("no Minecraft installation found"),
+        "must not be masked as NoInstallations:\n{err}"
+    );
+}
+
 /// Extract the shared fixture world and return its directory.
 fn fixture_world() -> (tempfile::TempDir, std::path::PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
