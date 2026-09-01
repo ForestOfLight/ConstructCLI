@@ -253,7 +253,8 @@ Throwaway probe, deleted in the next commit. Findings:
 ## Task 2: Workspace scaffolding and CI
 
 **Files:**
-- Create: `Cargo.toml`, `rust-toolchain.toml`, `.gitignore`, `README.md`, `.github/workflows/ci.yml`
+- Create: `Cargo.toml`, `rust-toolchain.toml`, `.gitignore`, `.github/workflows/ci.yml`
+  (`README.md` is **not** here — Task 15 creates it, with its full content specified there)
 - Create: `crates/construct-core/Cargo.toml`, `crates/construct-core/src/lib.rs`
 - Create: `crates/construct-cli/Cargo.toml`, `crates/construct-cli/src/main.rs`
 - Delete: `spike/`
@@ -2200,23 +2201,35 @@ plenty of binary keys and they are simply not ours."
 
 **A constraint discovered by reading the dependency:** `leveldb::Options::create_if_missing` defaults to `false` and the FFI never sets it, so `Database::open` **cannot create a database**. A fixture therefore cannot be synthesised in Rust — it must be a real database. This task commits one, derived from `bedrock-rs`'s own Apache-2.0 test world (591 KB), with structure keys inserted.
 
-**The backend dependency is added in this task, not Task 2.** Add to the workspace
-`[workspace.dependencies]` and to `construct-core`'s `[dependencies]`:
+**The backend dependency is added in this task, not Task 2.** It comes from patched local
+checkouts, not from a registry or a fork URL — the upstream crates do not compile on macOS
+or on any non-x86_64 target (spec §3). `scripts/setup-deps.sh` and `third_party/patches/`
+already exist and are verified working; the checkouts are git-ignored and recreated by that
+script.
+
+Add to the workspace `[workspace.dependencies]`:
 
 ```toml
-bedrock_level = { git = "<FORK URL>", package = "bedrock_level", rev = "<COMMIT>" }
+bedrock_level = { path = "third_party/checkouts/bedrock-rs/crates/level" }
 ```
 
-plus, in the **workspace root** `Cargo.toml`, a patch redirecting `bedrock_level`'s own
-upstream dependency on `leveldb-sys` to the patched fork:
+and to the **workspace root** `Cargo.toml`, a patch redirecting `bedrock_level`'s own
+upstream dependency on `leveldb-sys` to the patched checkout:
 
 ```toml
 [patch."https://github.com/bedrock-crustaceans/leveldb-sys"]
-leveldb-sys = { git = "<LEVELDB-SYS FORK URL>", rev = "<COMMIT>" }
+leveldb-sys = { path = "third_party/checkouts/leveldb-sys" }
 ```
 
-Both URLs and commits are supplied in the dispatch. Verified working locally from a purged
-cargo cache: `bedrock_level` compiles on Apple Silicon and the FFI links and runs.
+Then add `bedrock_level.workspace = true` to `construct-core`'s `[dependencies]`.
+
+**Before building, run `./scripts/setup-deps.sh`.** Without it the checkouts are absent and
+cargo fails to resolve the path dependency. Verified end-to-end from scratch: wiping
+`third_party/checkouts/`, re-running the script, and building a probe compiles cleanly on
+Apple Silicon and the FFI links and runs.
+
+CI must run `./scripts/setup-deps.sh` before `cargo` — add that step to
+`.github/workflows/ci.yml` in this task, before the fmt/clippy/test steps.
 
 **Files:**
 - Modify: `Cargo.toml` (workspace deps + `[patch]`), `crates/construct-core/Cargo.toml`

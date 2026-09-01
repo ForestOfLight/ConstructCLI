@@ -1,3 +1,6 @@
 /target
 **/*.rs.bk
 .DS_Store
+
+# Recreated by scripts/setup-deps.sh
+/third_party/checkouts/
