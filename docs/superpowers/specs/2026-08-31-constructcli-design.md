@@ -52,6 +52,9 @@ MIT, a JavaScript Bedrock addon for survival building.
 | Write safety | Snapshot `db/` before every write; refuse when the world is in use | The leveldb write path is young relative to the blast radius |
 | Install scope | Packs, optional `--world` enable, attempt Beta APIs flip, separate experiment command | Removes the most friction without hiding a `level.dat` write inside an install |
 | Upgrade UX | Idempotent `install` plus a `status` command | One code path; no ambiguity about repeat installs |
+| Structure namespace | One namespace over both sources, `--source` to disambiguate | Construct presents a single in-game list; two CLI lists would model it worse |
+| Merge overlap | Last argument wins; `--on-overlap` overrides | Overlapping saves of one build are common and often deliberate |
+| Collisions | Refuse, `--force` overwrites — uniformly | One rule to learn; nothing silently destroyed |
 | Binary name | `construct` | The addon's commands are in-game and namespaced; no practical collision |
 | License | MIT | Matches Construct; compatible with the Apache-2.0 dependency |
 
@@ -102,9 +105,14 @@ and exit codes, and uses `anyhow` for context chaining.
 | `backup` | Snapshot a world's `db/` to a timestamped directory; retention | fs |
 | `mcstructure` | Codec: bytes ⇄ `Structure` | `nbtx` |
 | `merge` | Origin-based reassembly of N `Structure` into one | `mcstructure` |
-| `pack` | Locate Construct, parse `manifest.json`, read/write `structures/` | `bedrock_addon` |
+| `pack` | Locate Construct, parse `manifest.json`, read/write `structures/` | `serde_json` |
+| `catalog` | Unify world and pack structures into one namespace; resolve references | `store`, `pack` |
 | `install` | Releases lookup, download, unzip, place packs, world enablement, `level.dat` flip | `pack`, `backup` |
 | `config` | Load and merge configuration | fs |
+
+`manifest.json` is read with a small local serde struct rather than `bedrock_addon`. It is
+roughly twenty lines — StructureChest already demonstrated as much — and it keeps the
+unpublished git dependency surface down to `bedrock_level` alone.
 
 ### The byte-transparency property
 
@@ -120,50 +128,94 @@ command can ship before the codec exists.
 
 | Command | leveldb read | leveldb write | Other writes |
 |---|---|---|---|
-| `worlds`, `list`, `export` | yes | — | — |
-| `status` | — | — | — |
+| `worlds`, `list`, `export`, `status` | yes | — | — |
 | `import` | — | — | pack `structures/` |
 | `copy` | yes (source) | — | pack `structures/` |
 | `install` | — | — | packs, pack JSON, `level.dat` |
 | `experiment` | — | — | `level.dat` |
-| **`delete`** | yes | **yes** | — |
+| `delete --source pack` | — | — | unlink one `.mcstructure` |
+| **`delete --source world`** | yes | **yes** | — |
 
-`delete` is the only command that writes to a leveldb.
+`delete --source world` is the only command that writes to a leveldb. Deleting a pack
+structure is an ordinary file unlink and carries none of the ceremony in §8.
 
 ## 5. Command surface
 
 ```
 construct worlds                                    # enumerate discovered worlds
 construct status                                    # Construct: installed version, latest, enabled worlds
-construct list <world>                              # structures in a world
+construct list <world>                              # structures in a world, both sources
 construct export <world> <structure> [-o FILE]
 construct export <world> <s1> <s2>... --merge -o FILE
-construct import <file> [--world W]                 # into Construct's structures/
+construct import <file> [--world W] [--name N]      # into Construct's structures/
 construct copy <src-world> <structure> <dst-world>
 construct delete <world> <structure>
 construct install [--version V] [--world W]
-construct experiment <world> --beta-apis <on|off>
+construct experiment <world> --beta-apis [on|off]   # value omitted prints current state
 ```
 
-Global flags: `--com-mojang <path>` (repeatable), `--path <dir>` (address a world directly),
-`--json` where output is structured.
+Global flags: `--com-mojang <path>` (repeatable), `--json`, `--force`, `--source <world|pack>`.
 
-Naming rules. A single `export` without `-o` writes `<structure-name>.mcstructure` into the
-current directory; `--merge` requires `-o`. `import` derives the structure name from the
-file stem, so `house.mcstructure` becomes `house`. Structure references are bare names,
-meaning the `mystructure` prefix, or explicit `prefix:name`.
+### One structure namespace, two sources
 
-`import` and `copy` write into Construct's `structures/` folder — never into a leveldb.
-With `--world W` they target `<world>/behavior_packs/Construct[BP]/structures/` when that
-world has a local copy of Construct, otherwise the installation's shared
-`development_behavior_packs` copy, saying which was chosen. Both commands state that the
-world must be reloaded before Construct sees the structure, and both fail clearly when the
-destination world has no Construct, pointing at `construct install --world <dst>`.
+A structure lives either in a world's leveldb (saved in-game by a structure block or
+`/structure`) or as a file in Construct's `structures/` folder. **Construct itself presents
+these as a single in-game list**, so the CLI does too — presenting two lists would be a
+worse model than the thing it drives.
+
+```
+$ construct list release/Survival
+NAME              SOURCE   SIZE
+house             world     12 KB
+barn              world      4 KB
+imported_tower    pack      31 KB
+```
+
+Every structure-taking command accepts a bare name and searches both sources. A name present
+in both is an error naming the qualified forms, with `--source world|pack` as the
+disambiguator — the same never-guess rule §6 applies to world references. `--source` also
+works as a plain filter on `list`.
+
+This gives `delete` a useful asymmetry: `--source pack` is an `unlink` with none of §8's
+ceremony, while `--source world` is the only leveldb write in the tool.
+
+### Output
+
+`--json` is supported by `worlds`, `list`, and `status`, and by the result summary of every
+write command. Each payload carries a `"schema": 1` field. Versioning the output from the
+first release is cheap insurance given that a GUI consuming this library is a stated goal.
+
+### Naming and collisions
+
+A single `export` without `-o` writes `<structure-name>.mcstructure` into the current
+directory; `--merge` requires `-o`. World-source structure references are bare names, meaning
+the `mystructure` prefix, or explicit `prefix:name`.
+
+`import` derives the structure name from the file stem: lowercased, spaces to `_`, allowing
+`[a-z0-9_.-]`. Anything outside that set is **rejected rather than silently mangled**, since
+a mangled name is one Construct will not list. The derived name is always printed, and
+`--name N` overrides it.
+
+**One collision rule everywhere:** `export -o`, `import`, and `copy` refuse when the target
+already exists; `--force` overwrites. `--force` governs file collisions only — it never
+relaxes the LOCK refusal in §8. Construct's own pack files during an upgrade are a separate
+path and not governed by this rule, and `structures/` is never touched by an upgrade at all.
+
+`import` and `copy` write into Construct's `structures/` folder — never into a leveldb. With
+`--world W` they target `<world>/behavior_packs/Construct[BP]/structures/` when that world
+has a local copy of Construct, otherwise the installation's shared
+`development_behavior_packs` copy, saying which was chosen. Both state that the world must be
+reloaded before Construct sees the structure, and both fail clearly when the destination
+world has no Construct, pointing at `construct install --world <dst>`.
 
 ## 6. Discovery and multiple roots
 
 Discovery resolves a list of *installations*. Each has one dev-pack root and zero or more
 world roots. Roots that do not exist are absent, with no error.
+
+A world's last-played time comes from `level.dat`'s `LastPlayed` field, falling back to
+directory mtime when that is unreadable — the two disagree often enough to matter, and
+`--json` reports which was used.
 
 | Installation | Dev-pack root | World roots |
 |---|---|---|
@@ -203,6 +255,16 @@ The account segment is omitted from output when an installation has only one wor
 macOS and Linux never display it. Folder names are matched before display names. Ambiguity
 is always an error, never a silent pick.
 
+**Any world reference may also be a filesystem path.** If an argument resolves on disk to a
+directory containing `level.dat`, it is treated as a path; otherwise it parses as a name or
+qualified reference. Filesystem check first, so resolution is deterministic. This is why
+there is no `--path` flag: a single global flag could only ever describe one world, while
+`copy` takes two.
+
+```
+construct copy ./OldWorldBackup house release/Survival
+```
+
 Cross-root operations are first-class:
 `construct copy legacy/OldWorld house release/My Survival`. Source and destination resolve
 independently. `install --world W` derives the installation from W and deploys to *that*
@@ -214,15 +276,25 @@ installation's dev-pack root, so `preview` and `release` are never mixed.
 
 ```toml
 default_installation = "release"
-extra_roots = ["D:/MinecraftBackups/com.mojang"]
+
+[[roots]]                                  # extra roots to probe; named so they can be
+name = "backup"                            # addressed in qualified references
+path = "D:/MinecraftBackups/com.mojang"
 
 [backups]
 dir = "/Volumes/Spare/construct-backups"   # optional; defaults to the platform data dir
 keep = 10
 ```
 
+Extra roots are a table array rather than a bare path list precisely so each one carries a
+name — an unnamed root cannot appear in the `<installation>/<account>/<world>` grammar.
+
 Precedence: CLI flag → environment variable → config file → auto-discovery. An absent file
 means all defaults, so there is no init step. Unknown keys warn rather than fail.
+
+Environment variables: `CONSTRUCT_COM_MOJANG`, `CONSTRUCT_INSTALLATION`, `CONSTRUCT_CONFIG`,
+and `CONSTRUCT_GITHUB_TOKEN` (falling back to `GITHUB_TOKEN`, which is what CI environments
+already set).
 
 ## 8. Write safety
 
@@ -237,7 +309,7 @@ gigabytes:
 world in use — reading from a 2.4 GB snapshot…
 ```
 
-LevelDB writes (`delete` only) follow a fixed sequence:
+LevelDB writes (`delete --source world` only) follow a fixed sequence:
 
 1. Resolve the world.
 2. Open the database. **If the LOCK is held, stop.** No `--force`; a concurrent writer is
@@ -247,9 +319,14 @@ LevelDB writes (`delete` only) follow a fixed sequence:
 5. Drop the handle to flush.
 6. Report the backup path in the success message.
 
+There is no `--force` for the LOCK refusal. The `--force` flag in §5 governs file collisions
+only and never applies here.
+
 Backups live outside the world folder, in the configured backup directory, with retention
 of the last `keep` per world. A `db.backup-*` folder inside a world directory would confuse
-Minecraft, bloat the world, and ride along into any world export.
+Minecraft, bloat the world, and ride along into any world export. Retention is keyed on the
+path-sanitized qualified reference `<installation>/<account>/<folder>`, not the folder name
+alone, which is not unique across roots.
 
 `level.dat` writes (`install --world`, `experiment`) copy the file to the same backup
 directory before modifying it. Minecraft's own `level.dat_old` is not a substitute — it is
@@ -264,7 +341,8 @@ little-endian NBT.
 Merge:
 
 1. Fetch N values and decode.
-2. Union the bounding boxes derived from each `structure_world_origin` and `size`.
+2. Union the bounding boxes derived from each `structure_world_origin` and `size`. The
+   merged output's own `structure_world_origin` is the **min corner of that union**.
 3. Unify palettes by deduplicating `(name, states, version)`, building a per-source remap.
 4. Blit each piece's two index layers into the output grid.
 5. Translate `block_position_data` keys and entity positions into the new frame.
@@ -273,11 +351,33 @@ Merge:
 Gaps between pieces are index **-1** (structure void), not air. Void leaves existing terrain
 untouched on placement; air would carve holes in whatever the structure is placed over.
 
-Merge refuses when every `structure_world_origin` is zero or identical — the pieces carry no
-usable origin and would stack in one spot. It also refuses when the union bounding box is
-large enough to exhaust memory; this is an allocation guard, not a game limit. Minecraft
-loads structures beyond structure-block dimensions without trouble, so oversized results
-produce a **performance warning**, not a refusal.
+### Overlap
+
+Pieces may overlap — overlapping saves of one build are common and often deliberate.
+Resolution is **per position, per layer**: a piece contributes only where its index is
+non-void, and where two pieces both contribute, the one appearing later in the argument list
+wins. `--on-overlap <last|first|error>` controls this, defaulting to `last`. Any overlap
+emits a warning naming the count and the pieces:
+
+```
+warning: 1,204 blocks overlapped between "north_wing" and "tower"
+```
+
+**`block_position_data` must follow the winning block.** Otherwise a chest's contents survive
+from a block that lost the overlap and end up attached to the wrong thing.
+
+### Refusals and warnings
+
+Merge refuses when every `structure_world_origin` is *identical* — including all-zero — since
+the pieces would stack in one spot. It does **not** refuse the mixed case where some pieces
+sit at `[0,0,0]` and others do not: `[0,0,0]` is indistinguishable from a legitimate save at
+world origin, so refusing would be wrong about as often as it was right. That case proceeds
+with a warning naming the pieces whose origins may be unset.
+
+Merge also refuses when the union bounding box is large enough to exhaust memory. This is an
+allocation guard, not a game limit — Minecraft loads structures beyond structure-block
+dimensions without trouble, so oversized results produce a **performance warning**, not a
+refusal.
 
 ## 10. Install
 
@@ -289,7 +389,28 @@ produce a **performance warning**, not a refusal.
    existing install **by header UUID rather than folder name**.
 6. With `--world`, upsert both pack IDs into that world's `world_behavior_packs.json` and
    `world_resource_packs.json`.
-7. Attempt the Beta APIs flip in that world's `level.dat`.
+7. Attempt the Beta APIs flip in that world's `level.dat`, then re-read and verify.
+
+With no `--world`, `install` and `status` act on `default_installation` from config; failing
+that, the sole installation if only one exists; failing that, they error listing the
+candidates. Same never-guess rule as world references.
+
+### The Beta APIs flip is unresolved and must be measured
+
+The exact `level.dat` NBT to write is **not specified here on purpose.** Bedrock stores
+experiments as an NBT compound, and enabling one generally means setting the specific toggle
+plus companion flags such as `experiments_ever_used` and `saved_with_toggled_experiments`.
+Writing the wrong subset fails *silently*: the write succeeds, the game ignores it.
+
+Resolve it empirically before implementing: read `level.dat` from a world with Beta APIs on
+and one with it off, diff the `experiments` compound, and record the exact keys. This is a
+stage-2 investigation task, not a design decision.
+
+Two rules hold regardless of what the diff shows. **After writing, re-read and verify the
+value actually changed** — treat "write succeeded, value unchanged" as a failure, because
+that is precisely how this defect hides. And `experiment` is readable: `construct experiment
+<world> --beta-apis` with no value prints the current state, which makes the flip verifiable
+without launching the game and gives `status` something to report.
 
 **Upgrading must not delete `Construct[BP]/structures/`.** That folder holds the user's
 imported structures — the very data this tool exists to put there. A naive delete-and-unzip
@@ -311,24 +432,33 @@ Beta APIs experiment required.
 Exit codes: `0` success · `1` failure · `2` usage error · `3` not found · `4` world in use ·
 `5` partial success.
 
+Ambiguity is exit `2`, not `3`. The target exists — the *reference* was underspecified. `3`
+is reserved for things that genuinely are not there.
+
 Every message names the thing, says why, and gives the next action.
 
-| Failure | Handling |
-|---|---|
-| No `com.mojang` found | List every path probed; point at `--com-mojang` |
-| World not found | Suggest near matches |
-| World name ambiguous | Disambiguation table with qualified references |
-| World in use | Reads snapshot and continue; `delete` stops hard |
-| Structure not found | Suggest near matches from the prefix scan already in hand |
-| Structure prefix | Bare `name` means `mystructure:name`; `prefix:name` accepted explicitly |
-| Codec failure | Report file, field, and byte offset |
-| Degenerate merge origins | Refuse, explaining that origins are unusable |
-| Oversized merge | Warn about performance; refuse only on allocation limits |
-| Construct not installed | Point at `install` |
-| Two Construct copies | State which was chosen and why |
-| GitHub rate limit | Name the 60/hour unauthenticated limit; optional token via env var |
-| No asset for `--version` | List available assets |
-| `level.dat` write fails | Exit 5; packs installed; name the manual step |
+| Failure | Handling | Exit |
+|---|---|---|
+| No `com.mojang` found | List every path probed; point at `--com-mojang` | 3 |
+| World not found | Suggest near matches | 3 |
+| World reference ambiguous | Disambiguation table with qualified references | 2 |
+| World in use | Reads snapshot and continue; `delete --source world` stops hard | 4 |
+| Structure not found | Suggest near matches from the catalog already in hand | 3 |
+| Structure name in both sources | Name both qualified forms; point at `--source` | 2 |
+| Structure prefix | Bare `name` means `mystructure:name`; `prefix:name` accepted explicitly | — |
+| Target file already exists | Refuse; point at `--force` | 1 |
+| Unusable name from file stem | Reject rather than mangle; point at `--name` | 2 |
+| Codec failure | Report file, field, and byte offset | 1 |
+| Identical merge origins | Refuse, explaining the pieces would stack | 1 |
+| Mixed merge origins | Proceed; warn which pieces may have unset origins | 0 |
+| Merge overlap | Resolve per `--on-overlap`; warn with counts | 0 |
+| Oversized merge | Warn about performance; refuse only on allocation limits | 0 / 1 |
+| Construct not installed | Point at `install` | 3 |
+| Two Construct copies | State which was chosen and why | — |
+| Installation ambiguous (no `--world`) | List candidates; point at `default_installation` | 2 |
+| GitHub rate limit | Name the 60/hour unauthenticated limit; point at `CONSTRUCT_GITHUB_TOKEN` | 1 |
+| No asset for `--version` | List available assets | 3 |
+| `level.dat` write fails or does not take | Packs installed; name the manual step | 5 |
 
 ## 12. Testing
 
@@ -341,8 +471,21 @@ waterlogged block (second index layer), one with entities, and one with void gap
 
 - *Byte transparency* — `export` → `import` → `export` yields identical bytes. If this fails,
   the claim that most commands avoid the codec is false.
-- *Merge identity* — merging one structure yields it unchanged; and for any world coordinate,
-  the merged result holds whichever source had a non-void block there.
+- *Merge placement* — merging one structure yields it unchanged; and for any world coordinate
+  and layer, the merged result holds the block from the **last** contributing piece in
+  argument order, or void where none contributed. Stated in terms of argument order rather
+  than "whichever source had a block," which was ambiguous under overlap.
+
+Overlap gets its own tests: two pieces disagreeing at a coordinate resolve per
+`--on-overlap`, and `block_position_data` follows the winning block rather than the losing
+one. The chest-contents-attached-to-the-wrong-block failure is invisible in a block-only
+comparison, so it is asserted explicitly.
+
+Reference resolution is its own table-driven suite: a name in only `world`, only `pack`, both
+(error naming both forms), neither (error suggesting near matches), plus `--source` filtering
+and the `prefix:name` form. Name derivation from file stems gets cases for spaces, capitals,
+and characters outside `[a-z0-9_.-]` — asserting rejection, not mangling. Collisions are
+asserted for `export -o`, `import`, and `copy`: refuse by default, overwrite under `--force`.
 
 Merge results are compared **semantically** on decoded structures. NBT key ordering is not
 guaranteed stable, so golden-file byte comparison would produce meaningless failures.
@@ -393,19 +536,22 @@ The scope here is larger than one sitting, and the byte-transparency property ma
 cleanly separable. Suggested stages, each independently useful:
 
 0. **Spike** — `bedrock_level` against a copy of a real world. Throwaway. Gates everything.
-1. **Read path** — workspace scaffolding, `config`, `discovery` (including multi-root and
-   world references), `store` reads, and `worlds` / `list` / `export`. Delivers the half of
-   the tool that replaces holoprint, and touches nothing destructive.
-2. **Construct integration** — `pack`, `install`, `status`, `experiment`, `import`, `copy`.
-   Delivers the other documented manual workflow. Writes files and `level.dat`, but no
-   leveldb.
+1. **Read path** — workspace scaffolding, `config`, `discovery` (including multi-root, world
+   references, and paths-as-references), `store` reads, and `worlds` / `list` / `export`.
+   Delivers the half of the tool that replaces holoprint, and touches nothing destructive.
+   `list` is world-source only until stage 2 adds the pack source.
+2. **Construct integration** — `pack`, `catalog`, `install`, `status`, `experiment`,
+   `import`, `copy`, and `delete --source pack`. Delivers the other documented manual
+   workflow, unifies the namespace, and includes the `level.dat` experiments investigation.
+   Writes files and `level.dat`, but no leveldb.
 3. **Merge** — `mcstructure` codec and `merge`, behind `export --merge`. The only stage
    needing the codec; fully testable against fixtures.
-4. **Delete** — `backup` plus `store` writes and the `delete` command. Deliberately last:
-   the only leveldb write, and the only stage that can damage a world.
+4. **Delete from a world** — `backup` plus `store` writes and `delete --source world`.
+   Deliberately last: the only leveldb write, and the only stage that can damage a world.
 
-Stage 4 could be dropped entirely without affecting anything else, which is worth
-remembering if `bedrock_level`'s write path disappoints in the spike.
+Note that deletion arrives in stage 2 for pack structures, so users get the capability long
+before the risky path exists. Stage 4 could be dropped entirely without affecting anything
+else, which is worth remembering if `bedrock_level`'s write path disappoints in the spike.
 
 ## 15. Risk register
 
@@ -415,6 +561,7 @@ remembering if `bedrock_level`'s write path disappoints in the spike.
 | `delete` corrupts a world db | **Data loss** | Mojang's leveldb via FFI; snapshot before write; hard refusal on LOCK |
 | `bedrock-rs` churns or stalls | High | Commit pin; `StructureStore` trait; Apache-2.0 permits vendoring |
 | Windows GDK assumptions unverified | High | Manual checklist on real hardware before release |
+| Beta APIs flip writes the wrong NBT and fails silently | High | Measure the keys empirically; verify by re-reading after write; `experiment` can report state |
 | CMake/C++ toolchain friction | Medium | CI on all three platforms; prebuilt binaries for users |
 | Construct asset naming changes | Medium | Pattern match; clear error listing available assets |
 | GitHub rate limit | Low | Named in the error; optional token |
@@ -428,7 +575,8 @@ These cannot be settled by automated tests and must be confirmed in the game:
 
 1. Does a merged structure beyond structure-block dimensions load and place correctly?
 2. Does Construct pick up an imported structure after a world reload?
-3. Does the `level.dat` Beta APIs flip register in-game?
+3. Does the `level.dat` Beta APIs flip register in-game? (`construct experiment <world>
+   --beta-apis` confirms the file round-trips; only the game confirms it is honored.)
 4. Do dev packs in `Users\Shared` apply to a world owned by a specific account? *(Windows)*
 5. Do files written into the GDK folder by an ordinary process read back in-game? *(Windows)*
 
@@ -441,6 +589,12 @@ data in ordinary `AppData\Roaming`.
 - Microsoft documents `Users\Shared\...\development_behavior_packs` as the creator
   deployment location, which implies the game reads dev packs from `Shared` regardless of
   the signed-in account. The design depends on this.
+- **How a `.mcstructure` sitting directly in `structures/` is addressed in-game** — as bare
+  `name`, or as `namespace:name` requiring a subdirectory. Construct's README says to drop
+  files directly into the folder, which suggests the bare form, but this determines what
+  `list` displays for pack-source structures and what `import` should name them. Resolve
+  alongside the `level.dat` experiments investigation in stage 2.
+- The exact `experiments` NBT keys for the Beta APIs toggle (§10). Measured, not assumed.
 - `leveldb-sys` vendors leveldb rather than using a submodule (observed in its file tree).
 - A structure's leveldb value is byte-identical to a `.mcstructure` file. Corroborated by
   StructureChest's working implementation and asserted as a test property.
