@@ -46,6 +46,8 @@ MIT, a JavaScript Bedrock addon for survival building.
 | Language | Rust | Sum types and `Result` fit binary-format parsing; single static binary; only candidate whose core can also target WASM for a future web UI |
 | Layout | Cargo workspace: `construct-core` lib + `construct-cli` bin | A future GUI links the library rather than reimplementing it |
 | LevelDB backend | `bedrock_level` from `bedrock-rs` (FFI to the Mojang leveldb fork), behind a `StructureStore` trait | Writes go through the same C++ implementation Minecraft uses rather than a reimplementation; the trait leaves room for a pure-Rust backend later |
+| Backend delivery | Patched forks of `bedrock-rs` and `leveldb-sys`, pinned by commit; fixes offered upstream | Measured: the upstream pins do not compile on macOS at all, or on any non-x86_64 target (§3, "What the spike found") |
+| Reading a world | Always copy `db/` first; never open the original | Measured: opening a leveldb database rewrites it (§8) |
 | NBT | `nbtx` 3.0.1 (little-endian) | Published to crates.io; little-endian is `.mcstructure`'s encoding |
 | Platforms | macOS, Linux, Windows; auto-discovery plus overrides | Windows is where most Construct users are |
 | Merge semantics | Reassemble at each structure's recorded `structure_world_origin` | Pieces of one build reassemble into that build |
@@ -79,8 +81,31 @@ byte keys, which is exactly what `structuretemplate_` keys need — its chunk-or
 type is bypassed entirely. `bedrock-leveldb`'s unresolved license is a separate blocker for
 a distributed tool.
 
-`bedrock-leveldb` retains one future advantage worth preserving the trait for: its
-read-only mode never acquires the leveldb LOCK, and it compiles to WASM.
+`bedrock-leveldb` retains one advantage worth preserving the trait for: its read-only mode
+never acquires the leveldb LOCK, and it compiles to WASM. §8 promotes this from a future
+nicety to the thing that would remove a full `db/` copy from every read.
+
+### What the spike found
+
+Stage 0 ran against a real world and returned a split verdict.
+
+Byte transparency holds. A structure read out of a database, written back under a new key,
+and read again is byte-identical, and values begin `0x0a` — little-endian NBT. §4's central
+claim is now measured rather than argued, and the staging in §14 rests on solid ground.
+
+The dependency does not build. Four independent defects, all in portability handling:
+
+| Defect | Location | Breaks |
+|---|---|---|
+| `rustc-link-lib=dylib=stdc++` hardcoded under `#[cfg(unix)]` | `leveldb-sys/build.rs` | every macOS target — Apple ships `libc++` |
+| `is_x86_feature_detected!`, `target_feature(avx2)`, `std::arch::x86_64`, none behind `cfg(target_arch)` | `bedrock-rs/crates/level/src/greedy.rs` | every non-x86_64 target, at compile time |
+| `LEVELDB_PLATFORM_POSIX_SSE` defined unconditionally, then x86 intrinsics under an `#elif __GNUC__` that Apple clang satisfies | vendored `port_posix_sse.cc` | Apple Silicon |
+| zlib's `TARGET_OS_MAC` `fdopen` macro clobbering the SDK header; missing `unistd.h` | vendored zlib | modern macOS SDKs |
+
+§13's release matrix names macOS arm64 and x86_64. Both were broken; Linux and Windows
+were not. The fixes are small and mechanical, which is why forking beats switching
+backends — `bedrock-leveldb`'s licence is still `NOASSERTION`, which no amount of patching
+resolves.
 
 ## 4. Architecture
 
@@ -136,8 +161,10 @@ command can ship before the codec exists.
 | `delete --source pack` | — | — | unlink one `.mcstructure` |
 | **`delete --source world`** | yes | **yes** | — |
 
-`delete --source world` is the only command that writes to a leveldb. Deleting a pack
-structure is an ordinary file unlink and carries none of the ceremony in §8.
+`delete --source world` is the only command that writes to a leveldb *deliberately*. Every
+"leveldb read" in the table above is a read of a **copy**, never of the world itself,
+because opening a database modifies it (§8). Deleting a pack structure is an ordinary file
+unlink and carries none of the ceremony in §8.
 
 ## 5. Command surface
 
@@ -313,23 +340,48 @@ already set).
 
 ## 8. Write safety
 
-Reads (`worlds`, `list`, `export`) open the database directly. LevelDB's C++ API acquires
-`db/LOCK` on every open — there is no read-only open — so a world open in Minecraft cannot
-be read directly. On a lock error, read-only commands automatically copy `db/` to a
-temporary directory and open the copy. This is not gated behind a flag, but it announces
-itself and checks free space first, because a large survival world's `db/` can reach several
-gigabytes:
+**Opening a leveldb database is a write.** This was measured, not assumed: the stage 0
+spike opened a real world read-only — never calling `insert` — and the world's `db/`
+directory came back changed. `000014.log` and `MANIFEST-000012` were gone, replaced by
+`000018.ldb`, `000019.log`, and `MANIFEST-000017`. No data was lost, and every file outside
+`db/` was untouched, but the on-disk file set was rewritten.
+
+This is ordinary leveldb behaviour, not a bug in the binding: `DB::Open` runs recovery,
+replaying the write-ahead log into a fresh table, compacting, and writing a new manifest.
+`bedrock_level::db::Database::open` exposes no read-only or no-recovery option —
+`open<P: AsRef<str>>(path) -> Result<Self>` is the entire API. There is no way to ask this
+backend to look without touching.
+
+Therefore: **read commands never open a world's database. They copy `db/` to a temporary
+directory and open the copy — always, not only when the world is in use.**
 
 ```
-world in use — reading from a 2.4 GB snapshot…
+reading from a 2.4 GB snapshot…
 ```
+
+The copy is unconditional and not gated behind a flag. It announces itself, because it is
+not free: `construct list` on a large survival world copies gigabytes before printing a
+dozen lines. That cost buys the guarantee that a read cannot alter a save, which is worth
+more than the seconds — a tool that silently rewrites a world it was only asked to inspect
+has no business being pointed at anyone's survival world.
+
+Two consequences follow. A world open in Minecraft reads fine, because the copy never
+touches the LOCK; being in use stops mattering for reads. And the free-space check moves
+onto the main path rather than the fallback, since every read now needs room for a full
+`db/`.
+
+The prize this forfeits is a cheap read. A backend offering a genuine read-only open — one
+that neither recovers nor locks — would let `list` and `export` skip the copy entirely.
+`bedrock-leveldb` claims exactly that (§3), which is why `StructureStore` is a trait: the
+day a read-only open exists, reads stop copying, and no command above the trait changes.
 
 LevelDB writes (`delete --source world` only) follow a fixed sequence:
 
 1. Resolve the world.
-2. Open the database. **If the LOCK is held, stop.** No `--force`; a concurrent writer is
+2. Snapshot `db/` to the backup directory. **Before opening**, because opening is itself a
+   write — a snapshot taken afterwards preserves an already-modified database.
+3. Open the database. **If the LOCK is held, stop.** No `--force`; a concurrent writer is
    how worlds get corrupted.
-3. Snapshot `db/` to the backup directory.
 4. Mutate.
 5. Drop the handle to flush.
 6. Report the backup path in the success message.
@@ -473,7 +525,8 @@ Every message names the thing, says why, and gives the next action.
 | No `com.mojang` found | List every path probed; point at `--com-mojang` | 3 |
 | World not found | Suggest near matches | 3 |
 | World reference ambiguous | Disambiguation table with qualified references | 2 |
-| World in use, read command | Snapshot `db/` and continue; warn | 0 |
+| World in use, read command | Irrelevant — reads always work from a copy | 0 |
+| No room for the snapshot a read needs | Name the size needed and the space free | 1 |
 | World in use, `delete --source world` | Stop hard; no `--force` | 4 |
 | Structure not found | Suggest near matches from the catalog already in hand | 3 |
 | Structure name in both sources | Name both qualified forms; point at `--source` | 2 |
@@ -554,10 +607,13 @@ Rust stable, edition 2024 (matching `bedrock-rs`), plus **CMake and a C++ compil
 `leveldb-sys`. `leveldb-sys` vendors the leveldb C++ source in-repo under `ffi/leveldb/`
 rather than as a submodule, so a plain clone builds — confirm on first clone.
 
-`bedrock_level` is a git dependency **pinned to an explicit commit hash**, never a floating
-branch, because `bedrock-rs` has no tags or crates.io release. Upgrades are deliberate and
-re-run the spike. Apache-2.0 permits vendoring if the project stalls; the `StructureStore`
-trait keeps a backend swap from being a rewrite. `nbtx` comes from crates.io.
+`bedrock_level` and `leveldb-sys` are git dependencies on **patched forks**, each pinned to
+an explicit commit hash, never a floating branch — `bedrock-rs` has no tags or crates.io
+release, and the upstream pins do not compile on macOS or on any non-x86_64 target (§3).
+The four fixes are offered upstream as pull requests; if they land, the forks are retired
+and the pins move back. Upgrades are deliberate and re-run the spike. Apache-2.0 permits
+both the forking and the vendoring; the `StructureStore` trait keeps a backend swap from
+being a rewrite. `nbtx` comes from crates.io.
 
 Releases are built by a GitHub Actions matrix: macOS arm64 and x86_64, Windows x86_64 (MSVC),
 Linux x86_64 (glibc — musl plus C++ is not worth the fight). The C++ leveldb links
@@ -597,6 +653,8 @@ else, which is worth remembering if `bedrock_level`'s write path disappoints in 
 | Construct upgrade wipes `structures/` | **Data loss** | Preserve across upgrade; highest-priority test |
 | `delete` corrupts a world db | **Data loss** | Mojang's leveldb via FFI; snapshot before write; hard refusal on LOCK |
 | `bedrock-rs` churns or stalls | High | Commit pin; `StructureStore` trait; Apache-2.0 permits vendoring |
+| Upstream never merges the portability fixes | Medium | **Realized.** Forks are pinned and self-sufficient; upstream merging is an improvement, not a dependency |
+| A read silently rewrites a world | **Data loss** | **Realized in the spike.** Reads always operate on a copy (§8); asserted by a test that hashes `db/` before and after |
 | Windows GDK assumptions unverified | High | Manual checklist on real hardware before release |
 | Beta APIs flip writes the wrong NBT and fails silently | Low | Keys measured from a real world (§10); read-modify-write preserves sibling experiments; verify by re-reading after write |
 | CMake/C++ toolchain friction | Medium | CI on all three platforms; prebuilt binaries for users |
@@ -647,6 +705,12 @@ data in ordinary `AppData\Roaming`.
   before `list` or `import` depends on it.
 - The **disable** direction of the Beta APIs flip (§10). The enabled state is measured; that
   the companion flags stay at `1` when turning it off is inferred.
-- `leveldb-sys` vendors leveldb rather than using a submodule (observed in its file tree).
-- A structure's leveldb value is byte-identical to a `.mcstructure` file. Corroborated by
-  StructureChest's working implementation and asserted as a test property.
+- ~~`leveldb-sys` vendors leveldb rather than using a submodule~~ — **confirmed**: no
+  `.gitmodules`, full source under `ffi/leveldb/`, so a plain clone builds.
+- ~~A structure's leveldb value is byte-identical to a `.mcstructure` file~~ — **confirmed
+  by the stage 0 spike**: round-trip is byte-identical and values begin `0x0a`.
+- The **Windows** lock-error path. The stage 0 spike measured the POSIX message
+  (`IO error: lock <path>/LOCK: already held by process`) from an in-process double-open;
+  leveldb's `env_win.cc` is a different implementation with a different message, and no
+  external-process holder has been tested on any platform. §8 therefore never matches on
+  the message text.
