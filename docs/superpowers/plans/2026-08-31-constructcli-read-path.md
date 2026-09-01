@@ -13,8 +13,9 @@
 ## Global Constraints
 
 - **`construct-core` never references CLI concepts.** No arguments, no stdout, no exit codes, no `println!`. It returns typed values and `thiserror` errors and never panics. `construct-cli` owns `clap`, all formatting, and all exit codes, and uses `anyhow` for context.
-- **Rust edition 2024** in every crate, matching `bedrock-rs`. Requires Rust 1.85 or newer.
-- **`bedrock_level` is pinned to an explicit commit**, never a branch: `rev = "2d9e4087a207bdcbad6e4cdc83de46e94712b2f4"` (bedrock-crustaceans/bedrock-rs, 2026-08-21). Upgrading it is a deliberate act that re-runs the Task 1 spike.
+- **Rust edition 2024** in every crate, matching `bedrock-rs`. Requires **Rust 1.88 or newer** — Tasks 5 and 10 use `if let … && …` let-chains, which are stable only from 1.88. (Verified installed: 1.98.0.)
+- **The database backend comes from patched forks, not upstream.** The stage 0 spike proved the upstream pins do not compile on macOS at all, or on any non-x86_64 target — four independent portability defects (§3 of the spec). Patched branches are prepared and verified building from a clean cargo cache; their published URLs are filled in at Task 9. Pin by explicit commit, never a branch.
+- **Reads never open a world's database.** Opening a leveldb database runs recovery and rewrites it, measured in the spike. Every read copies `db/` to a temp directory and opens the copy — always, not only when the world is in use. See spec §8.
 - **Never open a real world's database in place during development or tests.** Always copy to a temp directory first. A guard helper (Task 9) refuses any database path outside a temp directory.
 - **Exit codes:** `0` success · `1` failure · `2` usage error · `3` not found · `4` world in use. Ambiguity is `2`, not `3` — the target exists, the reference was underspecified.
 - **Never guess between candidates.** Ambiguous world references, ambiguous structure names, and ambiguous installations are all errors that print the qualified forms. Never silently pick.
@@ -285,7 +286,9 @@ license = "MIT"
 repository = "https://github.com/ForestOfLight/ConstructCLI"
 
 [workspace.dependencies]
-bedrock_level = { git = "https://github.com/bedrock-crustaceans/bedrock-rs", package = "bedrock_level", rev = "2d9e4087a207bdcbad6e4cdc83de46e94712b2f4" }
+# The database backend is deliberately absent here. It arrives in Task 9, once the
+# patched forks the spike showed to be necessary have somewhere to be fetched from.
+# Nothing in Tasks 2-8 touches a database.
 thiserror = "2.0"
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -324,7 +327,6 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-bedrock_level.workspace = true
 thiserror.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
@@ -2198,7 +2200,26 @@ plenty of binary keys and they are simply not ours."
 
 **A constraint discovered by reading the dependency:** `leveldb::Options::create_if_missing` defaults to `false` and the FFI never sets it, so `Database::open` **cannot create a database**. A fixture therefore cannot be synthesised in Rust — it must be a real database. This task commits one, derived from `bedrock-rs`'s own Apache-2.0 test world (591 KB), with structure keys inserted.
 
+**The backend dependency is added in this task, not Task 2.** Add to the workspace
+`[workspace.dependencies]` and to `construct-core`'s `[dependencies]`:
+
+```toml
+bedrock_level = { git = "<FORK URL>", package = "bedrock_level", rev = "<COMMIT>" }
+```
+
+plus, in the **workspace root** `Cargo.toml`, a patch redirecting `bedrock_level`'s own
+upstream dependency on `leveldb-sys` to the patched fork:
+
+```toml
+[patch."https://github.com/bedrock-crustaceans/leveldb-sys"]
+leveldb-sys = { git = "<LEVELDB-SYS FORK URL>", rev = "<COMMIT>" }
+```
+
+Both URLs and commits are supplied in the dispatch. Verified working locally from a purged
+cargo cache: `bedrock_level` compiles on Apple Silicon and the FFI links and runs.
+
 **Files:**
+- Modify: `Cargo.toml` (workspace deps + `[patch]`), `crates/construct-core/Cargo.toml`
 - Create: `crates/construct-core/src/store/bedrock.rs`
 - Modify: `crates/construct-core/src/store/mod.rs`
 - Create: `crates/construct-core/tests/fixtures/world.tar.gz` (generated in Step 1)
@@ -2470,7 +2491,7 @@ Update `crates/construct-core/src/store/mod.rs`:
 pub mod bedrock;
 pub mod key;
 
-use crate::error::Result;
+use crate::error::{CoreError, Result};
 use std::collections::BTreeMap;
 
 /// Read access to a world's structures.
@@ -2541,11 +2562,29 @@ MemoryStore lets every layer above this one be tested without a database."
 
 ---
 
-## Task 10: Reading a world that is in use
+## Task 10: Reads always work from a copy
 
-LevelDB acquires `db/LOCK` on every open — there is no read-only open — so a world open in Minecraft cannot be read directly. Read commands fall back to a snapshot automatically, announcing it and checking free space first.
+**This task changed after the stage 0 spike.** The original design opened a world's database
+directly and fell back to a snapshot only when the LOCK was held. That is unsafe: the spike
+opened a real world without ever calling `insert`, and the world's `db/` came back rewritten —
+`000014.log` and `MANIFEST-000012` replaced by `000018.ldb`, `000019.log`, `MANIFEST-000017`.
+No data was lost, but `DB::Open` runs recovery, and `bedrock_level` exposes no read-only
+option. Spec §8 was rewritten accordingly.
 
-**A finding from Task 1 that shapes this:** the lock failure surfaces as `CoreError::Db(String)`, not a typed variant. `bedrock_level::Error::DatabaseLockError` exists but comes from mutex poisoning, not the LOCK file. The message text also differs by platform — macOS and Linux produce `already held by process` from `env_posix.cc`, while Windows uses `env_win.cc`. **Do not match on the message.** Treat any open failure of a directory that exists as possibly-locked and retry via snapshot.
+So: **a read never opens a world's database. It copies `db/` to a temp directory and opens
+the copy — unconditionally.** The world being in use stops mattering for reads, because the
+copy never touches the LOCK. The free-space check is on the main path, not a fallback.
+
+Two consequences for the code below. `open_world_store` has no fallback branch and no error
+matching — there is nothing to detect, because the direct path no longer exists. And
+`via_snapshot` is now always `Some(bytes)` for a world-backed store, so it reports a cost
+rather than an exceptional condition.
+
+**A finding from Task 1 kept for later:** the lock failure surfaces as `CoreError::Db(String)`,
+not a typed variant — `bedrock_level::Error::DatabaseLockError` is mutex poisoning, not the
+LOCK file. The measured POSIX text is `IO error: lock <path>/LOCK: already held by process`;
+Windows uses `env_win.cc` with a different message, and no external-process holder has been
+tested. Stage 4's `delete` needs this; stage 1 does not.
 
 **Files:**
 - Create: `crates/construct-core/src/store/snapshot.rs`
@@ -2556,8 +2595,9 @@ LevelDB acquires `db/LOCK` on every open — there is no read-only open — so a
 - Consumes: `BedrockStore` (Task 9), `World` (Task 5).
 - Produces:
   - `pub struct OpenedStore { pub via_snapshot: Option<u64>, .. }` implementing `StructureStore`
-  - `pub fn open_world_store(world: &World) -> Result<OpenedStore>`
+  - `pub fn open_world_store(world: &World) -> Result<OpenedStore>` — always snapshots
   - `pub fn copy_dir(src: &Path, dst: &Path) -> Result<u64>` — returns bytes copied
+  - `pub fn dir_size(dir: &Path) -> u64`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2580,29 +2620,47 @@ fn copy_dir_reports_bytes_copied() {
 }
 
 #[test]
-fn opening_a_normal_world_does_not_snapshot() {
+fn a_read_always_snapshots_and_reports_the_size() {
     let (_tmp, db) = extract();
     let world = world_at(db.parent().unwrap());
     let opened = construct_core::store::open_world_store(&world).unwrap();
-    assert_eq!(opened.via_snapshot, None);
+    assert!(opened.via_snapshot.is_some(), "every read goes through a copy");
     assert!(opened.ids().unwrap().contains(&"mystructure:house".to_string()));
 }
 
 #[test]
-fn a_snapshot_read_sees_the_same_structures() {
-    // Proves the fallback path returns the same data as the direct path, which
-    // is the only property that matters about it.
+fn a_read_does_not_modify_the_world_on_disk() {
+    // THE test for this task. Opening a leveldb database rewrites it, so the only
+    // way a read can be safe is never to open the original. Hash the whole db
+    // directory before and after; any difference means the guarantee is broken.
     let (_tmp, db) = extract();
     let world = world_at(db.parent().unwrap());
 
-    let direct = construct_core::store::open_world_store(&world).unwrap().ids().unwrap();
-    let snapped = snapshot::open_via_snapshot(&world).unwrap();
-    let mut a = direct;
-    let mut b = snapped.ids().unwrap();
-    a.sort();
-    b.sort();
-    assert_eq!(a, b);
-    assert!(snapped.via_snapshot.is_some(), "should report the snapshot size");
+    let before = dir_fingerprint(&db);
+    let opened = construct_core::store::open_world_store(&world).unwrap();
+    let _ = opened.ids().unwrap();
+    drop(opened);
+    let after = dir_fingerprint(&db);
+
+    assert_eq!(before, after, "a read modified the world's db/ directory");
+}
+
+/// Every file name and its exact bytes, so a rewritten MANIFEST or a rolled WAL shows up.
+fn dir_fingerprint(dir: &std::path::Path) -> Vec<(String, u64, Vec<u8>)> {
+    let mut out: Vec<(String, u64, Vec<u8>)> = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| {
+            let bytes = std::fs::read(e.path()).unwrap_or_default();
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                bytes.len() as u64,
+                bytes,
+            )
+        })
+        .collect();
+    out.sort();
+    out
 }
 
 /// Build a `World` pointing at an extracted fixture.
@@ -2681,7 +2739,7 @@ pub fn open_via_snapshot(world: &World) -> Result<OpenedStore> {
     Ok(OpenedStore { inner: Box::new(store), _snapshot: Some(tmp), via_snapshot: Some(copied) })
 }
 
-fn dir_size(dir: &Path) -> u64 {
+pub fn dir_size(dir: &Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
     };
@@ -2731,25 +2789,18 @@ impl StructureStore for OpenedStore {
     }
 }
 
-/// Opens a world's structures for reading, falling back to a snapshot when the
-/// world is in use.
+/// Opens a world's structures for reading.
 ///
-/// The fallback triggers on *any* open failure of a `db` directory that exists,
-/// not on an error message: the lock error is untyped and its text differs
-/// between leveldb's POSIX and Windows implementations.
+/// This *always* copies `db/` and opens the copy. Opening a leveldb database runs
+/// recovery and rewrites it, so there is no such thing as a read-only open with
+/// this backend — the only safe read is one that never touches the original.
+/// There is deliberately no direct path and no fallback logic here.
 pub fn open_world_store(world: &World) -> Result<OpenedStore> {
     let db = world.db_path();
-    match bedrock::BedrockStore::open(&db) {
-        Ok(store) => Ok(OpenedStore { inner: Box::new(store), _snapshot: None, via_snapshot: None }),
-        Err(direct) => {
-            if !db.is_dir() {
-                return Err(direct);
-            }
-            // Report the original error if the snapshot also fails — the
-            // snapshot's error would be a confusing thing to show.
-            snapshot::open_via_snapshot(world).map_err(|_| direct)
-        }
+    if !db.is_dir() {
+        return Err(CoreError::Db(format!("no database at {}", db.display())));
     }
+    snapshot::open_via_snapshot(world)
 }
 ```
 
@@ -3019,11 +3070,35 @@ The first user-visible command. Establishes the output contract every later comm
 
 `crates/construct-cli/tests/cli.rs`:
 
+**Two corrections from the pre-flight scan, both load-bearing:**
+
+*P1 — every CLI test must pin its environment.* `run()` reads `HOME`, `APPDATA`, and
+`LOCALAPPDATA` to build the discovery table. A test that leaves them alone discovers
+whatever Minecraft installs exist on the machine running it — so the exit-3 test passes on
+CI and fails on a developer's Mac, while the JSON test does the reverse. Neither machine can
+be green. `bin()` therefore clears all three to a temp directory.
+
+*P2 — `NoInstallations` must not preempt reference resolution.* Returning it before
+resolving the world argument breaks `construct list <path>` on any machine with no Minecraft
+installed, which is every CI runner — reddening all of Tasks 13 and 14. §6 promises a
+filesystem path works as a world reference; that promise cannot depend on a Minecraft
+install existing. Report `NoInstallations` only for `worlds`, or when resolution has already
+failed.
+
 ```rust
 use std::process::Command;
 
+/// A binary invocation with a pinned, empty environment, so discovery finds
+/// exactly what the test puts there and nothing from the host machine.
 fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_construct"))
+    let mut c = Command::new(env!("CARGO_BIN_EXE_construct"));
+    let empty = std::env::temp_dir().join("construct-empty-home");
+    std::fs::create_dir_all(&empty).unwrap();
+    c.env("HOME", &empty).env("USERPROFILE", &empty);
+    c.env_remove("APPDATA").env_remove("LOCALAPPDATA");
+    c.env_remove("CONSTRUCT_COM_MOJANG").env_remove("CONSTRUCT_INSTALLATION");
+    c.env("CONSTRUCT_CONFIG", empty.join("no-such-config.toml"));
+    c
 }
 
 #[test]
@@ -3045,10 +3120,15 @@ fn an_unknown_command_is_a_usage_error() {
 #[test]
 fn worlds_json_is_exactly_one_document_on_stdout() {
     // The GUI contract: stdout parses as JSON with no scanning.
+    // Points at a real (empty) com.mojang so an installation exists and a
+    // payload is emitted — the exit-3 case is a different test.
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
     let out = bin()
-        .args(["worlds", "--json", "--com-mojang", "/nonexistent"])
+        .args(["worlds", "--json", "--com-mojang", root.path().to_str().unwrap()])
         .output()
         .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let text = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value =
         serde_json::from_str(&text).unwrap_or_else(|e| panic!("stdout was not one JSON doc: {e}\n{text}"));
@@ -3059,12 +3139,33 @@ fn worlds_json_is_exactly_one_document_on_stdout() {
 
 #[test]
 fn warnings_go_to_stderr_and_never_pollute_json_stdout() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
     let out = bin()
-        .args(["worlds", "--json", "--com-mojang", "/nonexistent"])
+        .args(["worlds", "--json", "--com-mojang", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     // Whatever is on stderr, stdout must still parse.
     assert!(serde_json::from_slice::<serde_json::Value>(&out.stdout).is_ok());
+}
+
+#[test]
+fn a_path_referenced_world_works_with_no_installations_at_all() {
+    // §6 promises a filesystem path is a valid world reference. That must not
+    // depend on a Minecraft install existing — CI runners have none.
+    let tmp = tempfile::tempdir().unwrap();
+    let world = tmp.path().join("SomeWorld");
+    std::fs::create_dir_all(world.join("db")).unwrap();
+    std::fs::write(world.join("level.dat"), b"x").unwrap();
+    let out = bin().args(["list", world.to_str().unwrap()]).output().unwrap();
+    // The db is not a real leveldb, so this fails — but it must NOT fail with
+    // exit 3 "no installation found", which would mean the check preempted
+    // resolution.
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !err.contains("no Minecraft installation found"),
+        "installation check preempted a path reference:\n{err}"
+    );
 }
 
 #[test]
@@ -3371,12 +3472,21 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
         candidates.iter().map(|c| c.dev_pack_root.clone()).collect();
 
     let installations = discovery::platform::resolve(candidates);
-    if installations.is_empty() {
-        return Err(CoreError::NoInstallations { probed });
-    }
     let worlds = discovery::enumerate(&installations);
 
+    // Deliberately NOT an early return. A world reference may be a filesystem
+    // path, which resolves with zero installations — §6 promises that, and every
+    // CI runner depends on it. `no_installations` is only reported when it is
+    // genuinely the explanation.
+    let no_installations = || CoreError::NoInstallations { probed: probed.clone() };
+    let resolve_world = |r: &str| {
+        discovery::reference::resolve(r, &worlds).map_err(|e| {
+            if installations.is_empty() { no_installations() } else { e }
+        })
+    };
+
     match &cli.command {
+        Command::Worlds if installations.is_empty() => Err(no_installations()),
         Command::Worlds => commands::worlds::run(&worlds, out),
         Command::List { .. } | Command::Export { .. } => {
             unimplemented!("added in the next tasks")
@@ -3589,7 +3699,7 @@ struct Row<'a> {
 pub fn run(world: &World, source: Option<Source>, out: &mut Out) -> Result<()> {
     let store = store::open_world_store(world)?;
     if let Some(bytes) = store.via_snapshot {
-        out.warn(format!("world in use — reading from a {} snapshot", human_size(bytes)));
+        out.warn(format!("reading from a {} snapshot", human_size(bytes)));
     }
 
     let mut entries = catalog::from_world(&store)?;
@@ -3642,7 +3752,7 @@ In `main.rs`, replace the `Command::List` arm:
 
 ```rust
         Command::List { world } => {
-            let w = discovery::reference::resolve(world, &worlds)?;
+            let w = resolve_world(world)?;
             commands::list::run(&w, cli.source.map(Into::into), out)
         }
 ```
@@ -3859,7 +3969,7 @@ pub fn run(
 ) -> Result<()> {
     let store = store::open_world_store(world)?;
     if let Some(bytes) = store.via_snapshot {
-        out.warn(format!("world in use — reading from a {} snapshot", human_size(bytes)));
+        out.warn(format!("reading from a {} snapshot", human_size(bytes)));
     }
     let entries = catalog::from_world(&store)?;
 
@@ -3925,7 +4035,7 @@ In `main.rs`, replace the `Command::Export` arm:
                 );
                 std::process::exit(2);
             }
-            let w = discovery::reference::resolve(world, &worlds)?;
+            let w = resolve_world(world)?;
             commands::export::run(
                 &w,
                 structures,
