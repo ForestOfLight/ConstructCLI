@@ -146,6 +146,7 @@ construct worlds                                    # enumerate discovered world
 construct status                                    # Construct: installed version, latest, enabled worlds
 construct list <world>                              # structures in a world, both sources
 construct export <world> <structure> [-o FILE]
+construct export <world> <s1> <s2>...                # one file each; -o is a usage error
 construct export <world> <s1> <s2>... --merge -o FILE
 construct import <file> [--world W] [--name N]      # into Construct's structures/
 construct copy <src-world> <structure> <dst-world>
@@ -185,11 +186,22 @@ ceremony, while `--source world` is the only leveldb write in the tool.
 write command. Each payload carries a `"schema": 1` field. Versioning the output from the
 first release is cheap insurance given that a GUI consuming this library is a stated goal.
 
+Under `--json`, **stdout carries exactly one JSON document and nothing else** — a consumer
+can parse it without scanning for a payload. Warnings and progress (`world in use — reading
+from a 2.4 GB snapshot…`, overlap counts, which pack root was chosen) go to stderr as plain
+text, and the ones a caller needs to act on are *also* present as a `"warnings"` array in the
+payload. The duplication is deliberate: a GUI linking `construct-core` gets them as typed
+values, a terminal user gets them as they happen, and neither is required to read the other
+stream.
+
 ### Naming and collisions
 
 A single `export` without `-o` writes `<structure-name>.mcstructure` into the current
-directory; `--merge` requires `-o`. World-source structure references are bare names, meaning
-the `mystructure` prefix, or explicit `prefix:name`.
+directory. Several structures without `--merge` write one file each under those same derived
+names, and `-o` is then a usage error, since it names a single file rather than several — the
+collision rule below applies per file, so one existing target refuses the whole command
+before anything is written. `--merge` requires `-o`. World-source structure references are
+bare names, meaning the `mystructure` prefix, or explicit `prefix:name`.
 
 `import` derives the structure name from the file stem: lowercased, spaces to `_`, allowing
 `[a-z0-9_.-]`. Anything outside that set is **rejected rather than silently mangled**, since
@@ -204,9 +216,12 @@ path and not governed by this rule, and `structures/` is never touched by an upg
 `import` and `copy` write into Construct's `structures/` folder — never into a leveldb. With
 `--world W` they target `<world>/behavior_packs/Construct[BP]/structures/` when that world
 has a local copy of Construct, otherwise the installation's shared
-`development_behavior_packs` copy, saying which was chosen. Both state that the world must be
-reloaded before Construct sees the structure, and both fail clearly when the destination
-world has no Construct, pointing at `construct install --world <dst>`.
+`development_behavior_packs` copy, saying which was chosen. Without `--world`, the
+installation resolves by the same rule `install` and `status` use in §10 —
+`default_installation`, failing that the sole installation, failing that an error listing the
+candidates. Both state that the world must be reloaded before Construct sees the structure,
+and both fail clearly when the destination world has no Construct, pointing at
+`construct install --world <dst>`.
 
 ## 6. Discovery and multiple roots
 
@@ -283,7 +298,7 @@ path = "D:/MinecraftBackups/com.mojang"
 
 [backups]
 dir = "/Volumes/Spare/construct-backups"   # optional; defaults to the platform data dir
-keep = 10
+keep = 10                                  # default 10
 ```
 
 Extra roots are a table array rather than a bare path list precisely so each one carries a
@@ -323,8 +338,9 @@ There is no `--force` for the LOCK refusal. The `--force` flag in §5 governs fi
 only and never applies here.
 
 Backups live outside the world folder, in the configured backup directory, with retention
-of the last `keep` per world. A `db.backup-*` folder inside a world directory would confuse
-Minecraft, bloat the world, and ride along into any world export. Retention is keyed on the
+of the last `keep` per world (default 10). A `db.backup-*` folder inside a world directory
+would confuse Minecraft, bloat the world, and ride along into any world export. Retention is
+keyed on the
 path-sanitized qualified reference `<installation>/<account>/<folder>`, not the folder name
 alone, which is not unique across roots.
 
@@ -457,7 +473,8 @@ Every message names the thing, says why, and gives the next action.
 | No `com.mojang` found | List every path probed; point at `--com-mojang` | 3 |
 | World not found | Suggest near matches | 3 |
 | World reference ambiguous | Disambiguation table with qualified references | 2 |
-| World in use | Reads snapshot and continue; `delete --source world` stops hard | 4 |
+| World in use, read command | Snapshot `db/` and continue; warn | 0 |
+| World in use, `delete --source world` | Stop hard; no `--force` | 4 |
 | Structure not found | Suggest near matches from the catalog already in hand | 3 |
 | Structure name in both sources | Name both qualified forms; point at `--source` | 2 |
 | Structure prefix | Bare `name` means `mystructure:name`; `prefix:name` accepted explicitly | — |
