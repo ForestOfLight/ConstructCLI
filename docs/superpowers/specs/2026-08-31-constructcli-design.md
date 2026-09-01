@@ -631,6 +631,20 @@ data in ordinary `AppData\Roaming`.
   files directly into the folder, which suggests the bare form, but this determines what
   `list` displays for pack-source structures and what `import` should name them. Deferred to
   stage 2, when the tooling to check it exists.
+
+  Two shipped packs found on a real machine use *different* layouts, which is the strongest
+  evidence available short of testing in-game:
+
+  | Pack | Path under the pack | Implied reference |
+  |---|---|---|
+  | Canopy | `structures/bubble_column.mcstructure` | `mystructure:bubble_column` |
+  | Understudy | `structures/Understudy/players.mcstructure` | `understudy:players` |
+
+  The working hypothesis is therefore that **a subdirectory under `structures/` supplies the
+  namespace, and a file directly in `structures/` falls back to `mystructure:`** — which
+  would make both forms valid rather than one of them wrong, and would mean `import` has a
+  namespace choice to make rather than a fixed rule to follow. Confirm in-game at stage 2
+  before `list` or `import` depends on it.
 - The **disable** direction of the Beta APIs flip (§10). The enabled state is measured; that
   the companion flags stay at `1` when turning it off is inferred.
 - `leveldb-sys` vendors leveldb rather than using a submodule (observed in its file tree).
