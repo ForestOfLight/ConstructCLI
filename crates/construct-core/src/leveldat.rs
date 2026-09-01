@@ -32,8 +32,8 @@ pub fn parse(bytes: &[u8], path: &Path) -> Result<LevelDat> {
     if bytes.len() < 8 {
         return Err(bad("shorter than the 8-byte header"));
     }
-    let version = i32::from_le_bytes(bytes[0..4].try_into().expect("4 bytes"));
-    let declared = i32::from_le_bytes(bytes[4..8].try_into().expect("4 bytes"));
+    let version = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let declared = i32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
     let declared = usize::try_from(declared).map_err(|_| bad("negative payload length"))?;
 
     let payload = bytes
@@ -65,6 +65,18 @@ impl LevelDat {
 
     /// The `experiments` compound's byte flags, or `None` when the world has no
     /// such compound. Ordered so callers render it deterministically.
+    ///
+    /// # Warning
+    ///
+    /// This returns a read-only projection filtered to `Byte` values. Any non-`Byte`
+    /// sibling entries in the `experiments` compound are excluded from the result.
+    /// This is safe for display and inspection today because `self.root` retains
+    /// every original entry unchanged.
+    ///
+    /// **Do NOT use this projection to reconstruct the compound for writing.** Stage 2
+    /// will rewrite `experiments` in place by mutating `self.root`. If you reconstruct
+    /// the compound from this projection, you will silently drop any non-`Byte` sibling,
+    /// disabling whatever else the world had enabled. Stage 2 mutates in place instead.
     pub fn experiments(&self) -> Option<BTreeMap<String, i8>> {
         let nbtx::Value::Compound(map) = self.field("experiments")? else {
             return None;
@@ -199,5 +211,42 @@ mod tests {
 
     fn dirs_next_to_home(rel: &str) -> std::path::PathBuf {
         std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(rel)
+    }
+
+    #[test]
+    fn rejects_garbage_payload_bytes() {
+        // Build a valid header but with random garbage as the NBT payload.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&10i32.to_le_bytes()); // version
+        bytes.extend_from_slice(&64i32.to_le_bytes()); // payload length
+        bytes.extend_from_slice(&[0xff; 64]); // garbage payload
+        let err = parse(&bytes, Path::new("x")).unwrap_err();
+        assert!(matches!(err, CoreError::BadLevelDat { .. }));
+    }
+
+    #[test]
+    fn rejects_truncated_tag_compound_in_mid_name() {
+        // Build a valid header with a TAG_Compound (0x0a) opener but truncate mid-name.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&10i32.to_le_bytes()); // version
+        bytes.extend_from_slice(&3i32.to_le_bytes()); // payload length = 3 bytes
+        bytes.push(0x0a); // TAG_Compound
+        bytes.push(0x00); // name length (high byte of u16)
+        bytes.push(0x05); // name length (low byte), so 5 bytes expected but not provided
+        // truncated here — only 3 bytes total
+        let err = parse(&bytes, Path::new("x")).unwrap_err();
+        assert!(matches!(err, CoreError::BadLevelDat { .. }));
+    }
+
+    #[test]
+    fn rejects_invalid_tag_id() {
+        // Build a valid header with an invalid/unknown tag ID.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&10i32.to_le_bytes()); // version
+        bytes.extend_from_slice(&2i32.to_le_bytes()); // payload length
+        bytes.push(0xFF); // invalid tag ID
+        bytes.push(0x00); // 1 more byte to fill the declared length
+        let err = parse(&bytes, Path::new("x")).unwrap_err();
+        assert!(matches!(err, CoreError::BadLevelDat { .. }));
     }
 }
