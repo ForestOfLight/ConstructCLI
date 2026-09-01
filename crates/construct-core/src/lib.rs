@@ -7,5 +7,6 @@ pub mod config;
 pub mod discovery;
 pub mod error;
 pub mod leveldat;
+pub mod store;
 
 pub use error::{CoreError, Result};
