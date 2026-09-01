@@ -365,10 +365,16 @@ dozen lines. That cost buys the guarantee that a read cannot alter a save, which
 more than the seconds — a tool that silently rewrites a world it was only asked to inspect
 has no business being pointed at anyone's survival world.
 
-Two consequences follow. A world open in Minecraft reads fine, because the copy never
-touches the LOCK; being in use stops mattering for reads. And the free-space check moves
-onto the main path rather than the fallback, since every read now needs room for a full
-`db/`.
+A world open in Minecraft reads fine as a result, because the copy never touches the
+LOCK; being in use stops mattering for reads.
+
+**There is no pre-flight free-space check.** Every read needs room for a full `db/`, and
+if the filesystem cannot provide it the copy fails part-way with the operating system's
+own error, which names the real problem. A pre-flight check would turn a slow failure on
+a multi-gigabyte world into an immediate one, but `std` exposes no portable way to ask,
+and adding a dependency for a message-quality improvement is not worth it in this stage.
+Recorded here rather than implied, because an earlier draft of this section promised a
+check the code did not perform.
 
 The prize this forfeits is a cheap read. A backend offering a genuine read-only open — one
 that neither recovers nor locks — would let `list` and `export` skip the copy entirely.
