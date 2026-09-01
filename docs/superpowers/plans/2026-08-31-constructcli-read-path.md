@@ -3511,7 +3511,17 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
     let no_installations = || CoreError::NoInstallations { probed: probed.clone() };
     let resolve_world = |r: &str| {
         discovery::reference::resolve(r, &worlds).map_err(|e| {
-            if installations.is_empty() { no_installations() } else { e }
+            // Only a genuine "looked and found nothing" is explained by having no
+            // installations. A malformed reference is ill-formed however many
+            // installations exist, and an unreadable world was found, not missing —
+            // rewriting either into "no Minecraft installation found" reports the
+            // wrong cause and the wrong exit code.
+            match e {
+                CoreError::WorldNotFound { .. } if installations.is_empty() => {
+                    no_installations()
+                }
+                other => other,
+            }
         })
     };
 

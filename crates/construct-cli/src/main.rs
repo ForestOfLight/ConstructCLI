@@ -83,13 +83,17 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
     // Deliberately NOT an early return. A world reference may be a filesystem
     // path, which resolves with zero installations — §6 promises that, and every
     // CI runner depends on it. `no_installations` is only reported when it is
-    // genuinely the explanation.
+    // genuinely the explanation: a plain `WorldNotFound` with no installations
+    // present is best explained as "there's nothing to search." A
+    // `MalformedReference` (bad syntax) or `UnreadableWorld` (found it, can't
+    // read it) is true regardless of how many installations exist, and must
+    // pass through untouched rather than being overwritten.
     let no_installations = || CoreError::NoInstallations {
         probed: probed.clone(),
     };
     let resolve_world = |r: &str| {
         discovery::reference::resolve(r, &worlds).map_err(|e| {
-            if installations.is_empty() {
+            if installations.is_empty() && matches!(e, CoreError::WorldNotFound { .. }) {
                 no_installations()
             } else {
                 e
