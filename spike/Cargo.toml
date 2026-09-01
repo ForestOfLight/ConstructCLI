@@ -1,0 +1,10 @@
+[workspace]
+
+[package]
+name = "spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bedrock_level = { git = "https://github.com/bedrock-crustaceans/bedrock-rs", package = "bedrock_level", rev = "2d9e4087a207bdcbad6e4cdc83de46e94712b2f4" }
