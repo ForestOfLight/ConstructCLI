@@ -49,8 +49,14 @@ impl StructureStore for BedrockStore {
 
 /// Refuses any database path that is not under a temp directory.
 ///
-/// Tests open real leveldb databases and this crate can write to them. The cost
-/// of a test pointed at a real world is a corrupted save, so the check is a
+/// This enforces the copy-before-open invariant that spec §8 rests on: a read
+/// only ever opens a snapshot copy of `db/`, never a world's own database.
+/// `snapshot::open_via_snapshot` calls this on every snapshot open, immediately
+/// before `BedrockStore::open`, so a future refactor that accidentally passes
+/// the original path down this function aborts loudly instead of silently
+/// rewriting somebody's save. Tests also open real leveldb databases directly,
+/// and use this guard to keep those pointed at a temp directory too. Either
+/// way the cost of a path outside temp is a corrupted save, so the check is a
 /// hard panic rather than a warning.
 pub fn guard_test_path(path: &Path) {
     let tmp = std::env::temp_dir();
