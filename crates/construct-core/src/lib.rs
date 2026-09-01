@@ -4,5 +4,6 @@
 //! It returns typed values and typed errors, and it does not panic.
 
 pub mod error;
+pub mod leveldat;
 
 pub use error::{CoreError, Result};
