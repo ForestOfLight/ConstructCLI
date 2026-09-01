@@ -3460,9 +3460,20 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
     }
 
     // Precedence: CLI flag beats everything below it.
-    let mut extra_roots: Vec<std::path::PathBuf> =
-        loaded.config.roots.iter().map(|r| r.path.clone()).collect();
-    extra_roots.extend(cli.com_mojang.iter().cloned());
+    //
+    // Config roots keep their configured names — that is the entire reason §7 makes
+    // `name` mandatory, and `config::parse` has already rejected duplicates and any
+    // name that would shadow a built-in installation. Roots from `--com-mojang` have
+    // no name to carry, so they are numbered.
+    let mut extra_roots: Vec<(String, std::path::PathBuf)> = loaded
+        .config
+        .roots
+        .iter()
+        .map(|r| (r.name.clone(), r.path.clone()))
+        .collect();
+    for (i, path) in cli.com_mojang.iter().enumerate() {
+        extra_roots.push((format!("flag{}", i + 1), path.clone()));
+    }
 
     let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
     let appdata = std::env::var("APPDATA").ok().map(std::path::PathBuf::from);
@@ -3473,9 +3484,9 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
         appdata.as_deref(),
         localappdata.as_deref(),
     );
-    for (i, root) in extra_roots.iter().enumerate() {
+    for (name, root) in &extra_roots {
         candidates.push(discovery::platform::Candidate {
-            name: format!("extra{}", i + 1),
+            name: name.clone(),
             dev_pack_root: root.clone(),
             world_root_parents: vec![root.clone()],
             per_account: false,
@@ -3483,6 +3494,12 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
     }
     let probed: Vec<std::path::PathBuf> =
         candidates.iter().map(|c| c.dev_pack_root.clone()).collect();
+    // A configured root must be addressable by its name, so assert the wiring holds:
+    // every configured root name appears among the candidates.
+    debug_assert!(
+        loaded.config.roots.iter().all(|r| candidates.iter().any(|c| c.name == r.name)),
+        "a configured root lost its name before discovery"
+    );
 
     let installations = discovery::platform::resolve(candidates);
     let worlds = discovery::enumerate(&installations);

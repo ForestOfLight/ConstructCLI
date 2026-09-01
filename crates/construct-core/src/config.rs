@@ -41,6 +41,13 @@ impl Default for Backups {
 /// Retention default: the last ten snapshots per world.
 pub const DEFAULT_KEEP: usize = 10;
 
+/// Reserved installation/root names that cannot be used for extra roots.
+/// These come from:
+/// - `release`, `preview`, `legacy`, `mcpelauncher`: built-in installations (discovery layer, Task 6)
+/// - `path`: reserved for filesystem-path references (Task 6)
+/// - `env`: reserved for the CONSTRUCT_COM_MOJANG environment variable root
+const RESERVED_NAMES: &[&str] = &["release", "preview", "legacy", "mcpelauncher", "path", "env"];
+
 #[derive(Debug)]
 pub struct Loaded {
     pub config: Config,
@@ -96,6 +103,21 @@ pub fn parse(text: &str, path: &Path) -> Result<(Config, Vec<String>)> {
         let name = r.name.ok_or_else(|| {
             bad("every [[roots]] entry needs a `name`; an unnamed root cannot be addressed in a qualified reference".to_string())
         })?;
+
+        // Check if name is reserved
+        if RESERVED_NAMES.contains(&name.as_str()) {
+            return Err(bad(format!(
+                "root name `{name}` is reserved and cannot be used in a config file"
+            )));
+        }
+
+        // Check for duplicate names
+        if roots.iter().any(|r: &ExtraRoot| r.name == name) {
+            return Err(bad(format!(
+                "duplicate root name `{name}`; each root must have a unique name"
+            )));
+        }
+
         roots.push(ExtraRoot { name, path: r.path });
     }
 
