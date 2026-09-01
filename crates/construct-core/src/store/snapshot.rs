@@ -1,12 +1,18 @@
 //! Reading a world that Minecraft currently has open.
 //!
 //! LevelDB's C++ API acquires `db/LOCK` on every open and offers no read-only
-//! mode, so the only way to read a live world is to copy it. This is not gated
-//! behind a flag — it announces itself and checks free space first, because a
-//! large survival world's `db/` can reach several gigabytes.
+//! mode, so the only way to read a live world is to copy it. This is
+//! unconditional, not gated behind a flag. There is no pre-flight free-space
+//! check: if the filesystem runs out of space partway through the copy, that
+//! copy fails with the OS's own error, which surfaces to the caller as
+//! `CoreError::Io`. That is the only signal a caller gets today.
+//!
+//! TODO: a pre-flight check would turn a slow mid-copy failure on a
+//! multi-gigabyte world into an immediate one, but it needs a portable
+//! free-space API that `std` does not provide.
 
 use crate::discovery::World;
-use crate::error::{CoreError, Result};
+use crate::error::Result;
 use crate::store::OpenedStore;
 use crate::store::bedrock::BedrockStore;
 use std::path::Path;
@@ -30,17 +36,6 @@ pub fn copy_dir(src: &Path, dst: &Path) -> Result<u64> {
 /// Copies `db/` to a temp directory and opens the copy.
 pub fn open_via_snapshot(world: &World) -> Result<OpenedStore> {
     let db = world.db_path();
-    let need = dir_size(&db);
-
-    if let Some(available) = available_space(&std::env::temp_dir())
-        && available < need
-    {
-        return Err(CoreError::InsufficientSpace {
-            world: world.path.clone(),
-            need,
-            available,
-        });
-    }
 
     let tmp = tempfile::tempdir()?;
     let copy = tmp.path().join("db");
@@ -72,15 +67,4 @@ pub fn dir_size(dir: &Path) -> u64 {
             _ => e.metadata().map(|m| m.len()).unwrap_or(0),
         })
         .sum()
-}
-
-/// Free space on the filesystem holding `path`, when it can be determined.
-///
-/// Returns `None` rather than failing: an unknown free-space figure should not
-/// stop a read that would have worked.
-fn available_space(_path: &Path) -> Option<u64> {
-    // std has no portable statvfs. Rather than add a dependency for a check
-    // that only produces a nicer error, the copy is allowed to proceed and a
-    // genuine ENOSPC surfaces as an ordinary io error.
-    None
 }
