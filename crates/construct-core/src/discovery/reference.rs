@@ -15,6 +15,7 @@ pub struct WorldRef {
     pub installation: Option<String>,
     pub account: Option<String>,
     pub world: String,
+    pub extra_segments: bool,
 }
 
 /// Splits a reference into its segments. Never fails — an unparseable reference
@@ -26,21 +27,31 @@ pub fn parse(input: &str) -> WorldRef {
             installation: None,
             account: None,
             world: (*world).to_string(),
+            extra_segments: false,
         },
         [installation, world] => WorldRef {
             installation: Some((*installation).to_string()),
             account: None,
             world: (*world).to_string(),
+            extra_segments: false,
+        },
+        [installation, account, world] => WorldRef {
+            installation: Some((*installation).to_string()),
+            account: Some((*account).to_string()),
+            world: (*world).to_string(),
+            extra_segments: false,
         },
         [installation, account, world, ..] => WorldRef {
             installation: Some((*installation).to_string()),
             account: Some((*account).to_string()),
             world: (*world).to_string(),
+            extra_segments: true,
         },
         [] => WorldRef {
             installation: None,
             account: None,
             world: String::new(),
+            extra_segments: false,
         },
     }
 }
@@ -49,11 +60,34 @@ pub fn parse(input: &str) -> WorldRef {
 pub fn resolve(input: &str, worlds: &[World]) -> Result<World> {
     // Filesystem first. This is why there is no --path flag: a single global
     // flag could only ever describe one world, and `copy` takes two.
-    if let Some(world) = as_path(input) {
-        return Ok(world);
+    match as_path(input) {
+        Ok(world) => return Ok(world),
+        Err(err @ CoreError::UnreadableWorld { .. }) => return Err(err),
+        Err(_) => {} // Not a path, continue to name matching
     }
 
     let r = parse(input);
+
+    // Reject references with too many segments.
+    if r.extra_segments {
+        let looks_like_path =
+            input.starts_with('/') || input.contains(':') || input.split('/').count() > 3;
+        return if looks_like_path {
+            Err(CoreError::WorldNotFound {
+                reference: input.to_string(),
+                near: vec![
+                    "Expected format: <installation>/<account>/<world>".to_string(),
+                    "Path not found on disk.".to_string(),
+                ],
+            })
+        } else {
+            Err(CoreError::WorldNotFound {
+                reference: input.to_string(),
+                near: vec!["Expected format: <installation>/<account>/<world>".to_string()],
+            })
+        };
+    }
+
     let matches_segments = |w: &World| {
         r.installation.as_ref().is_none_or(|i| &w.installation == i)
             && r.account
@@ -89,18 +123,71 @@ pub fn resolve(input: &str, worlds: &[World]) -> Result<World> {
 }
 
 /// A directory containing `level.dat` is a world, wherever it sits.
-fn as_path(input: &str) -> Option<World> {
+fn as_path(input: &str) -> Result<World> {
     let path = Path::new(input);
-    if !path.join("level.dat").is_file() {
-        return None;
+
+    // Check if the directory exists.
+    let metadata = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Path does not exist; not a world, fall through to name matching.
+            return Err(CoreError::WorldNotFound {
+                reference: input.to_string(),
+                near: vec![],
+            });
+        }
+        Err(e) => {
+            return Err(CoreError::Io(e));
+        }
+    };
+
+    if !metadata.is_dir() {
+        // Not a directory; not a world.
+        return Err(CoreError::WorldNotFound {
+            reference: input.to_string(),
+            near: vec![],
+        });
     }
-    let folder = path.file_name()?.to_string_lossy().into_owned();
+
+    // Check if level.dat exists and is readable.
+    let level_dat_path = path.join("level.dat");
+
+    // Try to open the file to check if it exists and is readable
+    match std::fs::File::open(&level_dat_path) {
+        Ok(_) => {} // File exists and is readable
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // level.dat does not exist; not a world.
+            return Err(CoreError::WorldNotFound {
+                reference: input.to_string(),
+                near: vec![],
+            });
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            // Permission denied; this is a world directory but we can't read it
+            return Err(CoreError::UnreadableWorld {
+                path: path.to_path_buf(),
+                reason: e.to_string(),
+            });
+        }
+        Err(e) => {
+            // Other IO error
+            return Err(CoreError::UnreadableWorld {
+                path: path.to_path_buf(),
+                reason: e.to_string(),
+            });
+        }
+    }
+
+    let folder = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "world".to_string());
     let display_name = std::fs::read_to_string(path.join("levelname.txt"))
         .map(|s| s.trim().to_string())
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| folder.clone());
-    let (last_played, last_played_source) = match leveldat::read(&path.join("level.dat")) {
+    let (last_played, last_played_source) = match leveldat::read(&level_dat_path) {
         Ok(d) => match d.last_played() {
             Some(v) => (Some(v), LastPlayedSource::LevelDat),
             None => (None, LastPlayedSource::DirMtime),
@@ -108,7 +195,7 @@ fn as_path(input: &str) -> Option<World> {
         Err(_) => (None, LastPlayedSource::DirMtime),
     };
 
-    Some(World {
+    Ok(World {
         // A path-referenced world belongs to no installation. The label keeps
         // `qualified()` total rather than introducing an Option.
         installation: "path".to_string(),
@@ -123,17 +210,45 @@ fn as_path(input: &str) -> Option<World> {
 }
 
 /// Case-insensitive substring matches, for "did you mean".
+/// Sorted by: prefix match first, then shorter names, then alphabetical.
 fn near_matches(needle: &str, worlds: &[World]) -> Vec<String> {
     let needle = needle.to_lowercase();
-    let mut out: Vec<String> = worlds
+    let mut matches: Vec<_> = worlds
         .iter()
         .filter(|w| {
             w.folder.to_lowercase().contains(&needle)
                 || w.display_name.to_lowercase().contains(&needle)
         })
+        .collect();
+
+    // Sort by: prefix match, then shorter name, then alphabetical
+    matches.sort_by(|a, b| {
+        let a_name = a.display_name.to_lowercase();
+        let b_name = b.display_name.to_lowercase();
+        let a_folder = a.folder.to_lowercase();
+        let b_folder = b.folder.to_lowercase();
+
+        let a_prefix = a_name.starts_with(&needle) || a_folder.starts_with(&needle);
+        let b_prefix = b_name.starts_with(&needle) || b_folder.starts_with(&needle);
+
+        match (b_prefix, a_prefix) {
+            (true, false) => std::cmp::Ordering::Greater,
+            (false, true) => std::cmp::Ordering::Less,
+            _ => {
+                // Same prefix status, sort by length then alphabetical
+                match a_name.len().cmp(&b_name.len()) {
+                    std::cmp::Ordering::Equal => a_name.cmp(&b_name),
+                    ord => ord,
+                }
+            }
+        }
+    });
+
+    let out: Vec<String> = matches
+        .iter()
+        .take(5)
         .map(|w| format!("{} ({})", w.display_name, w.qualified()))
         .collect();
-    out.truncate(5);
     out
 }
 
@@ -171,6 +286,7 @@ mod tests {
         assert_eq!(r.installation, None);
         assert_eq!(r.account, None);
         assert_eq!(r.world, "Amelix CMP");
+        assert!(!r.extra_segments);
     }
 
     #[test]
@@ -179,6 +295,7 @@ mod tests {
         assert_eq!(r.installation.as_deref(), Some("release"));
         assert_eq!(r.account, None);
         assert_eq!(r.world, "Ssu8ww1SFbM=");
+        assert!(!r.extra_segments);
     }
 
     #[test]
@@ -187,6 +304,7 @@ mod tests {
         assert_eq!(r.installation.as_deref(), Some("release"));
         assert_eq!(r.account.as_deref(), Some("Shared"));
         assert_eq!(r.world, "Ssu8ww1SFbM=");
+        assert!(!r.extra_segments);
     }
 
     #[test]
@@ -266,5 +384,82 @@ mod tests {
             resolve(dir.to_str().unwrap(), &fixture()),
             Err(CoreError::WorldNotFound { .. })
         ));
+    }
+
+    #[test]
+    fn an_unreadable_level_dat_is_reported_as_unreadable_world() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path().join("Amelix CMP");
+            std::fs::create_dir_all(dir.join("db")).unwrap();
+            std::fs::write(dir.join("level.dat"), b"x").unwrap();
+            let level_dat = dir.join("level.dat");
+
+            // Make level.dat unreadable
+            std::fs::set_permissions(&level_dat, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+            // Verify the test setup: level.dat should not be readable.
+            // Skip test if permissions cannot be enforced (running as root).
+            if std::fs::read(&level_dat).is_ok() {
+                // Restore permissions before returning
+                std::fs::set_permissions(&level_dat, std::fs::Permissions::from_mode(0o644)).ok();
+                return;
+            }
+
+            let result = resolve(dir.to_str().unwrap(), &fixture());
+            assert!(
+                matches!(result, Err(CoreError::UnreadableWorld { .. })),
+                "expected UnreadableWorld, got {result:?}"
+            );
+
+            // Restore permissions before tempdir drops
+            std::fs::set_permissions(&level_dat, std::fs::Permissions::from_mode(0o644)).ok();
+        }
+        #[cfg(not(unix))]
+        {
+            // Skip test on non-Unix platforms
+        }
+    }
+
+    #[test]
+    fn a_reference_with_more_than_three_segments_is_rejected() {
+        assert!(matches!(
+            resolve("a/b/c/d/e/f/g", &fixture()),
+            Err(CoreError::WorldNotFound { reference: _, near })
+            if near.iter().any(|s| s.contains("<installation>/<account>/<world>"))
+        ));
+    }
+
+    #[test]
+    fn an_absolute_path_that_does_not_exist_reports_path_not_found() {
+        assert!(matches!(
+            resolve("/nonexistent/world/path", &fixture()),
+            Err(CoreError::WorldNotFound { reference: _, near })
+            if near.iter().any(|s| s.contains("Path not found"))
+        ));
+    }
+
+    #[test]
+    fn near_matches_are_sorted_by_prefix_then_length_then_alphabetical() {
+        let worlds = vec![
+            w("a", None, "test_a", "test alpha"),
+            w("a", None, "test_b", "test beta"),
+            w("a", None, "test_c", "testing"),
+            w("a", None, "test_d", "te"),
+            w("a", None, "test_e", "ten"),
+            w("a", None, "test_f", "attest"),
+        ];
+        let near = near_matches("test", &worlds);
+        // Should prefer prefix matches, then shorter names
+        // Prefix matches: "testing", "test alpha", "test beta"
+        // Non-prefix: "attest", "ten", "te"
+        assert_eq!(near.len(), 5);
+        // First three should be prefix matches
+        assert!(near[0].contains("test"));
+        assert!(near[1].contains("test"));
+        assert!(near[2].contains("test"));
     }
 }

@@ -51,6 +51,9 @@ pub enum CoreError {
     #[error("malformed level.dat at {}: {reason}", path.display())]
     BadLevelDat { path: PathBuf, reason: String },
 
+    #[error("cannot read {}: {reason}", path.display())]
+    UnreadableWorld { path: PathBuf, reason: String },
+
     #[error("config error in {}: {reason}", path.display())]
     BadConfig { path: PathBuf, reason: String },
 
