@@ -1,0 +1,61 @@
+use std::path::PathBuf;
+use thiserror::Error;
+
+/// Every failure `construct-core` can produce.
+///
+/// Variants carry the data a caller needs to render a good message — the
+/// candidates for an ambiguity, the paths probed for a missing root — rather
+/// than a pre-formatted string.
+#[derive(Debug, Error)]
+pub enum CoreError {
+    #[error("no Minecraft installation found")]
+    NoInstallations { probed: Vec<PathBuf> },
+
+    #[error("world not found: {reference}")]
+    WorldNotFound {
+        reference: String,
+        near: Vec<String>,
+    },
+
+    #[error("{reference} matches {} worlds", candidates.len())]
+    AmbiguousWorld {
+        reference: String,
+        candidates: Vec<String>,
+    },
+
+    #[error("structure not found: {name}")]
+    StructureNotFound { name: String, near: Vec<String> },
+
+    #[error("structure {name} exists in both a world and a pack")]
+    AmbiguousStructure { name: String },
+
+    #[error("more than one installation; no default configured")]
+    AmbiguousInstallation { candidates: Vec<String> },
+
+    #[error("world is in use: {}", world.display())]
+    WorldInUse { world: PathBuf },
+
+    #[error("not enough space to snapshot {}: need {need} bytes, {available} available", world.display())]
+    InsufficientSpace {
+        world: PathBuf,
+        need: u64,
+        available: u64,
+    },
+
+    #[error("{} already exists", path.display())]
+    TargetExists { path: PathBuf },
+
+    #[error("database error: {0}")]
+    Db(String),
+
+    #[error("malformed level.dat at {}: {reason}", path.display())]
+    BadLevelDat { path: PathBuf, reason: String },
+
+    #[error("config error in {}: {reason}", path.display())]
+    BadConfig { path: PathBuf, reason: String },
+
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+pub type Result<T> = std::result::Result<T, CoreError>;
