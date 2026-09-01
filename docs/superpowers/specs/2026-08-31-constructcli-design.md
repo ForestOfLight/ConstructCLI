@@ -395,22 +395,37 @@ With no `--world`, `install` and `status` act on `default_installation` from con
 that, the sole installation if only one exists; failing that, they error listing the
 candidates. Same never-guess rule as world references.
 
-### The Beta APIs flip is unresolved and must be measured
+### The Beta APIs flip
 
-The exact `level.dat` NBT to write is **not specified here on purpose.** Bedrock stores
-experiments as an NBT compound, and enabling one generally means setting the specific toggle
-plus companion flags such as `experiments_ever_used` and `saved_with_toggled_experiments`.
-Writing the wrong subset fails *silently*: the write succeeds, the game ignores it.
+Measured against a real world with Beta APIs enabled. `level.dat` carries an `experiments`
+compound, and the enabled state is three `Byte` entries:
 
-Resolve it empirically before implementing: read `level.dat` from a world with Beta APIs on
-and one with it off, diff the `experiments` compound, and record the exact keys. This is a
-stage-2 investigation task, not a design decision.
+```
+Compound experiments
+  Byte experiments_ever_used            = 1
+  Byte gametest                         = 1
+  Byte saved_with_toggled_experiments   = 1
+```
 
-Two rules hold regardless of what the diff shows. **After writing, re-read and verify the
-value actually changed** — treat "write succeeded, value unchanged" as a failure, because
-that is precisely how this defect hides. And `experiment` is readable: `construct experiment
-<world> --beta-apis` with no value prints the current state, which makes the flip verifiable
-without launching the game and gives `status` something to report.
+`gametest` is the Beta APIs toggle itself. The other two are companion flags Minecraft
+maintains alongside it, and writing the toggle without them is the silent-failure case — the
+write succeeds and the game ignores it.
+
+**Enabling** sets all three to `1`, creating the `experiments` compound if the world has
+none. **Disabling** sets `gametest` to `0` and leaves both companion flags at `1`: they are
+historical records of the world having once used experiments, not mirrors of the current
+state, and clearing them would misrepresent the save. *(The disable direction is inferred
+rather than measured — worth confirming against a world that has had experiments turned back
+off.)*
+
+**The compound is read-modify-written, never replaced.** Worlds carry other experiment keys
+— data-driven biomes, upcoming creator features, and so on — and rewriting the compound
+wholesale would silently disable whatever else the world had enabled.
+
+After writing, re-read and verify the value actually changed; treat "write succeeded, value
+unchanged" as a failure. `experiment` is also readable — `construct experiment <world>
+--beta-apis` with no value prints the current state — which makes the flip verifiable without
+launching the game and gives `status` something to report.
 
 **Upgrading must not delete `Construct[BP]/structures/`.** That folder holds the user's
 imported structures — the very data this tool exists to put there. A naive delete-and-unzip
@@ -499,6 +514,11 @@ restore-from-snapshot.
 The highest-priority test is upgrade-preserves-`structures/`. Alongside it: UUID matching
 over folder names, pack-JSON upsert idempotence, and `level.dat` failure producing exit 5.
 
+The `experiments` compound gets its own fixtures: a world with the compound absent (enabling
+must create it), one with all three flags already set (enabling is a no-op), and one carrying
+unrelated experiment keys alongside `gametest` — asserting those siblings survive, since a
+wholesale rewrite would silently disable them.
+
 **Discovery is table-driven over synthetic trees** built in temp directories: GDK with two
 accounts, GDK with Preview alongside release, legacy UWP, mcpelauncher. Assert resolved
 installations, ambiguity errors, and qualified-reference forms.
@@ -542,8 +562,8 @@ cleanly separable. Suggested stages, each independently useful:
    `list` is world-source only until stage 2 adds the pack source.
 2. **Construct integration** — `pack`, `catalog`, `install`, `status`, `experiment`,
    `import`, `copy`, and `delete --source pack`. Delivers the other documented manual
-   workflow, unifies the namespace, and includes the `level.dat` experiments investigation.
-   Writes files and `level.dat`, but no leveldb.
+   workflow and unifies the namespace. Writes files and `level.dat`, but no leveldb. Settle
+   the pack-structure naming question (§17) here, once there is tooling to check it with.
 3. **Merge** — `mcstructure` codec and `merge`, behind `export --merge`. The only stage
    needing the codec; fully testable against fixtures.
 4. **Delete from a world** — `backup` plus `store` writes and `delete --source world`.
@@ -561,7 +581,7 @@ else, which is worth remembering if `bedrock_level`'s write path disappoints in 
 | `delete` corrupts a world db | **Data loss** | Mojang's leveldb via FFI; snapshot before write; hard refusal on LOCK |
 | `bedrock-rs` churns or stalls | High | Commit pin; `StructureStore` trait; Apache-2.0 permits vendoring |
 | Windows GDK assumptions unverified | High | Manual checklist on real hardware before release |
-| Beta APIs flip writes the wrong NBT and fails silently | High | Measure the keys empirically; verify by re-reading after write; `experiment` can report state |
+| Beta APIs flip writes the wrong NBT and fails silently | Low | Keys measured from a real world (§10); read-modify-write preserves sibling experiments; verify by re-reading after write |
 | CMake/C++ toolchain friction | Medium | CI on all three platforms; prebuilt binaries for users |
 | Construct asset naming changes | Medium | Pattern match; clear error listing available assets |
 | GitHub rate limit | Low | Named in the error; optional token |
@@ -592,9 +612,10 @@ data in ordinary `AppData\Roaming`.
 - **How a `.mcstructure` sitting directly in `structures/` is addressed in-game** — as bare
   `name`, or as `namespace:name` requiring a subdirectory. Construct's README says to drop
   files directly into the folder, which suggests the bare form, but this determines what
-  `list` displays for pack-source structures and what `import` should name them. Resolve
-  alongside the `level.dat` experiments investigation in stage 2.
-- The exact `experiments` NBT keys for the Beta APIs toggle (§10). Measured, not assumed.
+  `list` displays for pack-source structures and what `import` should name them. Deferred to
+  stage 2, when the tooling to check it exists.
+- The **disable** direction of the Beta APIs flip (§10). The enabled state is measured; that
+  the companion flags stay at `1` when turning it off is inferred.
 - `leveldb-sys` vendors leveldb rather than using a submodule (observed in its file tree).
 - A structure's leveldb value is byte-identical to a `.mcstructure` file. Corroborated by
   StructureChest's working implementation and asserted as a test property.
