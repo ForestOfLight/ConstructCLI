@@ -19,9 +19,10 @@ Construct, importing, copying, merging, and deleting are not built yet — see
 
 ## Install
 
-Prebuilt binaries are on the releases page.
+No binaries are published yet; building from source is currently the only
+way to get the tool.
 
-From source you need Rust, CMake, and a C++ compiler, because the leveldb
+You need Rust, CMake, and a C++ compiler, because the leveldb
 backend is Mojang's own C++ implementation rather than a reimplementation.
 The upstream `bedrock-rs` and `leveldb-sys` crates do not compile as published
 on macOS or on any non-x86_64 target, so this repo carries fixes in
