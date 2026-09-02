@@ -14,10 +14,12 @@ spec holds the full list.
       and the world still loads in Minecraft. Byte-identity across every file
       in `db/` has already been verified programmatically; this step is about
       confirming the game itself is still happy with the world afterwards.
-- [ ] An exported `.mcstructure` loads in a structure block, or in a
-      third-party `.mcstructure` viewer. Byte-identity between the exported
-      file and the database value is already proven by tests; only the game
-      confirms the file is actually usable in a structure block.
+- [x] **An exported `.mcstructure` loads in a structure block.** Confirmed in
+      Minecraft on 2026-09-02. Byte-identity between the exported file and the
+      database value was already proven by tests; this closes the remaining
+      gap, since only the game could confirm the file is actually usable.
+      `construct export` therefore replaces the holoprint upload workflow
+      end to end.
 - [ ] *(Windows, needs real hardware)* GDK worlds under
       `%appdata%\Minecraft Bedrock\Users\<account>\...` are discovered, and the
       qualified reference includes the account segment.
