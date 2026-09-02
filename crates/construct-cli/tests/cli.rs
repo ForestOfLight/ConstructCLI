@@ -433,3 +433,158 @@ fn exporting_a_missing_structure_exits_3() {
         .unwrap();
     assert_eq!(out.status.code(), Some(3));
 }
+
+/// Extracts the fixture world, then inserts additional structure keys
+/// directly through the leveldb API, bypassing any validation a normal
+/// `/structure` save would go through. Structure names in a world's
+/// database are not guaranteed to have been authored by the person running
+/// `construct` against it — that's exactly what these tests exercise.
+fn fixture_world_with_extra_structures(
+    extra: &[(&str, &[u8])],
+) -> (tempfile::TempDir, std::path::PathBuf) {
+    let (tmp, world) = fixture_world();
+    {
+        let db_dir = world.join("db");
+        let db = bedrock_level::db::Database::open(db_dir.to_str().unwrap()).unwrap();
+        for (name, bytes) in extra {
+            let key = construct_core::store::key::encode(name);
+            db.insert(&key, *bytes).unwrap();
+        }
+        // `db` drops here, releasing leveldb's LOCK before the CLI subprocess
+        // opens the same database.
+    }
+    (tmp, world)
+}
+
+#[test]
+fn a_traversal_structure_name_is_refused_and_writes_nothing() {
+    // Exact reproduction of the demonstrated exploit: a structure named
+    // `../../../../tmp/PWNED` in the default (`mystructure:`) namespace used
+    // to write a file outside the current directory.
+    let (_tmp, world) =
+        fixture_world_with_extra_structures(&[("mystructure:../../../../tmp/PWNED", b"PWNEDBYT")]);
+    let dir = tempfile::tempdir().unwrap();
+    let escape_target = dir.path().join("../../../../tmp/PWNED.mcstructure");
+    let _ = std::fs::remove_file(&escape_target);
+
+    let out = bin()
+        .current_dir(dir.path())
+        .args(["export", world.to_str().unwrap(), "../../../../tmp/PWNED"])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("-o"), "should point at -o:\n{err}");
+    assert!(
+        !escape_target.exists(),
+        "must not write outside the output directory"
+    );
+    assert!(
+        std::fs::read_dir(dir.path()).unwrap().next().is_none(),
+        "must write nothing at all, not even a partial file in cwd"
+    );
+
+    let _ = std::fs::remove_file(&escape_target);
+}
+
+#[test]
+fn other_traversal_shapes_are_also_refused() {
+    let (_tmp, world) = fixture_world_with_extra_structures(&[
+        ("mystructure:a/../../b", b"AAAAAAAA"),
+        ("mystructure:/etc/evil", b"BBBBBBBB"),
+        ("mystructure:..", b"CCCCCCCC"),
+    ]);
+    for name in ["a/../../b", "/etc/evil", ".."] {
+        let out = bin()
+            .args(["export", world.to_str().unwrap(), name])
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "name {name:?} should be refused"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("-o"),
+            "name {name:?} error should point at -o"
+        );
+    }
+}
+
+#[test]
+fn a_colon_bearing_name_sanitizes_and_exports() {
+    let (_tmp, world) = fixture_world();
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .current_dir(dir.path())
+        .args(["export", world.to_str().unwrap(), "understudy:players"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let written = dir.path().join("understudy_players.mcstructure");
+    assert!(
+        written.is_file(),
+        "expected the sanitized filename understudy_players.mcstructure"
+    );
+    // Byte transparency still holds after sanitizing the filename.
+    assert_eq!(std::fs::read(&written).unwrap()[0], 0x0a);
+}
+
+#[test]
+fn a_multi_export_with_one_hostile_name_writes_nothing() {
+    let (_tmp, world) =
+        fixture_world_with_extra_structures(&[("mystructure:../../../../tmp/PWNED2", b"DDDDDDDD")]);
+    let dir = tempfile::tempdir().unwrap();
+    let escape_target = dir.path().join("../../../../tmp/PWNED2.mcstructure");
+    let _ = std::fs::remove_file(&escape_target);
+
+    let out = bin()
+        .current_dir(dir.path())
+        .args([
+            "export",
+            world.to_str().unwrap(),
+            "house",
+            "../../../../tmp/PWNED2",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        !dir.path().join("house.mcstructure").exists(),
+        "a hostile name later in the list must not leave an earlier structure written"
+    );
+    assert!(!escape_target.exists());
+
+    let _ = std::fs::remove_file(&escape_target);
+}
+
+#[test]
+fn explicit_o_path_bypasses_the_derived_name_rules() {
+    let (_tmp, world) = fixture_world();
+    let outer = tempfile::tempdir().unwrap();
+    let inner = outer.path().join("inner");
+    std::fs::create_dir_all(&inner).unwrap();
+    let out = bin()
+        .current_dir(&inner)
+        .args([
+            "export",
+            world.to_str().unwrap(),
+            "house",
+            "-o",
+            "../outside.mcstructure",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(outer.path().join("outside.mcstructure").is_file());
+}

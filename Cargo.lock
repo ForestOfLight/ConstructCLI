@@ -264,6 +264,7 @@ name = "construct-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bedrock_level",
  "clap",
  "construct-core",
  "flate2",
