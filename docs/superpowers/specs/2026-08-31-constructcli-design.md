@@ -532,7 +532,7 @@ Every message names the thing, says why, and gives the next action.
 | World not found | Suggest near matches | 3 |
 | World reference ambiguous | Disambiguation table with qualified references | 2 |
 | World in use, read command | Irrelevant — reads always work from a copy | 0 |
-| No room for the snapshot a read needs | Name the size needed and the space free | 1 |
+| No room for the snapshot a read needs | The copy fails part-way with the OS error; there is no pre-flight check (§8) | 1 |
 | World in use, `delete --source world` | Stop hard; no `--force` | 4 |
 | Structure not found | Suggest near matches from the catalog already in hand | 3 |
 | Structure name in both sources | Name both qualified forms; point at `--source` | 2 |
