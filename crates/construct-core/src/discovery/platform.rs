@@ -133,7 +133,33 @@ pub fn resolve(candidates: Vec<Candidate>) -> Vec<Installation> {
         }
     }
 
-    out
+    dedupe_names(out)
+}
+
+/// Makes installation names unique by appending `-2`, `-3`, … to later
+/// occurrences of a name already seen, in candidate order. Deterministic and
+/// stable across repeated calls given the same input order.
+///
+/// Two candidates can legitimately resolve to the same name (e.g. the macOS
+/// and Linux mcpelauncher probes are both named `mcpelauncher`, and only one
+/// normally exists — but both can exist, e.g. under Wine or a shared home
+/// directory). Downstream, `discovery/reference.rs` matches installations by
+/// name, so duplicate names make qualified references ambiguous; this keeps
+/// both installations (neither is dropped or merged) while giving each a
+/// distinct, reproducible name.
+fn dedupe_names(installations: Vec<Installation>) -> Vec<Installation> {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    installations
+        .into_iter()
+        .map(|mut inst| {
+            let count = seen.entry(inst.name.clone()).or_insert(0);
+            *count += 1;
+            if *count > 1 {
+                inst.name = format!("{}-{}", inst.name, count);
+            }
+            inst
+        })
+        .collect()
 }
 
 /// The account directory name, e.g. `Shared` or `2533274801234567`, taken from
@@ -253,6 +279,45 @@ mod tests {
 
         let found = resolve(candidates(tmp.path(), None, Some(&local)));
         assert!(found.iter().any(|i| i.name == "legacy"));
+    }
+
+    #[test]
+    fn same_named_candidates_get_distinct_stable_names() {
+        // e.g. both the macOS and Linux mcpelauncher probes exist on one machine.
+        let tmp = tempfile::tempdir().unwrap();
+        let base_a = tmp.path().join("a/com.mojang");
+        let base_b = tmp.path().join("b/com.mojang");
+        fs::create_dir_all(base_a.join("development_behavior_packs")).unwrap();
+        fs::create_dir_all(base_b.join("development_behavior_packs")).unwrap();
+
+        let make_candidates = || {
+            vec![
+                Candidate {
+                    name: "mcpelauncher".to_string(),
+                    dev_pack_root: base_a.clone(),
+                    world_root_parents: vec![base_a.clone()],
+                    per_account: false,
+                },
+                Candidate {
+                    name: "mcpelauncher".to_string(),
+                    dev_pack_root: base_b.clone(),
+                    world_root_parents: vec![base_b.clone()],
+                    per_account: false,
+                },
+            ]
+        };
+
+        let names = |installs: &[Installation]| -> Vec<String> {
+            installs.iter().map(|i| i.name.clone()).collect()
+        };
+
+        let first = resolve(make_candidates());
+        assert_eq!(names(&first), vec!["mcpelauncher", "mcpelauncher-2"]);
+        assert_eq!(first.len(), 2, "neither installation is dropped");
+
+        // Stable across repeated calls given the same input order.
+        let second = resolve(make_candidates());
+        assert_eq!(names(&second), names(&first));
     }
 
     #[test]

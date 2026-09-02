@@ -146,6 +146,25 @@ mod tests {
         fs::write(dir.join("level.dat"), bytes).unwrap();
     }
 
+    /// A valid, parseable `level.dat` that simply has no `LastPlayed` field —
+    /// distinct from a garbage/unparseable file, which falls back to dir-mtime
+    /// for a different reason.
+    fn level_dat_without_last_played(dir: &Path) {
+        let root = nbtx::Value::Compound(
+            [(
+                "LevelName".to_string(),
+                nbtx::Value::String("W".to_string()),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let payload = nbtx::to_le_bytes(&root).unwrap();
+        let mut bytes = 10i32.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&(payload.len() as i32).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+        fs::write(dir.join("level.dat"), bytes).unwrap();
+    }
+
     fn single_root(tmp: &Path) -> Vec<Installation> {
         vec![Installation {
             name: "mcpelauncher".to_string(),
@@ -186,6 +205,19 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = world_at(&tmp.path().join("minecraftWorlds"), "A=", "W");
         fs::write(dir.join("level.dat"), b"garbage").unwrap();
+
+        let worlds = enumerate(&single_root(tmp.path()));
+        assert_eq!(worlds[0].last_played_source, LastPlayedSource::DirMtime);
+        assert!(worlds[0].last_played.is_some());
+    }
+
+    #[test]
+    fn falls_back_to_dir_mtime_when_level_dat_has_no_last_played() {
+        // level.dat parses fine here; it just lacks the field — a distinct case
+        // from an unparseable level.dat, which is covered separately above.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = world_at(&tmp.path().join("minecraftWorlds"), "A=", "W");
+        level_dat_without_last_played(&dir);
 
         let worlds = enumerate(&single_root(tmp.path()));
         assert_eq!(worlds[0].last_played_source, LastPlayedSource::DirMtime);
