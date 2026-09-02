@@ -1,0 +1,23 @@
+[package]
+name = "construct-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "construct"
+path = "src/main.rs"
+
+[dependencies]
+construct-core = { path = "../construct-core" }
+anyhow.workspace = true
+clap.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tar.workspace = true
+flate2.workspace = true
+serde_json.workspace = true
+bedrock_level.workspace = true

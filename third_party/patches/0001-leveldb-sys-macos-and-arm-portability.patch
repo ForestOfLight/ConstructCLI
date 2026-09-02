@@ -1,0 +1,89 @@
+From 53e8bbca787310874d06b7710cd4e7b797d827d6 Mon Sep 17 00:00:00 2001
+From: BrianCassriel <bccassriel@gmail.com>
+Date: Mon, 31 Aug 2026 23:13:19 -0700
+Subject: [PATCH] Fix the build on macOS and on non-x86 targets
+
+Three independent portability defects, each of which alone breaks the build:
+
+- build.rs linked stdc++ unconditionally on unix. Apple has not shipped
+  libstdc++ for years; macOS uses libc++, so every macOS target failed at
+  the link step with "library 'stdc++' not found".
+- port_posix_sse.cc defined LEVELDB_PLATFORM_POSIX_SSE unconditionally and
+  then guarded the x86 intrinsics with '#elif defined(__GNUC__)', which
+  Apple clang satisfies on arm64. Building on Apple Silicon reached
+  __get_cpuid and _mm_crc32_u8 on a target with neither.
+- The vendored zlib's zutil.h treats TARGET_OS_MAC as classic Mac OS and
+  redefines fdopen() to NULL. That macro is set on all modern Apple
+  platforms, where it clobbers the SDK's real fdopen declaration.
+
+Also passes -Wno-error=implicit-function-declaration, since the vendored
+zlib calls lseek/read/write/close without including <unistd.h> and current
+clang rejects implicit declarations outright.
+---
+ build.rs                               | 10 +++++++++-
+ ffi/leveldb/lib/zlib/zutil.h           |  5 ++++-
+ ffi/leveldb/src/port/port_posix_sse.cc |  5 +++++
+ 3 files changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/build.rs b/build.rs
+index 1e1320e..5e4cff8 100644
+--- a/build.rs
++++ b/build.rs
+@@ -1,5 +1,9 @@
+ fn main() {
+     let mut config = cmake::Config::new("ffi");
++    // The vendored zlib calls lseek/read/write/close without including <unistd.h>.
++    // Implicit function declarations are a hard error from C99 onward, and current
++    // clang enforces it, so the vendored sources no longer compile without this.
++    config.cflag("-Wno-error=implicit-function-declaration");
+     let mut ffi_dst = config.build().join("build");
+     let mut leveldb_dst = ffi_dst.join("leveldb");
+ 
+@@ -20,6 +24,10 @@ fn main() {
+     println!("cargo:rustc-link-lib=static=leveldb-ffi");
+     println!("cargo:rustc-link-lib=static=leveldb-mcpe");
+ 
+-    #[cfg(unix)]
++    // Apple's toolchain has not shipped libstdc++ for years; the C++ runtime there is
++    // libc++. Linking stdc++ unconditionally on unix fails on every macOS target.
++    #[cfg(all(unix, target_os = "macos"))]
++    println!("cargo:rustc-link-lib=dylib=c++");
++    #[cfg(all(unix, not(target_os = "macos")))]
+     println!("cargo:rustc-link-lib=dylib=stdc++");
+ }
+diff --git a/ffi/leveldb/lib/zlib/zutil.h b/ffi/leveldb/lib/zlib/zutil.h
+index b079ea6..ed2bfa5 100644
+--- a/ffi/leveldb/lib/zlib/zutil.h
++++ b/ffi/leveldb/lib/zlib/zutil.h
+@@ -130,7 +130,10 @@ extern z_const char * const z_errmsg[10]; /* indexed by 2-zlib_error */
+ #  endif
+ #endif
+ 
+-#if defined(MACOS) || defined(TARGET_OS_MAC)
++/* TARGET_OS_MAC is set on every modern Apple platform, but this block is meant for
++   classic Mac OS only. Leaving it in redefines fdopen() to NULL and clobbers the
++   real declaration in the current SDK's <stdio.h>. */
++#if defined(MACOS)
+ #  define OS_CODE  7
+ #  ifndef Z_SOLO
+ #    if defined(__MWERKS__) && __dest_os != __be_os && __dest_os != __win32_os
+diff --git a/ffi/leveldb/src/port/port_posix_sse.cc b/ffi/leveldb/src/port/port_posix_sse.cc
+index 6dbbda0..b749689 100644
+--- a/ffi/leveldb/src/port/port_posix_sse.cc
++++ b/ffi/leveldb/src/port/port_posix_sse.cc
+@@ -13,7 +13,12 @@
+ #include <string.h>
+ #include "port/port.h"
+ 
++// Upstream defines this unconditionally and then guards the x86 intrinsics below
++// with `#elif defined(__GNUC__)`, which Apple clang satisfies on arm64 too. The
++// result is a call to __get_cpuid/_mm_crc32_* on a target that has neither.
++#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
+ #define LEVELDB_PLATFORM_POSIX_SSE
++#endif
+ 
+ #if defined(LEVELDB_PLATFORM_POSIX_SSE)
+ 
+-- 
+2.55.0
+

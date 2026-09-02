@@ -1,0 +1,30 @@
+name: CI
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      # CMake and a C++ compiler are preinstalled on all three runner images;
+      # leveldb-sys vendors the leveldb source, so no submodule checkout is needed.
+      - run: cmake --version
+      # The database backend comes from patched local checkouts, not a registry
+      # or a fork URL — the upstream crates do not compile on macOS or on any
+      # non-x86_64 target. See third_party/patches/ and scripts/setup-deps.sh.
+      - run: ./scripts/setup-deps.sh
+        shell: bash
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace

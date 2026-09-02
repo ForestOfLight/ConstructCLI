@@ -1,0 +1,34 @@
+[workspace]
+resolver = "3"
+members = ["crates/construct-core", "crates/construct-cli"]
+# third_party/checkouts/bedrock-rs is itself a Cargo workspace (see
+# scripts/setup-deps.sh). Excluding it here stops Cargo from trying to fold its
+# packages and workspace.dependencies into this workspace's own resolution.
+exclude = ["third_party"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/ForestOfLight/ConstructCLI"
+
+[workspace.dependencies]
+thiserror = "2.0"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "1.0"
+directories = "6.0"
+clap = { version = "4.6", features = ["derive"] }
+tempfile = "3.27"
+nbtx = "3.0.1"
+# Patched local checkout: the upstream crate does not compile on macOS or on any
+# non-x86_64 target. See third_party/patches/ and scripts/setup-deps.sh.
+bedrock_level = { path = "third_party/checkouts/bedrock-rs/crates/level" }
+tar = "0.4"
+flate2 = "1.0"
+
+# bedrock_level depends on leveldb-sys from the same unpatched upstream; redirect
+# it to the patched local checkout too.
+[patch."https://github.com/bedrock-crustaceans/leveldb-sys"]
+leveldb-sys = { path = "third_party/checkouts/leveldb-sys" }
