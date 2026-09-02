@@ -274,6 +274,37 @@ fn list_source_pack_is_empty_in_stage_one() {
 }
 
 #[test]
+fn list_shows_a_long_name_in_full_not_truncated() {
+    // The NAME column in `list` is the identifier the user types into
+    // `export` (unlike `worlds`, which has a separate untruncated REFERENCE
+    // column). A truncated name here would hand back something that no
+    // longer resolves. 25 chars, over the 24-wide column, so this fails if
+    // truncation is reintroduced.
+    let long_name = "amelix_concrete_convertor";
+    assert!(long_name.len() > 24);
+    let (_tmp, world) =
+        fixture_world_with_extra_structures(&[(&format!("mystructure:{long_name}"), b"AAAAAAAA")]);
+    let out = bin()
+        .args(["list", world.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains(long_name),
+        "full name must appear untruncated:\n{text}"
+    );
+    assert!(
+        !text.contains('…'),
+        "no ellipsis should appear in list output:\n{text}"
+    );
+}
+
+#[test]
 fn list_of_a_missing_world_exits_3() {
     let out = bin()
         .args(["list", "definitely-not-a-world"])

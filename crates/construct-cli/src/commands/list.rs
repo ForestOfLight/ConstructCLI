@@ -1,4 +1,4 @@
-use crate::commands::worlds::{human_size, truncate};
+use crate::commands::worlds::human_size;
 use crate::output::Out;
 use construct_core::Result;
 use construct_core::catalog::{self, Source};
@@ -39,9 +39,16 @@ pub fn run(world: &World, source: Option<Source>, out: &mut Out) -> Result<()> {
         } else {
             out.line(format!("{:<24} {:<8} {:>9}", "NAME", "SOURCE", "SIZE"));
             for e in &entries {
+                // Deliberately NOT truncated, unlike worlds.rs: there the
+                // truncated column is a display name with a separate,
+                // untruncated REFERENCE column carrying the copy-pasteable
+                // identifier. Here the NAME column *is* the identifier the
+                // user types into `export` — truncating it would hand back a
+                // name that doesn't exist. A ragged column is cosmetic; a
+                // dead-end copy-paste is functional, so full name wins.
                 out.line(format!(
                     "{:<24} {:<8} {:>9}",
-                    truncate(&e.name, 24),
+                    e.name,
                     e.source.as_str(),
                     human_size(e.size_bytes)
                 ));
