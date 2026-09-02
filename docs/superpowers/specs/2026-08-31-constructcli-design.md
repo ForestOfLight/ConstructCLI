@@ -453,6 +453,33 @@ allocation guard, not a game limit — Minecraft loads structures beyond structu
 dimensions without trouble, so oversized results produce a **performance warning**, not a
 refusal.
 
+### The encoder is not yet usable
+
+Measured against three real `.mcstructure` files and a synthetic case: **`nbtx` 3.0.1 cannot
+serialize an empty list.** It writes the `TAG_List` id and the name, then omits both the
+element-type byte and the four-byte length — five bytes short — and the result is NBT that
+`nbtx` itself refuses to parse.
+
+```
+Compound { "empty": List([]) }
+  → 0a 00 00  09  05 00 "empty"  00
+                        ^ the element type and length are simply missing
+```
+
+Every `.mcstructure` examined carries at least one empty list, so this is not an edge case:
+`bomber` has five, `construct` and `bubble_column` one each, and each file re-serializes
+exactly five bytes shorter per empty list.
+
+The same crate also converts `ByteArray`, `IntArray`, and `LongArray` into `List` on parse,
+so those tags cannot survive a round-trip either.
+
+Decoding is unaffected — every file above parses correctly — so `list`, `export`, `import`,
+and `copy` are untouched. **Stage 3 cannot encode with `nbtx` as it stands.** The options,
+in the order they should be tried: patch the fork (the project already carries patched
+dependencies, and this is a few lines in one serializer), or write the encoder directly,
+which is a bounded amount of code given the format is already modelled. Whichever is chosen,
+the round-trip property in §12 is the test that proves it.
+
 ## 10. Install
 
 1. Query the releases API for `latest`, or `tags/v<version>` with `--version`.
@@ -468,6 +495,26 @@ refusal.
 With no `--world`, `install` and `status` act on `default_installation` from config; failing
 that, the sole installation if only one exists; failing that, they error listing the
 candidates. Same never-guess rule as world references.
+
+### The world pack JSON files
+
+Measured on a real world with Construct enabled:
+
+```json
+[ { "pack_id" : "8c0c0153-d8b9-482a-889f-aef922b8fe58", "version" : [ 1, 0, 0 ] } ]
+```
+
+`world_behavior_packs.json` and `world_resource_packs.json` are flat arrays of
+`{ pack_id, version }`. On that world the recorded version is `[1, 0, 0]` while the installed
+pack is `v1.2.0` — the game matches a development pack by UUID and does not rewrite the entry
+when the pack is upgraded. The upsert therefore keys on `pack_id` alone and writes the
+installed pack's real header version over a stale one.
+
+`world_behavior_pack_history.json` sits beside them and is Minecraft's own record. It is
+never written.
+
+Files in the wild mix tab-indented entries with hand-edited ones, so they are parsed leniently
+and rewritten whole. Formatting is not preserved: the game parses JSON, not whitespace.
 
 ### The Beta APIs flip
 
@@ -501,9 +548,37 @@ unchanged" as a failure. `experiment` is also readable — `construct experiment
 --beta-apis` with no value prints the current state — which makes the flip verifiable without
 launching the game and gives `status` something to report.
 
+### Writing `level.dat` safely
+
+`nbtx` 3.0.1 does not round-trip every NBT tag (§9): array tags come back as lists, one byte
+longer each, and an empty list re-serializes five bytes short into something unparseable.
+Either defect, applied to a `level.dat`, corrupts a save.
+
+The five real `level.dat` files on the development machine each re-serialize to a payload of
+*identical length* whose value compares equal, which is the evidence that none of them carries
+an array tag or an empty list. That is a property of those files, not a promise about anyone
+else's world.
+
+Every `level.dat` write therefore runs a **fidelity gate** first: re-serialize the *unmodified*
+parsed root and require the result to be exactly as long as the original payload. Both defects
+change the length, so a mismatch refuses the write before anything is touched, naming the file
+and saying the world is untouched. Failing loudly beats silently corrupting a save.
+
+Key order is not preserved — `nbtx` parses a compound into a `HashMap` — so a rewritten
+`level.dat` lists its keys in a different order than Minecraft wrote them. NBT compounds are
+unordered and the game rewrites the file on its own schedule, so this is cosmetic.
+
+The write itself is a temporary file in the same directory followed by a rename, so the file is
+never left partially written, and §8's backup copy is taken before any of it.
+
 **Upgrading must not delete `Construct[BP]/structures/`.** That folder holds the user's
 imported structures — the very data this tool exists to put there. A naive delete-and-unzip
 would destroy it. Install preserves it across upgrades and reports what it carried over.
+
+The addon ships one of its own — `Construct[BP]/structures/construct.mcstructure` is inside the
+`.mcaddon` — so an upgrade **merges** rather than skips: files the new version ships are
+written, every other file already in `structures/` is kept, and the number preserved is
+reported.
 
 `install` is idempotent: it detects an existing Construct by UUID, reports `v1.1.0 → v1.2.0`,
 and no-ops when already current. `status` reports installed version, latest available, and
@@ -667,6 +742,8 @@ else, which is worth remembering if `bedrock_level`'s write path disappoints in 
 | Construct asset naming changes | Medium | Pattern match; clear error listing available assets |
 | GitHub rate limit | Low | Named in the error; optional token |
 | `.mcstructure` format version changes | Low | Version checked on decode; explicit error |
+| `nbtx` corrupts a `level.dat` it rewrites | **Data loss** | **Measured** (§9). Fidelity gate refuses the write when re-serialization changes length (§10) |
+| `nbtx` cannot encode `.mcstructure` (empty lists) | High | **Measured** (§9). Decoding is unaffected; blocks stage 3 only, and the fix is a patch or a small encoder |
 
 The two data-loss rows hold the release. Everything else degrades into a bad afternoon.
 
@@ -680,6 +757,8 @@ These cannot be settled by automated tests and must be confirmed in the game:
    --beta-apis` confirms the file round-trips; only the game confirms it is honored.)
 4. Do dev packs in `Users\Shared` apply to a world owned by a specific account? *(Windows)*
 5. Do files written into the GDK folder by an ordinary process read back in-game? *(Windows)*
+6. Does a `.mcstructure` in `structures/<Namespace>/` load as `<namespace>:<name>`? The flat
+   form is settled (§17); the subdirectory form is still inferred from one shipped pack.
 
 Items 4 and 5 need real Windows hardware. Item 5 is expected to be a non-issue: the ACL
 problem was specific to UWP's `LocalState` inside an AppContainer sandbox, and GDK stores
@@ -707,8 +786,27 @@ data in ordinary `AppData\Roaming`.
   The working hypothesis is therefore that **a subdirectory under `structures/` supplies the
   namespace, and a file directly in `structures/` falls back to `mystructure:`** — which
   would make both forms valid rather than one of them wrong, and would mean `import` has a
-  namespace choice to make rather than a fixed rule to follow. Confirm in-game at stage 2
-  before `list` or `import` depends on it.
+  namespace choice to make rather than a fixed rule to follow.
+
+  **The flat half is settled by Construct's own source.** `Construct[BP]` v1.2.0 enumerates
+  structures like this:
+
+  ```js
+  const packIds = [...new Set(structureManager.getPackStructureIds()
+      .map(id => id.replace('mystructure:', '')))];
+  ```
+
+  Pack structure ids therefore arrive from the game already carrying `mystructure:`, so a file
+  sitting directly in `structures/` is `mystructure:<stem>`. That is what `import` writes by
+  default, and what `list` displays. The subdirectory form remains inferred — from
+  `behavior_packs/Understudy/structures/Understudy/players.mcstructure` in a world-local pack
+  copy — and is item 6 on the §16 checklist rather than something `import` defaults to.
+
+  The same code shows two behaviours the CLI deliberately does **not** copy. Construct's list
+  lets a pack structure *shadow* a world structure of the same name, and it drops world
+  structures outside `mystructure:` entirely. §5 refuses an ambiguous name rather than picking
+  a winner, and `list` shows every namespace — but the ambiguity message says which copy
+  Construct would show in-game, since that is the question the user is really asking.
 - The **disable** direction of the Beta APIs flip (§10). The enabled state is measured; that
   the companion flags stay at `1` when turning it off is inferred.
 - ~~`leveldb-sys` vendors leveldb rather than using a submodule~~ — **confirmed**: no
