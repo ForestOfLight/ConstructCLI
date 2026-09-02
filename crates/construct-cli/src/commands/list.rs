@@ -1,4 +1,4 @@
-use crate::commands::worlds::human_size;
+use crate::commands::worlds::{human_size, truncate};
 use crate::output::Out;
 use construct_core::Result;
 use construct_core::catalog::{self, Source};
@@ -41,7 +41,7 @@ pub fn run(world: &World, source: Option<Source>, out: &mut Out) -> Result<()> {
             for e in &entries {
                 out.line(format!(
                     "{:<24} {:<8} {:>9}",
-                    e.name,
+                    truncate(&e.name, 24),
                     e.source.as_str(),
                     human_size(e.size_bytes)
                 ));

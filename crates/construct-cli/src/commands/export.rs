@@ -53,20 +53,59 @@ fn refuse_traversal(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Replaces characters that are illegal in a filename on Windows with `_`.
-/// This is sanitization, not refusal: unlike a traversal attempt, a name
-/// like `understudy:players` is not trying to escape the output directory,
-/// it just can't be written verbatim on every platform this project targets.
-/// The caller always prints the resulting path, so the substitution is
-/// visible to the user.
+/// A structure name that decodes to the empty string (e.g. from a key like
+/// `structuretemplate_mystructure:`) would derive the filename
+/// `.mcstructure` — a hidden file with no name. Refused, in the same style
+/// as a traversal attempt; an explicit `-o` path chooses the destination
+/// directly and is not subject to this check.
+fn refuse_empty_derived_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(CoreError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "structure has an empty name and cannot be used as a filename. \
+             Pass -o to choose the destination explicitly."
+                .to_string(),
+        )));
+    }
+    Ok(())
+}
+
+/// Windows reserved device names: writing to one of these addresses a
+/// device, not a file, regardless of extension (`CON.mcstructure` is just as
+/// reserved as `CON`). Matched on the portion of the sanitized name before
+/// the first `.`, case-insensitively.
+const RESERVED_DEVICE_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// Replaces characters that are illegal in a filename on Windows with `_`,
+/// and prefixes a Windows reserved device name (`CON`, `PRN`, `COM1`, …) with
+/// `_` so it addresses a file rather than a device. This is sanitization,
+/// not refusal: unlike a traversal attempt, a name like `understudy:players`
+/// or `CON` is not trying to escape the output directory, it just can't be
+/// written verbatim (or at all, for a device name) on every platform this
+/// project targets. The caller always prints the resulting path, so the
+/// substitution is visible to the user.
 fn sanitize_for_filename(name: &str) -> String {
-    name.chars()
+    let sanitized: String = name
+        .chars()
         .map(|c| match c {
             ':' | '<' | '>' | '"' | '|' | '?' | '*' => '_',
             c if c.is_control() => '_',
             c => c,
         })
-        .collect()
+        .collect();
+
+    let stem = sanitized.split('.').next().unwrap_or("");
+    if RESERVED_DEVICE_NAMES
+        .iter()
+        .any(|reserved| stem.eq_ignore_ascii_case(reserved))
+    {
+        format!("_{sanitized}")
+    } else {
+        sanitized
+    }
 }
 
 pub fn run(
@@ -92,6 +131,7 @@ pub fn run(
         let target = match output {
             Some(path) => path.to_path_buf(),
             None => {
+                refuse_empty_derived_name(&entry.name)?;
                 refuse_traversal(&entry.name)?;
                 PathBuf::from(format!(
                     "{}.mcstructure",

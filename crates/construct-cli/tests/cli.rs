@@ -565,6 +565,59 @@ fn a_multi_export_with_one_hostile_name_writes_nothing() {
 }
 
 #[test]
+fn a_windows_reserved_device_name_is_sanitized_not_refused() {
+    // Unlike traversal, a device-name collision is a portability problem, not
+    // a security boundary: the export must still succeed, just under a safe
+    // filename.
+    let (_tmp, world) = fixture_world_with_extra_structures(&[
+        ("mystructure:CON", b"AAAAAAAA"),
+        ("mystructure:com1", b"BBBBBBBB"),
+    ]);
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .current_dir(dir.path())
+        .args(["export", world.to_str().unwrap(), "CON", "com1"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        dir.path().join("_CON.mcstructure").is_file(),
+        "reserved device name CON should be prefixed, not refused"
+    );
+    assert!(
+        dir.path().join("_com1.mcstructure").is_file(),
+        "device names are reserved case-insensitively"
+    );
+}
+
+#[test]
+fn an_empty_derived_name_is_refused_and_points_at_o() {
+    // A key of exactly `structuretemplate_mystructure:` decodes to an empty
+    // display name, which would derive the filename `.mcstructure` — a
+    // hidden file with no name.
+    let (_tmp, world) = fixture_world_with_extra_structures(&[("mystructure:", b"AAAAAAAA")]);
+    let dir = tempfile::tempdir().unwrap();
+
+    let out = bin()
+        .current_dir(dir.path())
+        .args(["export", world.to_str().unwrap(), ""])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("-o"), "should point at -o:\n{err}");
+    assert!(
+        std::fs::read_dir(dir.path()).unwrap().next().is_none(),
+        "must write nothing"
+    );
+}
+
+#[test]
 fn explicit_o_path_bypasses_the_derived_name_rules() {
     let (_tmp, world) = fixture_world();
     let outer = tempfile::tempdir().unwrap();
