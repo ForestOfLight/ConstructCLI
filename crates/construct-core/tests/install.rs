@@ -1,3 +1,4 @@
+use construct_core::install;
 use construct_core::install::mcaddon;
 use std::io::Write;
 use std::path::Path;
@@ -191,4 +192,180 @@ fn a_file_that_is_not_a_zip_is_a_bad_pack() {
     let not_zip = tmp.path().join("x.mcaddon");
     std::fs::write(&not_zip, b"definitely not a zip").unwrap();
     assert!(mcaddon::extract(&not_zip).is_err());
+}
+
+/// A pack directory on disk, as if previously installed.
+fn installed_pack(
+    root: &Path,
+    folder: &str,
+    uuid: &str,
+    version: [u32; 3],
+    structures: &[(&str, &[u8])],
+) -> std::path::PathBuf {
+    let dir = root.join(folder);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("manifest.json"),
+        format!(
+            r#"{{"format_version":2,"header":{{"name":"{folder}","uuid":"{uuid}","version":[{},{},{}]}},
+                "modules":[{{"type":"data","uuid":"33333333-3333-3333-3333-333333333333","version":[1,0,0]}}]}}"#,
+            version[0], version[1], version[2]
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.join("structures")).unwrap();
+    for (name, bytes) in structures {
+        std::fs::write(
+            dir.join("structures").join(format!("{name}.mcstructure")),
+            bytes,
+        )
+        .unwrap();
+    }
+    dir
+}
+
+#[test]
+fn an_upgrade_keeps_every_imported_structure() {
+    // The highest-priority test in the spec: this folder holds the user's data.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("development_behavior_packs");
+    installed_pack(
+        &root,
+        "Construct[BP]",
+        construct_core::pack::CONSTRUCT_BP_UUID,
+        [1, 1, 0],
+        &[
+            ("bomber", b"mine"),
+            ("castle", b"also mine"),
+            ("construct", b"old shipped"),
+        ],
+    );
+
+    let new = tmp.path().join("new/Construct[BP]");
+    installed_pack(
+        new.parent().unwrap(),
+        "Construct[BP]",
+        construct_core::pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        &[("construct", b"new shipped")],
+    );
+    std::fs::write(new.join("scripts.js"), b"v1.2.0").unwrap();
+
+    let placed = install::place(&root, &new, false).unwrap();
+    assert_eq!(placed.from, Some([1, 1, 0]));
+    assert_eq!(placed.to, [1, 2, 0]);
+    assert_eq!(
+        placed.preserved, 2,
+        "bomber and castle, not the shipped one"
+    );
+    assert!(placed.changed);
+
+    let structures = placed.dir.join("structures");
+    assert_eq!(
+        std::fs::read(structures.join("bomber.mcstructure")).unwrap(),
+        b"mine"
+    );
+    assert_eq!(
+        std::fs::read(structures.join("castle.mcstructure")).unwrap(),
+        b"also mine"
+    );
+    // A file the new version ships wins over the copy already there.
+    assert_eq!(
+        std::fs::read(structures.join("construct.mcstructure")).unwrap(),
+        b"new shipped"
+    );
+    // And the new version's own files arrived.
+    assert_eq!(
+        std::fs::read(placed.dir.join("scripts.js")).unwrap(),
+        b"v1.2.0"
+    );
+}
+
+#[test]
+fn a_renamed_folder_is_upgraded_in_place_not_installed_twice() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("development_behavior_packs");
+    installed_pack(
+        &root,
+        "my-construct-copy",
+        construct_core::pack::CONSTRUCT_BP_UUID,
+        [1, 1, 0],
+        &[],
+    );
+
+    let new = tmp.path().join("new/Construct[BP]");
+    installed_pack(
+        new.parent().unwrap(),
+        "Construct[BP]",
+        construct_core::pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        &[],
+    );
+
+    let placed = install::place(&root, &new, false).unwrap();
+    assert_eq!(placed.dir.file_name().unwrap(), "my-construct-copy");
+    assert_eq!(
+        std::fs::read_dir(&root).unwrap().count(),
+        1,
+        "no second copy"
+    );
+}
+
+#[test]
+fn installing_the_version_already_present_is_a_no_op() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("development_behavior_packs");
+    let existing = installed_pack(
+        &root,
+        "Construct[BP]",
+        construct_core::pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        &[("keep", b"x")],
+    );
+    std::fs::write(existing.join("marker"), b"untouched").unwrap();
+
+    let new = tmp.path().join("new/Construct[BP]");
+    installed_pack(
+        new.parent().unwrap(),
+        "Construct[BP]",
+        construct_core::pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        &[],
+    );
+
+    let placed = install::place(&root, &new, false).unwrap();
+    assert!(!placed.changed);
+    assert_eq!(placed.from, Some([1, 2, 0]));
+    assert_eq!(
+        std::fs::read(existing.join("marker")).unwrap(),
+        b"untouched"
+    );
+
+    // --force reinstalls the same version, and still keeps the structures.
+    let placed = install::place(&root, &new, true).unwrap();
+    assert!(placed.changed);
+    assert_eq!(placed.preserved, 1);
+}
+
+#[test]
+fn a_first_install_creates_the_root_and_copies_the_pack() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("development_behavior_packs");
+    let new = tmp.path().join("new/Construct[BP]");
+    installed_pack(
+        new.parent().unwrap(),
+        "Construct[BP]",
+        construct_core::pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        &[("construct", b"shipped")],
+    );
+
+    let placed = install::place(&root, &new, false).unwrap();
+    assert_eq!(placed.from, None);
+    assert_eq!(placed.preserved, 0);
+    assert_eq!(placed.dir, root.join("Construct[BP]"));
+    assert_eq!(
+        std::fs::read(placed.dir.join("structures/construct.mcstructure")).unwrap(),
+        b"shipped"
+    );
 }
