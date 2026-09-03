@@ -276,8 +276,20 @@ fn report(err: &CoreError) {
         CoreError::NotImplemented { .. } => {
             eprintln!("\nUse --source pack to delete an imported structure.");
         }
-        CoreError::UnwritableLevelDat { .. } => {
+        CoreError::UnwritableLevelDat { written: false, .. } => {
             eprintln!("\nThe world was not modified.");
+        }
+        CoreError::UnwritableLevelDat { written: true, .. } => {
+            // Unlike the refusal-before-write case above, `write` already
+            // renamed a new level.dat into place before verification failed:
+            // the world genuinely changed, just not into the requested
+            // state. Saying "not modified" here would be false, and would
+            // give the user no reason to reach for the backup that was just
+            // taken for them.
+            eprintln!(
+                "\nlevel.dat was rewritten but did not read back as expected.\n\
+                 Restore it from the backup printed above before relying on this world."
+            );
         }
         _ => {}
     }

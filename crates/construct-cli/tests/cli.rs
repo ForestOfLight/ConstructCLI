@@ -1366,6 +1366,8 @@ fn experiment_reads_the_current_state_without_writing() {
 #[test]
 fn experiment_turns_beta_apis_on_and_backs_the_file_up_first() {
     let root = world_with_experiments(0);
+    let level = root.path().join("minecraftWorlds/Test/level.dat");
+    let before = std::fs::read(&level).unwrap();
     let backups = root.path().join("backups");
     let config = root.path().join("config.toml");
     std::fs::write(
@@ -1413,12 +1415,14 @@ fn experiment_turns_beta_apis_on_and_backs_the_file_up_first() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["beta_apis"], true);
 
-    // The backup holds the pre-flip file, so it is not the same as the world's.
+    // The backup holds exactly the pre-flip file — the property that
+    // actually matters, not merely that it differs from the post-flip one.
     let saved: Vec<_> = walk(&backups).into_iter().filter(|p| p.is_file()).collect();
     assert_eq!(saved.len(), 1, "one backup: {saved:?}");
+    assert_eq!(std::fs::read(&saved[0]).unwrap(), before);
     assert_ne!(
         std::fs::read(&saved[0]).unwrap(),
-        std::fs::read(root.path().join("minecraftWorlds/Test/level.dat")).unwrap()
+        std::fs::read(&level).unwrap()
     );
 }
 

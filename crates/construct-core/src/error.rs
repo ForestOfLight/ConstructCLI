@@ -66,7 +66,17 @@ pub enum CoreError {
     BadLevelDat { path: PathBuf, reason: String },
 
     #[error("cannot rewrite {}: {reason}", path.display())]
-    UnwritableLevelDat { path: PathBuf, reason: String },
+    UnwritableLevelDat {
+        path: PathBuf,
+        reason: String,
+        /// Whether a write already landed on disk before this error was
+        /// raised. `to_bytes` refuses before touching disk (`false`); the
+        /// post-write verification in `apply_beta_apis` fires only after
+        /// `write` has already renamed a new file into place (`true`). The
+        /// two cases need different advice: one leaves the world untouched,
+        /// the other leaves it in a state nobody asked for.
+        written: bool,
+    },
 
     #[error("cannot read {}: {reason}", path.display())]
     UnreadableWorld { path: PathBuf, reason: String },

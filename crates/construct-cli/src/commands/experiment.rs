@@ -28,14 +28,7 @@ pub fn run(world: &World, state: Option<bool>, backups: &Backups, out: &mut Out)
         // fixed once in its leveldb layer.
         let dat = leveldat::read(&path)?;
         let current = dat.beta_apis();
-        out.line(format!(
-            "Beta APIs: {}",
-            match current {
-                Some(true) => "on",
-                Some(false) => "off",
-                None => "off (this world has no experiments)",
-            }
-        ));
+        out.line(format!("Beta APIs: {}", describe(current)));
         out.emit(Payload {
             world: world.qualified(),
             beta_apis: current.unwrap_or(false),
@@ -48,20 +41,27 @@ pub fn run(world: &World, state: Option<bool>, backups: &Backups, out: &mut Out)
     // Back up before touching anything: a backup taken after a bad write
     // preserves the bad write.
     let backup = backup::file(&path, &world.qualified(), backups)?;
-    let change = leveldat::apply_beta_apis(&path, on)?;
+    let change = leveldat::apply_beta_apis(&path, on).inspect_err(|_| {
+        // `apply_beta_apis` failing here means either the write itself
+        // failed, or it succeeded but read back wrong (§ the report arm in
+        // main.rs distinguishes the two). Either way the backup already
+        // exists on disk; main.rs has no path to it, so print it here or
+        // the "restore from backup" advice is one the user cannot act on.
+        eprintln!("backup taken before the attempt: {}", backup.display());
+    })?;
 
     if change.changed {
         out.line(format!(
             "Beta APIs: {} → {}",
-            yes_no(change.before),
-            yes_no(Some(change.after))
+            describe(change.before),
+            describe(Some(change.after))
         ));
         out.line(format!("  backup: {}", backup.display()));
         out.line("Reload the world for the change to take effect.");
     } else {
         out.line(format!(
             "Beta APIs already {}; nothing to do",
-            yes_no(Some(on))
+            describe(Some(on))
         ));
     }
     out.emit(Payload {
@@ -73,10 +73,13 @@ pub fn run(world: &World, state: Option<bool>, backups: &Backups, out: &mut Out)
     Ok(())
 }
 
-fn yes_no(state: Option<bool>) -> &'static str {
+/// Renders a Beta APIs state the same way everywhere it is shown, so the
+/// no-`experiments`-compound case cannot drift into different wording in
+/// different call sites.
+fn describe(state: Option<bool>) -> &'static str {
     match state {
         Some(true) => "on",
         Some(false) => "off",
-        None => "off (no experiments)",
+        None => "off (this world has no experiments)",
     }
 }

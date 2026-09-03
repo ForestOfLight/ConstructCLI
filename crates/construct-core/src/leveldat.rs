@@ -164,11 +164,13 @@ impl LevelDat {
                 reason: "this level.dat uses NBT this tool cannot rewrite without changing it \
                          (an array tag or an empty list); the world was not modified"
                     .to_string(),
+                written: false,
             });
         }
         let payload = nbtx::to_le_bytes(&self.root).map_err(|e| CoreError::UnwritableLevelDat {
             path: PathBuf::new(),
             reason: format!("could not encode NBT: {e}"),
+            written: false,
         })?;
         let mut out = Vec::with_capacity(payload.len() + 8);
         out.extend_from_slice(&self.version.to_le_bytes());
@@ -189,10 +191,15 @@ const TOGGLED: &str = "saved_with_toggled_experiments";
 /// is touched, so a refusal here leaves `path` exactly as it was.
 pub fn write(dat: &LevelDat, path: &Path) -> Result<()> {
     let bytes = dat.to_bytes().map_err(|e| match e {
-        // `to_bytes` has no path to name; supply it here.
-        CoreError::UnwritableLevelDat { reason, .. } => CoreError::UnwritableLevelDat {
+        // `to_bytes` has no path to name; supply it here. `written` always
+        // came in `false` from `to_bytes` — nothing below this call has run
+        // yet — so it passes through unchanged.
+        CoreError::UnwritableLevelDat {
+            reason, written, ..
+        } => CoreError::UnwritableLevelDat {
             path: path.to_path_buf(),
             reason,
+            written,
         },
         other => other,
     })?;
@@ -236,12 +243,16 @@ pub fn apply_beta_apis(path: &Path, on: bool) -> Result<BetaApisChange> {
 
     let verified = read(path)?;
     if verified.beta_apis() != Some(on) {
+        // `write` has already renamed a new file into place by this point:
+        // the world genuinely changed, just not into the state asked for.
+        // `written: true` tells the caller not to say "not modified."
         return Err(CoreError::UnwritableLevelDat {
             path: path.to_path_buf(),
             reason: format!(
                 "wrote the Beta APIs flag but read back {:?}",
                 verified.beta_apis()
             ),
+            written: true,
         });
     }
     Ok(BetaApisChange {
@@ -577,5 +588,43 @@ mod tests {
         let change = apply_beta_apis(&path, true).unwrap();
         assert!(!change.changed);
         assert_eq!(change.before, Some(true));
+    }
+
+    #[test]
+    fn a_write_that_silently_no_ops_is_caught_by_verification_and_flagged_written() {
+        // A deterministic way to reach the post-write verification failure,
+        // not a race: `set_beta_apis` early-returns without touching
+        // anything when `experiments` exists but is not a Compound (see its
+        // match-or-return chain). `write` then persists the file completely
+        // unchanged — faithfully, since an Int round-trips fine — so the
+        // verification re-read still finds `beta_apis() == None` and
+        // disagrees with the requested `true`. This is the only path found
+        // that provokes the mismatch without depending on timing; an
+        // external process racing the atomic rename would also trigger it,
+        // but a unit test cannot construct that reliably.
+        let mut root = HashMap::new();
+        root.insert("experiments".to_string(), nbtx::Value::Int(5));
+        let bytes = build(10, nbtx::Value::Compound(root));
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("level.dat");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let err = apply_beta_apis(&path, true).unwrap_err();
+        match err {
+            CoreError::UnwritableLevelDat { written, .. } => {
+                assert!(
+                    written,
+                    "write() had already succeeded before verification ran"
+                );
+            }
+            other => panic!("expected UnwritableLevelDat, got {other:?}"),
+        }
+
+        // The rename genuinely happened (this is not a case where `write`
+        // itself failed): the file still parses cleanly afterward, and its
+        // content matches what was persisted — unchanged, since the no-op
+        // left the in-memory value exactly as it was read.
+        let after = read(&path).unwrap();
+        assert_eq!(after.beta_apis(), None);
     }
 }
