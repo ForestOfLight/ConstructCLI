@@ -18,6 +18,20 @@ pub trait StructureStore {
     /// The raw bytes of one structure, which are byte-identical to a
     /// `.mcstructure` file. `id` may be bare or qualified.
     fn get(&self, id: &str) -> Result<Option<Vec<u8>>>;
+
+    /// Every structure id with the byte length of its value.
+    ///
+    /// Separate from `ids` because `list` needs both and the leveldb backend can
+    /// produce them in a single pass. The default implementation is the obvious
+    /// two-step; backends that can do better should.
+    fn sizes(&self) -> Result<Vec<(String, u64)>> {
+        let mut out = Vec::new();
+        for id in self.ids()? {
+            let len = self.get(&id)?.map(|b| b.len() as u64).unwrap_or(0);
+            out.push((id, len));
+        }
+        Ok(out)
+    }
 }
 
 /// An in-memory store, for testing everything above this layer without a database.
@@ -41,7 +55,11 @@ impl StructureStore for MemoryStore {
     }
 
     fn get(&self, id: &str) -> Result<Option<Vec<u8>>> {
-        Ok(self.0.get(&key::qualify(id)).cloned())
+        Ok(self
+            .0
+            .get(&key::qualify(id))
+            .or_else(|| self.0.get(id))
+            .cloned())
     }
 }
 
@@ -61,6 +79,12 @@ impl StructureStore for OpenedStore {
     fn get(&self, id: &str) -> Result<Option<Vec<u8>>> {
         self.inner.get(id)
     }
+    fn sizes(&self) -> Result<Vec<(String, u64)>> {
+        // Must forward rather than fall back to the trait default, or every real
+        // caller — which always goes through `OpenedStore` — loses the one-pass
+        // `BedrockStore` override this method exists for.
+        self.inner.sizes()
+    }
 }
 
 /// Opens a world's structures for reading.
@@ -78,4 +102,31 @@ pub fn open_world_store(world: &World) -> Result<OpenedStore> {
         )));
     }
     snapshot::open_via_snapshot(world)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_memory_store_fetches_an_unqualified_id() {
+        let mut map = BTreeMap::new();
+        map.insert("foo".to_string(), b"bytes".to_vec());
+        let store = MemoryStore(map);
+        assert_eq!(store.get("foo").unwrap(), Some(b"bytes".to_vec()));
+    }
+
+    #[test]
+    fn sizes_reports_every_id_with_its_length() {
+        let store = MemoryStore::with(&[("house", b"abc"), ("barn", b"de")]);
+        let mut got = store.sizes().unwrap();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("mystructure:barn".to_string(), 2),
+                ("mystructure:house".to_string(), 3),
+            ]
+        );
+    }
 }

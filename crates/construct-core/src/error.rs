@@ -34,8 +34,8 @@ pub enum CoreError {
     #[error("structure not found: {name}")]
     StructureNotFound { name: String, near: Vec<String> },
 
-    #[error("structure {name} exists in both a world and a pack")]
-    AmbiguousStructure { name: String },
+    #[error("structure {name} matches {} sources", sources.len())]
+    AmbiguousStructure { name: String, sources: Vec<String> },
 
     #[error("more than one installation; no default configured")]
     AmbiguousInstallation { candidates: Vec<String> },

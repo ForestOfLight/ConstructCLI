@@ -7,7 +7,7 @@
 use crate::error::{CoreError, Result};
 use crate::store::{StructureStore, key};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Source {
     World,
     Pack,
@@ -30,21 +30,33 @@ pub struct Entry {
     pub id: String,
     pub source: Source,
     pub size_bytes: u64,
+    /// Where the bytes live, for [`Source::Pack`]. `None` for world structures,
+    /// which live in a database rather than a file.
+    pub path: Option<std::path::PathBuf>,
+}
+
+/// The order `list` presents and every command resolves against.
+///
+/// Name first, then source, so that two entries sharing a display name across
+/// sources have a stated order rather than one inherited from concatenation.
+pub fn sort(entries: &mut [Entry]) {
+    entries.sort_by(|a, b| a.name.cmp(&b.name).then(a.source.cmp(&b.source)));
 }
 
 /// Every structure in a world's database.
 pub fn from_world(store: &dyn StructureStore) -> Result<Vec<Entry>> {
-    let mut out = Vec::new();
-    for id in store.ids()? {
-        let size_bytes = store.get(&id)?.map(|b| b.len() as u64).unwrap_or(0);
-        out.push(Entry {
+    let mut out: Vec<Entry> = store
+        .sizes()?
+        .into_iter()
+        .map(|(id, size_bytes)| Entry {
             name: key::display_name(&id).to_string(),
             id,
             source: Source::World,
             size_bytes,
-        });
-    }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
+            path: None,
+        })
+        .collect();
+    sort(&mut out);
     Ok(out)
 }
 
@@ -65,6 +77,10 @@ pub fn resolve(name: &str, entries: &[Entry], source: Option<Source>) -> Result<
         }),
         _ => Err(CoreError::AmbiguousStructure {
             name: name.to_string(),
+            sources: matches
+                .iter()
+                .map(|e| e.source.as_str().to_string())
+                .collect(),
         }),
     }
 }
@@ -93,18 +109,21 @@ mod tests {
                 id: "mystructure:house".into(),
                 source: Source::World,
                 size_bytes: 12,
+                path: None,
             },
             Entry {
                 name: "barn".into(),
                 id: "mystructure:barn".into(),
                 source: Source::World,
                 size_bytes: 4,
+                path: None,
             },
             Entry {
                 name: "tower".into(),
                 id: "mystructure:tower".into(),
                 source: Source::Pack,
                 size_bytes: 31,
+                path: None,
             },
         ]
     }
@@ -139,6 +158,7 @@ mod tests {
             id: "mystructure:house".into(),
             source: Source::Pack,
             size_bytes: 9,
+            path: None,
         });
         assert!(matches!(
             resolve("house", &e, None),
@@ -154,6 +174,7 @@ mod tests {
             id: "mystructure:house".into(),
             source: Source::Pack,
             size_bytes: 9,
+            path: None,
         });
         assert_eq!(
             resolve("house", &e, Some(Source::Pack)).unwrap().size_bytes,
@@ -191,5 +212,48 @@ mod tests {
             resolve("barn", &entries(), Some(Source::Pack)),
             Err(CoreError::StructureNotFound { .. })
         ));
+    }
+
+    #[test]
+    fn entries_sort_by_name_then_source() {
+        // Two sources can hold the same display name; the order between them is
+        // stated rather than inherited from concatenation order.
+        let entries = vec![
+            Entry {
+                name: "a".into(),
+                id: "mystructure:a".into(),
+                source: Source::Pack,
+                size_bytes: 1,
+                path: None,
+            },
+            Entry {
+                name: "a".into(),
+                id: "mystructure:a".into(),
+                source: Source::World,
+                size_bytes: 1,
+                path: None,
+            },
+        ];
+        let mut sorted = entries.clone();
+        sort(&mut sorted);
+        assert_eq!(sorted[0].source, Source::World);
+        assert_eq!(sorted[1].source, Source::Pack);
+    }
+
+    #[test]
+    fn an_ambiguous_name_names_the_sources_that_matched() {
+        let mut e = entries();
+        e.push(Entry {
+            name: "house".into(),
+            id: "mystructure:house".into(),
+            source: Source::Pack,
+            size_bytes: 9,
+            path: None,
+        });
+        let CoreError::AmbiguousStructure { sources, .. } = resolve("house", &e, None).unwrap_err()
+        else {
+            panic!("expected AmbiguousStructure");
+        };
+        assert_eq!(sources, vec!["world".to_string(), "pack".to_string()]);
     }
 }

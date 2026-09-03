@@ -182,10 +182,16 @@ fn report(err: &CoreError) {
         CoreError::TargetExists { .. } => {
             eprintln!("\nPass --force to overwrite.");
         }
-        CoreError::AmbiguousStructure { name } => {
+        CoreError::AmbiguousStructure { name, sources } => {
+            eprintln!("\n{name} exists in: {}", sources.join(", "));
             eprintln!("\nDisambiguate with --source:");
-            eprintln!("  construct list --source world   # or: --source pack");
-            eprintln!("  (structure: {name})");
+            eprintln!("  construct list <world> --source world   # or: --source pack");
+            // Construct's own list resolves this by letting the pack copy win
+            // (§17). The CLI refuses instead — but the user is usually asking
+            // which one the game shows, so answer it.
+            if sources.iter().any(|s| s == "pack") {
+                eprintln!("\nConstruct shows the pack copy in-game.");
+            }
         }
         _ => {}
     }
