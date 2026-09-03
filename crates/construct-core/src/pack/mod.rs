@@ -3,7 +3,8 @@
 pub mod manifest;
 pub mod structures;
 
-use crate::discovery::World;
+use crate::discovery::{Installation, World};
+use crate::error::{CoreError, Result};
 use manifest::Manifest;
 use std::path::{Path, PathBuf};
 
@@ -57,4 +58,59 @@ pub fn packs_in(root: &Path) -> Vec<Pack> {
 
 pub fn find_by_uuid(root: &Path, uuid: &str) -> Option<Pack> {
     packs_in(root).into_iter().find(|p| p.manifest.uuid == uuid)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// The world's own `behavior_packs/` copy.
+    WorldLocal,
+    /// The installation's shared `development_behavior_packs` copy.
+    Shared,
+}
+
+#[derive(Debug, Clone)]
+pub struct Target {
+    pub pack: Pack,
+    pub scope: Scope,
+    /// The copy that was found and *not* used, if there was one. §11 asks the
+    /// command to state which of two copies it chose.
+    pub also_at: Option<PathBuf>,
+}
+
+/// The Construct copy that governs a world: its own, else the installation's.
+pub fn for_world(world: &World, installation: &Installation) -> Result<Target> {
+    let local_root = world_behavior_root(world);
+    let shared_root = behavior_root(&installation.dev_pack_root);
+    let local = find_by_uuid(&local_root, CONSTRUCT_BP_UUID);
+    let shared = find_by_uuid(&shared_root, CONSTRUCT_BP_UUID);
+
+    match (local, shared) {
+        (Some(pack), other) => Ok(Target {
+            pack,
+            scope: Scope::WorldLocal,
+            also_at: other.map(|p| p.dir),
+        }),
+        (None, Some(pack)) => Ok(Target {
+            pack,
+            scope: Scope::Shared,
+            also_at: None,
+        }),
+        (None, None) => Err(CoreError::ConstructNotInstalled {
+            searched: vec![local_root, shared_root],
+        }),
+    }
+}
+
+/// The Construct copy in an installation's shared root.
+pub fn for_installation(installation: &Installation) -> Result<Target> {
+    let root = behavior_root(&installation.dev_pack_root);
+    find_by_uuid(&root, CONSTRUCT_BP_UUID)
+        .map(|pack| Target {
+            pack,
+            scope: Scope::Shared,
+            also_at: None,
+        })
+        .ok_or(CoreError::ConstructNotInstalled {
+            searched: vec![root],
+        })
 }

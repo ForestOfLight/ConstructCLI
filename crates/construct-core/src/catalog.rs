@@ -6,6 +6,7 @@
 
 use crate::error::{CoreError, Result};
 use crate::store::{StructureStore, key};
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Source {
@@ -58,6 +59,32 @@ pub fn from_world(store: &dyn StructureStore) -> Result<Vec<Entry>> {
         .collect();
     sort(&mut out);
     Ok(out)
+}
+
+/// Every structure file in a pack.
+pub fn from_pack(pack_dir: &Path) -> Vec<Entry> {
+    crate::pack::structures::list(pack_dir)
+        .into_iter()
+        .map(|s| Entry {
+            name: s.name,
+            id: s.id,
+            source: Source::Pack,
+            size_bytes: s.size_bytes,
+            path: Some(s.path),
+        })
+        .collect()
+}
+
+/// The single list Construct presents in-game, over both sources.
+///
+/// Construct's own list lets a pack structure shadow a world structure of the
+/// same name. This does not: §5 refuses an ambiguous name rather than picking a
+/// winner, so both entries survive here and `resolve` reports the collision.
+pub fn unify(world: Vec<Entry>, pack: Vec<Entry>) -> Vec<Entry> {
+    let mut all = world;
+    all.extend(pack);
+    sort(&mut all);
+    all
 }
 
 /// Finds exactly one structure by name, never guessing between sources.

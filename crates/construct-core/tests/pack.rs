@@ -1,5 +1,27 @@
+use construct_core::discovery::{Installation, LastPlayedSource, World};
 use construct_core::pack;
 use std::path::Path;
+
+fn test_world(dir: &Path) -> World {
+    World {
+        installation: "test".into(),
+        account: None,
+        folder: dir.file_name().unwrap().to_string_lossy().into_owned(),
+        display_name: "Test".into(),
+        path: dir.to_path_buf(),
+        last_played: None,
+        last_played_source: LastPlayedSource::DirMtime,
+        size_bytes: 0,
+    }
+}
+
+fn test_installation(com_mojang: &Path) -> Installation {
+    Installation {
+        name: "test".into(),
+        dev_pack_root: com_mojang.to_path_buf(),
+        world_roots: Vec::new(),
+    }
+}
 
 /// Writes a minimal pack directory and returns its path.
 fn make_pack(
@@ -243,4 +265,123 @@ fn derive_name_rejects_rather_than_mangles() {
             "{bad:?} should be rejected"
         );
     }
+}
+
+use construct_core::catalog::{self, Source};
+
+#[test]
+fn pack_entries_carry_their_file_path() {
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("Construct[BP]");
+    touch(&pack.join("structures/bomber.mcstructure"), b"12345");
+
+    let entries = catalog::from_pack(&pack);
+    assert_eq!(entries[0].source, Source::Pack);
+    assert_eq!(entries[0].id, "mystructure:bomber");
+    assert_eq!(
+        entries[0].path.as_deref(),
+        Some(pack.join("structures/bomber.mcstructure").as_path())
+    );
+}
+
+#[test]
+fn unify_interleaves_both_sources_by_name() {
+    let world = vec![
+        catalog::Entry {
+            name: "house".into(),
+            id: "mystructure:house".into(),
+            source: Source::World,
+            size_bytes: 1,
+            path: None,
+        },
+        catalog::Entry {
+            name: "zebra".into(),
+            id: "mystructure:zebra".into(),
+            source: Source::World,
+            size_bytes: 1,
+            path: None,
+        },
+    ];
+    let pack = vec![catalog::Entry {
+        name: "barn".into(),
+        id: "mystructure:barn".into(),
+        source: Source::Pack,
+        size_bytes: 1,
+        path: Some(std::path::PathBuf::from("/p/structures/barn.mcstructure")),
+    }];
+    let all = catalog::unify(world, pack);
+    assert_eq!(
+        all.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+        vec!["barn", "house", "zebra"]
+    );
+}
+
+#[test]
+fn a_worlds_own_copy_of_construct_wins_over_the_shared_one() {
+    let base = tempfile::tempdir().unwrap();
+    let com_mojang = base.path().join("com.mojang");
+    let shared = com_mojang.join("development_behavior_packs");
+    make_pack(
+        &shared,
+        "Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        false,
+    );
+
+    let world_dir = com_mojang.join("minecraftWorlds/Test");
+    std::fs::create_dir_all(world_dir.join("db")).unwrap();
+    make_pack(
+        &world_dir.join("behavior_packs"),
+        "Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 1, 0],
+        false,
+    );
+
+    let world = test_world(&world_dir);
+    let installation = test_installation(&com_mojang);
+
+    let target = pack::for_world(&world, &installation).unwrap();
+    assert_eq!(target.scope, pack::Scope::WorldLocal);
+    assert_eq!(target.pack.manifest.version, [1, 1, 0]);
+    assert_eq!(target.also_at, Some(shared.join("Construct[BP]")));
+}
+
+#[test]
+fn without_a_local_copy_the_shared_installation_pack_is_used() {
+    let base = tempfile::tempdir().unwrap();
+    let com_mojang = base.path().join("com.mojang");
+    make_pack(
+        &com_mojang.join("development_behavior_packs"),
+        "Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        false,
+    );
+    let world_dir = com_mojang.join("minecraftWorlds/Test");
+    std::fs::create_dir_all(&world_dir).unwrap();
+
+    let target = pack::for_world(&test_world(&world_dir), &test_installation(&com_mojang)).unwrap();
+    assert_eq!(target.scope, pack::Scope::Shared);
+    assert_eq!(target.also_at, None);
+}
+
+#[test]
+fn no_construct_anywhere_says_where_it_looked() {
+    let base = tempfile::tempdir().unwrap();
+    let com_mojang = base.path().join("com.mojang");
+    let world_dir = com_mojang.join("minecraftWorlds/Test");
+    std::fs::create_dir_all(&world_dir).unwrap();
+
+    let err =
+        pack::for_world(&test_world(&world_dir), &test_installation(&com_mojang)).unwrap_err();
+    let construct_core::CoreError::ConstructNotInstalled { searched } = err else {
+        panic!("expected ConstructNotInstalled");
+    };
+    assert_eq!(
+        searched.len(),
+        2,
+        "both the world copy and the shared root: {searched:?}"
+    );
 }
