@@ -77,6 +77,9 @@ pub enum CoreError {
     #[error("Construct is not installed")]
     ConstructNotInstalled { searched: Vec<PathBuf> },
 
+    #[error("unusable structure name {name:?}: {reason}")]
+    BadStructureName { name: String, reason: String },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

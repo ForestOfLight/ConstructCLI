@@ -99,3 +99,148 @@ fn the_pack_roots_are_the_documented_folder_names() {
         Path::new("/com.mojang/development_resource_packs")
     );
 }
+
+use construct_core::pack::structures;
+
+fn touch(path: &Path, bytes: &[u8]) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
+#[test]
+fn a_file_directly_in_structures_is_mystructure_namespaced() {
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("Construct[BP]");
+    touch(&pack.join("structures/bomber.mcstructure"), b"12345");
+
+    let found = structures::list(&pack);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id, "mystructure:bomber");
+    assert_eq!(found[0].name, "bomber");
+    assert_eq!(found[0].size_bytes, 5);
+}
+
+#[test]
+fn a_subdirectory_supplies_the_namespace_lowercased() {
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("Understudy");
+    touch(
+        &pack.join("structures/Understudy/players.mcstructure"),
+        b"x",
+    );
+
+    let found = structures::list(&pack);
+    assert_eq!(found[0].id, "understudy:players");
+    // A non-default namespace stays visible in the display name.
+    assert_eq!(found[0].name, "understudy:players");
+}
+
+#[test]
+fn non_mcstructure_files_and_deeper_nesting_are_not_listed() {
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    touch(&pack.join("structures/readme.txt"), b"x");
+    touch(&pack.join("structures/a/b/deep.mcstructure"), b"x");
+    touch(&pack.join("structures/ok.mcstructure"), b"x");
+
+    let found = structures::list(&pack);
+    assert_eq!(
+        found.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+        vec!["mystructure:ok"]
+    );
+}
+
+#[test]
+fn a_pack_with_no_structures_folder_lists_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    assert!(structures::list(&root.path().join("Empty")).is_empty());
+}
+
+#[test]
+fn path_for_puts_the_default_namespace_flat_and_others_in_a_subdirectory() {
+    let pack = Path::new("/p");
+    assert_eq!(
+        structures::path_for(pack, "house").unwrap(),
+        Path::new("/p/structures/house.mcstructure")
+    );
+    assert_eq!(
+        structures::path_for(pack, "mystructure:house").unwrap(),
+        Path::new("/p/structures/house.mcstructure")
+    );
+    assert_eq!(
+        structures::path_for(pack, "understudy:players").unwrap(),
+        Path::new("/p/structures/understudy/players.mcstructure")
+    );
+}
+
+#[test]
+fn path_for_refuses_an_id_that_would_escape_the_pack() {
+    for evil in [
+        "../../etc/passwd",
+        "a/b",
+        "..",
+        "ns:../x",
+        "ns:",
+        ":name",
+        "C:\\x",
+    ] {
+        assert!(
+            structures::path_for(Path::new("/p"), evil).is_err(),
+            "{evil} should be refused"
+        );
+    }
+}
+
+#[test]
+fn write_refuses_an_existing_file_unless_forced() {
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    structures::write(&pack, "house", b"first", false).unwrap();
+
+    let err = structures::write(&pack, "house", b"second", false).unwrap_err();
+    assert!(matches!(
+        err,
+        construct_core::CoreError::TargetExists { .. }
+    ));
+    // Untouched by the refusal.
+    assert_eq!(
+        std::fs::read(pack.join("structures/house.mcstructure")).unwrap(),
+        b"first"
+    );
+
+    structures::write(&pack, "house", b"second", true).unwrap();
+    assert_eq!(
+        std::fs::read(pack.join("structures/house.mcstructure")).unwrap(),
+        b"second"
+    );
+}
+
+#[test]
+fn write_creates_the_structures_folder_and_any_namespace_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    let at = structures::write(&pack, "understudy:players", b"x", false).unwrap();
+    assert_eq!(at, pack.join("structures/understudy/players.mcstructure"));
+    assert!(at.is_file());
+}
+
+#[test]
+fn derive_name_lowercases_and_maps_spaces() {
+    assert_eq!(structures::derive_name("My House").unwrap(), "my_house");
+    assert_eq!(
+        structures::derive_name("tower-2.v1_a").unwrap(),
+        "tower-2.v1_a"
+    );
+}
+
+#[test]
+fn derive_name_rejects_rather_than_mangles() {
+    // A mangled name is one Construct will not list, so the user is told to
+    // pass --name instead of being handed something silently different.
+    for bad in ["café", "a/b", "what?", "", "  ", "..", "."] {
+        assert!(
+            structures::derive_name(bad).is_err(),
+            "{bad:?} should be rejected"
+        );
+    }
+}

@@ -1,6 +1,7 @@
 //! Construct on disk: where its packs live and what is inside their `structures/`.
 
 pub mod manifest;
+pub mod structures;
 
 use crate::discovery::World;
 use manifest::Manifest;
