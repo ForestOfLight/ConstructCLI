@@ -68,19 +68,88 @@ fn extract_finds_the_behaviour_and_resource_packs_by_module_type() {
 
 #[test]
 fn an_entry_that_would_escape_the_directory_refuses_the_whole_archive() {
+    // A *complete* archive — both packs present — so the only possible reason
+    // for failure is the traversal entry, not a missing resource pack wearing
+    // the same `BadPack` variant.
     let tmp = tempfile::tempdir().unwrap();
     let addon = tmp.path().join("evil.mcaddon");
-    make_addon(
-        &addon,
-        &[
-            ("../escaped.txt", b"pwned"),
-            ("BP/manifest.json", &manifest("x", "u", "data")),
-        ],
+    complete_addon_plus(&addon, "../escaped.txt");
+
+    let err = mcaddon::extract(&addon).unwrap_err();
+    let construct_core::CoreError::BadPack { reason, .. } = &err else {
+        panic!("expected BadPack, got {err:?}");
+    };
+    assert!(
+        reason.contains("escape"),
+        "expected a traversal refusal, got {reason:?}"
     );
+}
+
+#[test]
+fn an_entry_with_an_absolute_path_writes_nothing_to_that_path() {
+    // The canary lives in a directory the test itself owns and can observe —
+    // unlike the temp directory `extract()` creates internally, which the
+    // test never sees the path of.
+    let canary = tempfile::tempdir().unwrap();
+    let target = canary.path().join("PWNED");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let addon = tmp.path().join("evil.mcaddon");
+    let absolute_entry = format!("{}/PWNED", canary.path().display());
+    complete_addon_plus(&addon, &absolute_entry);
 
     assert!(mcaddon::extract(&addon).is_err());
-    assert!(!tmp.path().join("escaped.txt").exists());
-    assert!(!Path::new("../escaped.txt").exists());
+    assert!(!target.exists());
+}
+
+/// A complete, otherwise-valid archive plus one extra entry — so a rejection
+/// can only be attributed to that entry, never to a missing pack.
+fn complete_addon_plus(at: &Path, extra_name: &str) {
+    make_addon(
+        at,
+        &[
+            (extra_name, b"pwned"),
+            (
+                "Construct[BP]/manifest.json",
+                &manifest(
+                    "Construct [BP] v1.2.0",
+                    construct_core::pack::CONSTRUCT_BP_UUID,
+                    "data",
+                ),
+            ),
+            (
+                "Construct[RP]/manifest.json",
+                &manifest(
+                    "Construct [RP] v1.2.0",
+                    construct_core::pack::CONSTRUCT_RP_UUID,
+                    "resources",
+                ),
+            ),
+        ],
+    );
+}
+
+#[test]
+fn hostile_entry_shapes_are_all_refused() {
+    let hostile = [
+        "../escaped.txt",
+        "/etc/escaped.txt",
+        "//escaped.txt",
+        "BP\\..\\..\\escaped.txt",
+        "C:\\escaped.txt",
+        "Construct[BP]/../../escaped.txt",
+    ];
+
+    for name in hostile {
+        let tmp = tempfile::tempdir().unwrap();
+        let addon = tmp.path().join("evil.mcaddon");
+        complete_addon_plus(&addon, name);
+
+        assert!(
+            mcaddon::extract(&addon).is_err(),
+            "expected {name:?} to be refused"
+        );
+    }
 }
 
 #[test]
