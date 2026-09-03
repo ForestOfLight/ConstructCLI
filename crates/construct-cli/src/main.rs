@@ -279,6 +279,19 @@ fn report(err: &CoreError) {
         CoreError::UnwritableLevelDat { written: false, .. } => {
             eprintln!("\nThe world was not modified.");
         }
+        CoreError::RateLimited => {
+            eprintln!(
+                "\nGitHub allows {} requests an hour unauthenticated.\n\
+                 Set a token to raise it:\n  export CONSTRUCT_GITHUB_TOKEN=<token>",
+                construct_core::install::releases::UNAUTHENTICATED_LIMIT
+            );
+        }
+        CoreError::AssetNotFound { available, .. } if !available.is_empty() => {
+            eprintln!("\navailable assets:");
+            for a in available {
+                eprintln!("  {a}");
+            }
+        }
         CoreError::UnwritableLevelDat { written: true, .. } => {
             // Unlike the refusal-before-write case above, `write` already
             // renamed a new level.dat into place before verification failed:
@@ -306,7 +319,8 @@ fn exit_code(err: &CoreError) -> i32 {
         | CoreError::WorldNotFound { .. }
         | CoreError::StructureNotFound { .. }
         | CoreError::InstallationNotFound { .. }
-        | CoreError::ConstructNotInstalled { .. } => 3,
+        | CoreError::ConstructNotInstalled { .. }
+        | CoreError::AssetNotFound { .. } => 3,
         CoreError::AmbiguousWorld { .. }
         | CoreError::AmbiguousStructure { .. }
         | CoreError::AmbiguousInstallation { .. }

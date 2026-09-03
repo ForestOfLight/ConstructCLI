@@ -27,6 +27,8 @@ nbtx = "3.0.1"
 bedrock_level = { path = "third_party/checkouts/bedrock-rs/crates/level" }
 tar = "0.4"
 flate2 = "1.0"
+ureq = "3.4"
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # bedrock_level depends on leveldb-sys from the same unpatched upstream; redirect
 # it to the patched local checkout too.

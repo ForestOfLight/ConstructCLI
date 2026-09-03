@@ -99,6 +99,18 @@ pub enum CoreError {
     #[error("no platform data directory for backups; set [backups] dir in config.toml")]
     NoBackupDir,
 
+    #[error("could not reach GitHub: {reason}")]
+    Network { reason: String },
+
+    #[error("GitHub rate limit reached")]
+    RateLimited,
+
+    #[error("no Construct .mcaddon for {version}")]
+    AssetNotFound {
+        version: String,
+        available: Vec<String>,
+    },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
