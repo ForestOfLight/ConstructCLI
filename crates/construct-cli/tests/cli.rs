@@ -862,3 +862,133 @@ fn a_name_in_both_world_and_pack_survives_unshadowed_in_list() {
         .collect();
     assert_eq!(sources, ["pack", "world"].into_iter().collect());
 }
+
+#[test]
+fn import_derives_a_name_from_the_file_stem_and_reports_it() {
+    let root = world_with_construct(&[]);
+    let src = root.path().join("My House.mcstructure");
+    std::fs::write(&src, b"structure-bytes").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            src.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["name"], "my_house");
+    assert_eq!(v["id"], "mystructure:my_house");
+    let written = root
+        .path()
+        .join("development_behavior_packs/Construct[BP]/structures/my_house.mcstructure");
+    assert_eq!(std::fs::read(&written).unwrap(), b"structure-bytes");
+}
+
+#[test]
+fn import_refuses_an_unusable_name_instead_of_mangling_it() {
+    let root = world_with_construct(&[]);
+    let src = root.path().join("café.mcstructure");
+    std::fs::write(&src, b"x").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            src.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--name"),
+        "should point at --name:\n{stderr}"
+    );
+}
+
+#[test]
+fn import_refuses_to_overwrite_without_force() {
+    let root = world_with_construct(&[("house", b"original")]);
+    let src = root.path().join("house.mcstructure");
+    std::fs::write(&src, b"replacement").unwrap();
+    let args = [
+        "import",
+        src.to_str().unwrap(),
+        "--world",
+        "Test",
+        "--com-mojang",
+        root.path().to_str().unwrap(),
+    ];
+
+    let out = bin().args(args).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--force"));
+    let target = root
+        .path()
+        .join("development_behavior_packs/Construct[BP]/structures/house.mcstructure");
+    assert_eq!(std::fs::read(&target).unwrap(), b"original");
+
+    let out = bin().args(args).arg("--force").output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(std::fs::read(&target).unwrap(), b"replacement");
+}
+
+#[test]
+fn import_says_the_world_must_be_reloaded() {
+    let root = world_with_construct(&[]);
+    let src = root.path().join("tower.mcstructure");
+    std::fs::write(&src, b"x").unwrap();
+    let out = bin()
+        .args([
+            "import",
+            src.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.to_lowercase().contains("reload"), "stdout:\n{text}");
+}
+
+#[test]
+fn import_without_construct_points_at_install() {
+    let root = tempfile::tempdir().unwrap();
+    let world = root.path().join("minecraftWorlds/Test");
+    std::fs::create_dir_all(world.join("db")).unwrap();
+    // Needed for `discovery::enumerate` to see this as a world at all — see
+    // the note on `world_with_construct` above.
+    std::fs::write(world.join("level.dat"), b"x").unwrap();
+    let src = root.path().join("x.mcstructure");
+    std::fs::write(&src, b"x").unwrap();
+    let out = bin()
+        .args([
+            "import",
+            src.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("construct install"));
+}

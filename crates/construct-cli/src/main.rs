@@ -133,6 +133,25 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 out,
             )
         }
+        Command::Import { file, world, name } => {
+            let w = world.as_deref().map(resolve_world).transpose()?;
+            let installation = match &w {
+                Some(w) => discovery::installation::for_world(&installations, w)?,
+                None => discovery::installation::choose(
+                    &installations,
+                    std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
+                    loaded.config.default_installation.as_deref(),
+                )?,
+            };
+            commands::import::run(
+                file,
+                w.as_ref(),
+                installation,
+                name.as_deref(),
+                cli.force,
+                out,
+            )
+        }
     }
 }
 
@@ -214,6 +233,9 @@ fn report(err: &CoreError) {
             }
             eprintln!("\nInstall it:\n  construct install");
         }
+        CoreError::BadStructureName { .. } => {
+            eprintln!("\nChoose a name explicitly:\n  construct import <file> --name <name>");
+        }
         _ => {}
     }
 }
@@ -233,7 +255,8 @@ fn exit_code(err: &CoreError) -> i32 {
         CoreError::AmbiguousWorld { .. }
         | CoreError::AmbiguousStructure { .. }
         | CoreError::AmbiguousInstallation { .. }
-        | CoreError::MalformedReference { .. } => 2,
+        | CoreError::MalformedReference { .. }
+        | CoreError::BadStructureName { .. } => 2,
         CoreError::WorldInUse { .. } => 4,
         _ => 1,
     }

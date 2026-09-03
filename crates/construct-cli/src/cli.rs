@@ -65,4 +65,16 @@ pub enum Command {
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
     },
+
+    /// Copy a .mcstructure file into Construct's structures folder.
+    Import {
+        /// The .mcstructure file to import.
+        file: PathBuf,
+        /// Target this world's Construct copy.
+        #[arg(long, value_name = "WORLD")]
+        world: Option<String>,
+        /// Override the name derived from the file stem.
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+    },
 }
