@@ -809,6 +809,84 @@ fn fixture_world_with_construct(
     (root, "test_level")
 }
 
+/// Extracts a *second* copy of the real-leveldb fixture world into `worlds_dir`
+/// under `folder`, with its own world-local Construct copy (empty `structures/`).
+/// Pairs with `fixture_world_with_construct`'s primary world to give `copy` a
+/// destination that is a real, openable world — unlike `world_with_construct`,
+/// whose `db/` is a stub directory that cannot be opened as a real LevelDB (see
+/// the comments on the `copy_*` tests using `world_with_construct` above).
+///
+/// The archive always unpacks to a directory named `test_level`, so this
+/// extracts into a throwaway staging directory first and renames the result
+/// into place under the caller's `worlds_dir` — `std::fs::rename` is a same-
+/// filesystem move here, since both directories come from `tempfile::tempdir`
+/// under the same OS temp root.
+fn add_destination_world(worlds_dir: &std::path::Path, folder: &str) -> std::path::PathBuf {
+    let staging = tempfile::tempdir().unwrap();
+    let gz = std::fs::File::open("../construct-core/tests/fixtures/world.tar.gz")
+        .expect("fixture missing");
+    tar::Archive::new(flate2::read::GzDecoder::new(gz))
+        .unpack(staging.path())
+        .unwrap();
+    let world = worlds_dir.join(folder);
+    std::fs::rename(staging.path().join("test_level"), &world).unwrap();
+    std::fs::write(world.join("levelname.txt"), folder).unwrap();
+
+    let bp = world.join("behavior_packs/Construct[BP]");
+    std::fs::create_dir_all(bp.join("structures")).unwrap();
+    std::fs::write(
+        bp.join("manifest.json"),
+        r#"{"format_version":2,
+            "header":{"name":"Construct [BP] v1.2.0","uuid":"8c0c0153-d8b9-482a-889f-aef922b8fe58","version":[1,2,0]},
+            "modules":[{"type":"data","uuid":"f4d52ae1-2c26-4938-b8c2-7e455d495620","version":[1,0,0]}]}"#,
+    )
+    .unwrap();
+
+    world
+}
+
+#[test]
+fn copy_reads_from_a_real_world_database_into_the_destinations_pack() {
+    // The three `copy` tests above all pass `--source pack`, because
+    // `world_with_construct`'s stub `db/` cannot be opened as real LevelDB
+    // (see the comments there). None of them exercises `copy`'s primary use:
+    // reading a structure out of an actual world database. This test does,
+    // using the same real-leveldb fixture `export`'s collision test relies
+    // on, with a second, independently named world as the destination.
+    let (root, src_name) = fixture_world_with_construct(&[], &[]);
+    let worlds_dir = root.path().join("minecraftWorlds");
+    let dst_world = add_destination_world(&worlds_dir, "RealDestination");
+
+    let out = bin()
+        .args([
+            "copy",
+            src_name,
+            "house",
+            "RealDestination",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["name"], "house");
+    assert_eq!(v["from"], format!("flag1/{src_name}"));
+    assert_eq!(v["to"], "flag1/RealDestination");
+
+    let written = dst_world.join("behavior_packs/Construct[BP]/structures/house.mcstructure");
+    assert!(written.is_file());
+    // Byte transparency: the file is the database value, untouched — same
+    // check the real-leveldb `export` tests use.
+    assert_eq!(std::fs::read(&written).unwrap()[0], 0x0a);
+}
+
 #[test]
 fn a_name_in_both_world_and_pack_survives_unshadowed_in_list() {
     // §5's never-guess rule (Task 1) says a name colliding across sources must
@@ -912,8 +990,14 @@ fn copy_writes_bytes_into_the_destination_worlds_own_construct() {
 
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["name"], "barn");
-    assert_eq!(v["from"], "Test");
-    assert_eq!(v["to"], "Other");
+    // Qualified, not display_name: `--com-mojang` roots with no config name
+    // are numbered `flag1`, `flag2`, ... (see `main.rs`), and both worlds sit
+    // under the one root this test passes, with no account segment (a single
+    // world root carries none). §6 supports cross-root copies, where two
+    // worlds can share a display name across installations — `qualified()`
+    // is what disambiguates that case, so the payload must carry it.
+    assert_eq!(v["from"], "flag1/Test");
+    assert_eq!(v["to"], "flag1/Other");
 
     let written = bp.join("structures/barn.mcstructure");
     assert_eq!(std::fs::read(&written).unwrap(), b"barn-bytes");

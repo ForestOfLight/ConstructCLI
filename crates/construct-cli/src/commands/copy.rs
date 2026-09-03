@@ -63,8 +63,15 @@ pub fn run(
     out.emit(Payload {
         name: entry.name.clone(),
         id: entry.id.clone(),
-        from: src.display_name.clone(),
-        to: dst.display_name.clone(),
+        // Qualified, not display_name: §6 supports cross-root copies, and
+        // two worlds named identically under different installations are
+        // indistinguishable by display_name alone — the exact ambiguity
+        // `qualified()` exists to remove. Matches `list.rs`'s and
+        // `worlds.rs`'s convention of identifying a world in JSON by its
+        // qualified reference. The human-readable line above keeps
+        // display_name; a terminal reader wants the friendly name.
+        from: src.qualified(),
+        to: dst.qualified(),
         path: path.display().to_string(),
         bytes: bytes.len() as u64,
     });
