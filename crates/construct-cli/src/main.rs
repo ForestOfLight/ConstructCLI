@@ -126,6 +126,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
             let w = resolve_world(world)?;
             commands::export::run(
                 &w,
+                &installations,
                 structures,
                 output.as_deref(),
                 cli.source.map(Into::into),
@@ -148,6 +149,23 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 w.as_ref(),
                 installation,
                 name.as_deref(),
+                cli.force,
+                out,
+            )
+        }
+        Command::Copy {
+            src_world,
+            structure,
+            dst_world,
+        } => {
+            let src = resolve_world(src_world)?;
+            let dst = resolve_world(dst_world)?;
+            commands::copy::run(
+                &src,
+                structure,
+                &dst,
+                &installations,
+                cli.source.map(Into::into),
                 cli.force,
                 out,
             )

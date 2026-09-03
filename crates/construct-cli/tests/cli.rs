@@ -818,13 +818,9 @@ fn a_name_in_both_world_and_pack_survives_unshadowed_in_list() {
     // resolve), so the CLI-visible half of that rule *this* command can prove
     // is that both entries survive to the list, neither shadowing the other.
     // The other half — that a command asking for exactly one structure by
-    // this name refuses with exit 2 naming both sources — is `export`'s
-    // `catalog::resolve` call, and `export` does not yet load pack entries at
-    // all (it only calls `catalog::from_world`); that wiring is a later
-    // task's job. Confirmed empirically before writing this test: pointing
-    // `export <world> collide` at this exact fixture exits 0 and writes the
-    // world's copy, not exit 2 — so an export-based version of this test
-    // would not fail for the reason it claims to guard against.
+    // this name refuses with exit 2 naming both sources — is
+    // `export_of_a_name_in_both_world_and_pack_is_refused_naming_both_sources`
+    // below, via `export`'s `catalog::resolve` call.
     let (root, world_name) = fixture_world_with_construct(
         &[("mystructure:collide", b"WORLDBYTES")],
         &[("collide", b"PACKBYTES!")],
@@ -861,6 +857,174 @@ fn a_name_in_both_world_and_pack_survives_unshadowed_in_list() {
         .map(|e| e["source"].as_str().unwrap())
         .collect();
     assert_eq!(sources, ["pack", "world"].into_iter().collect());
+}
+
+#[test]
+fn copy_writes_bytes_into_the_destination_worlds_own_construct() {
+    // Two worlds under one root, so one --com-mojang covers both. `Other`
+    // gets its own world-local Construct copy (see
+    // copy_refuses_an_existing_target_unless_forced below) so the write
+    // lands somewhere distinct from the source: a shared-copy version of
+    // this test cannot prove `copy` writes into the *destination's* Construct
+    // rather than just re-touching wherever it read from.
+    let root = world_with_construct(&[("barn", b"barn-bytes")]);
+    let other = root.path().join("minecraftWorlds/Other");
+    std::fs::create_dir_all(other.join("db")).unwrap();
+    std::fs::write(other.join("levelname.txt"), "Other").unwrap();
+    // Needed for `discovery::enumerate` to see this as a world at all — see
+    // the note on `world_with_construct` above.
+    std::fs::write(other.join("level.dat"), b"x").unwrap();
+    let bp = other.join("behavior_packs/Construct[BP]");
+    std::fs::create_dir_all(bp.join("structures")).unwrap();
+    std::fs::copy(
+        root.path()
+            .join("development_behavior_packs/Construct[BP]/manifest.json"),
+        bp.join("manifest.json"),
+    )
+    .unwrap();
+
+    // `--source pack` is required here, not merely convenient: `world_with_construct`'s
+    // `db/` is an empty stub directory, never a real LevelDB, and this backend's FFI
+    // hardcodes `create_if_missing = false` (confirmed against
+    // third_party/checkouts/leveldb-sys/ffi/ffi.cpp and db_impl.cc) — so opening it
+    // for real, as a plain `copy` with no `--source` would, fails with a database
+    // error before resolution even runs. `barn` lives only in the pack in this
+    // fixture, so filtering to it is also the honest description of the test.
+    let out = bin()
+        .args([
+            "copy",
+            "Test",
+            "barn",
+            "Other",
+            "--source",
+            "pack",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["name"], "barn");
+    assert_eq!(v["from"], "Test");
+    assert_eq!(v["to"], "Other");
+
+    let written = bp.join("structures/barn.mcstructure");
+    assert_eq!(std::fs::read(&written).unwrap(), b"barn-bytes");
+}
+
+#[test]
+fn copy_refuses_an_existing_target_unless_forced() {
+    let root = world_with_construct(&[("barn", b"barn-bytes")]);
+    let other = root.path().join("minecraftWorlds/Other");
+    std::fs::create_dir_all(other.join("db")).unwrap();
+    std::fs::write(other.join("level.dat"), b"x").unwrap();
+    // Give Other its own Construct copy holding a different `barn`.
+    let bp = other.join("behavior_packs/Construct[BP]");
+    std::fs::create_dir_all(bp.join("structures")).unwrap();
+    std::fs::copy(
+        root.path()
+            .join("development_behavior_packs/Construct[BP]/manifest.json"),
+        bp.join("manifest.json"),
+    )
+    .unwrap();
+    std::fs::write(bp.join("structures/barn.mcstructure"), b"theirs").unwrap();
+
+    // `--source pack`: see the comment in
+    // copy_writes_bytes_into_the_destination_worlds_own_construct above —
+    // `world_with_construct`'s `db/` cannot be opened as a real LevelDB.
+    let args = [
+        "copy",
+        "Test",
+        "barn",
+        "Other",
+        "--source",
+        "pack",
+        "--com-mojang",
+    ];
+    let out = bin().args(args).arg(root.path()).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        std::fs::read(bp.join("structures/barn.mcstructure")).unwrap(),
+        b"theirs"
+    );
+
+    let out = bin()
+        .args(args)
+        .arg(root.path())
+        .arg("--force")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        std::fs::read(bp.join("structures/barn.mcstructure")).unwrap(),
+        b"barn-bytes"
+    );
+}
+
+#[test]
+fn copy_of_a_name_that_is_not_there_suggests_near_matches() {
+    let root = world_with_construct(&[("barn", b"x")]);
+    let other = root.path().join("minecraftWorlds/Other");
+    std::fs::create_dir_all(other.join("db")).unwrap();
+    std::fs::write(other.join("level.dat"), b"x").unwrap();
+    // `--source pack`: see the comment in
+    // copy_writes_bytes_into_the_destination_worlds_own_construct above —
+    // `world_with_construct`'s `db/` cannot be opened as a real LevelDB.
+    let out = bin()
+        .args([
+            "copy",
+            "Test",
+            "bar",
+            "Other",
+            "--source",
+            "pack",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("barn"));
+}
+
+#[test]
+fn export_of_a_name_in_both_world_and_pack_is_refused_naming_both_sources() {
+    // The other half of §5's never-guess rule, completed by this task: a name
+    // present in both the world's database and the pack must not let `export`
+    // silently pick one. Before this task's `export.rs` change, this exact
+    // fixture (see `a_name_in_both_world_and_pack_survives_unshadowed_in_list`
+    // above) exited 0 and wrote the world's copy, because `export` only ever
+    // consulted `catalog::from_world`.
+    let (root, world_name) = fixture_world_with_construct(
+        &[("mystructure:collide", b"WORLDBYTES")],
+        &[("collide", b"PACKBYTES!")],
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .current_dir(dir.path())
+        .args([
+            "export",
+            world_name,
+            "collide",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("world"),
+        "should name the world source:\n{err}"
+    );
+    assert!(err.contains("pack"), "should name the pack source:\n{err}");
 }
 
 #[test]

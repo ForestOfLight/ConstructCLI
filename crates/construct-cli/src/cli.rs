@@ -77,4 +77,14 @@ pub enum Command {
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
     },
+
+    /// Copy a structure into another world's Construct.
+    Copy {
+        /// Source world name, qualified reference, or path.
+        src_world: String,
+        /// Structure name.
+        structure: String,
+        /// Destination world name, qualified reference, or path.
+        dst_world: String,
+    },
 }

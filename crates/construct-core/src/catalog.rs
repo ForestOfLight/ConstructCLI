@@ -112,6 +112,27 @@ pub fn resolve(name: &str, entries: &[Entry], source: Option<Source>) -> Result<
     }
 }
 
+/// The bytes behind an entry, wherever they live.
+///
+/// A world entry needs the store it came from; a pack entry is a file. Either
+/// way the bytes are a complete `.mcstructure` — that is the byte-transparency
+/// property this whole tool rests on.
+pub fn read_entry(entry: &Entry, store: Option<&dyn StructureStore>) -> Result<Vec<u8>> {
+    match (&entry.path, store) {
+        (Some(path), _) => Ok(std::fs::read(path)?),
+        (None, Some(store)) => store
+            .get(&entry.id)?
+            .ok_or_else(|| CoreError::StructureNotFound {
+                name: entry.name.clone(),
+                near: Vec::new(),
+            }),
+        (None, None) => Err(CoreError::StructureNotFound {
+            name: entry.name.clone(),
+            near: Vec::new(),
+        }),
+    }
+}
+
 fn near_matches(needle: &str, entries: &[Entry], source: Option<Source>) -> Vec<String> {
     let needle = needle.to_lowercase();
     let mut out: Vec<String> = entries
@@ -265,6 +286,49 @@ mod tests {
         sort(&mut sorted);
         assert_eq!(sorted[0].source, Source::World);
         assert_eq!(sorted[1].source, Source::Pack);
+    }
+
+    #[test]
+    fn read_entry_reads_a_pack_entry_from_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("barn.mcstructure");
+        std::fs::write(&path, b"pack-bytes").unwrap();
+        let entry = Entry {
+            name: "barn".into(),
+            id: "mystructure:barn".into(),
+            source: Source::Pack,
+            size_bytes: 10,
+            path: Some(path),
+        };
+        assert_eq!(read_entry(&entry, None).unwrap(), b"pack-bytes");
+    }
+
+    #[test]
+    fn read_entry_reads_a_world_entry_from_the_store() {
+        let store = MemoryStore::with(&[("barn", b"world-bytes")]);
+        let entry = Entry {
+            name: "barn".into(),
+            id: "mystructure:barn".into(),
+            source: Source::World,
+            size_bytes: 11,
+            path: None,
+        };
+        assert_eq!(read_entry(&entry, Some(&store)).unwrap(), b"world-bytes");
+    }
+
+    #[test]
+    fn read_entry_without_a_store_for_a_world_entry_is_not_found() {
+        let entry = Entry {
+            name: "barn".into(),
+            id: "mystructure:barn".into(),
+            source: Source::World,
+            size_bytes: 11,
+            path: None,
+        };
+        assert!(matches!(
+            read_entry(&entry, None),
+            Err(CoreError::StructureNotFound { .. })
+        ));
     }
 
     #[test]
