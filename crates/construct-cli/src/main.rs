@@ -106,7 +106,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
         Command::Worlds => commands::worlds::run(&worlds, out),
         Command::List { world } => {
             let w = resolve_world(world)?;
-            commands::list::run(&w, cli.source.map(Into::into), out)
+            commands::list::run(&w, &installations, cli.source.map(Into::into), out)
         }
         Command::Export {
             world,

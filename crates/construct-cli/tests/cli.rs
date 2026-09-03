@@ -257,7 +257,15 @@ fn list_json_carries_schema_and_entries() {
 }
 
 #[test]
-fn list_source_pack_is_empty_in_stage_one() {
+fn list_source_pack_with_no_reachable_construct_is_not_found() {
+    // Superseded by stage 2: `--source pack` used to just filter to an empty
+    // list, since nothing populated Source::Pack yet. Now that it does, an
+    // explicit `--source pack` with no reachable Construct is the thing the
+    // brief calls out explicitly: "then the user asked for exactly the thing
+    // that is not there" — so it errors rather than silently returning empty.
+    // (This world is path-referenced and no `--com-mojang` is given, so there
+    // is no installation to search either — a stronger case for "not there"
+    // than a merely-uninstalled Construct.)
     let (_tmp, world) = fixture_world();
     let out = bin()
         .args([
@@ -269,8 +277,7 @@ fn list_source_pack_is_empty_in_stage_one() {
         ])
         .output()
         .unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["structures"].as_array().unwrap().len(), 0);
+    assert_eq!(out.status.code(), Some(3));
 }
 
 #[test]
@@ -671,4 +678,187 @@ fn explicit_o_path_bypasses_the_derived_name_rules() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(outer.path().join("outside.mcstructure").is_file());
+}
+
+/// A com.mojang tree with one world and, optionally, Construct installed.
+fn world_with_construct(structures: &[(&str, &[u8])]) -> tempfile::TempDir {
+    let root = tempfile::tempdir().unwrap();
+    let world = root.path().join("minecraftWorlds/Test");
+    std::fs::create_dir_all(&world).unwrap();
+    std::fs::write(world.join("levelname.txt"), "Test").unwrap();
+    // Needed for `discovery::enumerate` to see this as a world at all — it
+    // requires `level.dat` to exist, which the brief's snippet omitted.
+    std::fs::write(world.join("level.dat"), b"x").unwrap();
+    std::fs::create_dir_all(world.join("db")).unwrap();
+
+    let bp = root.path().join("development_behavior_packs/Construct[BP]");
+    std::fs::create_dir_all(&bp).unwrap();
+    std::fs::write(
+        bp.join("manifest.json"),
+        r#"{"format_version":2,
+            "header":{"name":"Construct [BP] v1.2.0","uuid":"8c0c0153-d8b9-482a-889f-aef922b8fe58","version":[1,2,0]},
+            "modules":[{"type":"data","uuid":"f4d52ae1-2c26-4938-b8c2-7e455d495620","version":[1,0,0]}]}"#,
+    )
+    .unwrap();
+    for (name, bytes) in structures {
+        let p = bp.join("structures").join(format!("{name}.mcstructure"));
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, bytes).unwrap();
+    }
+    root
+}
+
+#[test]
+fn list_shows_pack_structures_without_touching_the_world_database() {
+    let root = world_with_construct(&[("bomber", b"12345")]);
+    let out = bin()
+        .args([
+            "list",
+            "Test",
+            "--source",
+            "pack",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["structures"][0]["name"], "bomber");
+    assert_eq!(v["structures"][0]["source"], "pack");
+    assert_eq!(v["structures"][0]["size_bytes"], 5);
+}
+
+#[test]
+fn source_pack_on_a_machine_without_construct_is_not_found() {
+    let root = tempfile::tempdir().unwrap();
+    let world = root.path().join("minecraftWorlds/Test");
+    std::fs::create_dir_all(world.join("db")).unwrap();
+    // Needed for `discovery::enumerate` to see this as a world at all.
+    std::fs::write(world.join("level.dat"), b"x").unwrap();
+    let out = bin()
+        .args([
+            "list",
+            "Test",
+            "--source",
+            "pack",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("construct install"));
+}
+
+/// Like `fixture_world_with_extra_structures`, but extracts the real-leveldb
+/// fixture world under a `--com-mojang` root's `minecraftWorlds/`, and
+/// installs Construct beside it. This is what `list` needs to see a name
+/// collision between sources: `discovery::installation::for_world` looks an
+/// installation up by name, and a bare-path reference (as used by
+/// `fixture_world`) always carries the synthetic installation name `"path"`,
+/// which never matches a real installation — so a path-referenced world can
+/// never reach `pack::for_world`. Routing through `--com-mojang` instead gives
+/// the world a real installation name and makes the pack reachable.
+fn fixture_world_with_construct(
+    extra_world_structures: &[(&str, &[u8])],
+    pack_structures: &[(&str, &[u8])],
+) -> (tempfile::TempDir, &'static str) {
+    let root = tempfile::tempdir().unwrap();
+    let worlds_dir = root.path().join("minecraftWorlds");
+    std::fs::create_dir_all(&worlds_dir).unwrap();
+
+    let gz = std::fs::File::open("../construct-core/tests/fixtures/world.tar.gz")
+        .expect("fixture missing");
+    tar::Archive::new(flate2::read::GzDecoder::new(gz))
+        .unpack(&worlds_dir)
+        .unwrap();
+    let world = worlds_dir.join("test_level");
+
+    {
+        let db_dir = world.join("db");
+        let db = bedrock_level::db::Database::open(db_dir.to_str().unwrap()).unwrap();
+        for (name, bytes) in extra_world_structures {
+            let key = construct_core::store::key::encode(name);
+            db.insert(&key, *bytes).unwrap();
+        }
+        // `db` drops here, releasing leveldb's LOCK before the CLI subprocess
+        // opens the same database.
+    }
+
+    let bp = root.path().join("development_behavior_packs/Construct[BP]");
+    std::fs::create_dir_all(&bp).unwrap();
+    std::fs::write(
+        bp.join("manifest.json"),
+        r#"{"format_version":2,
+            "header":{"name":"Construct [BP] v1.2.0","uuid":"8c0c0153-d8b9-482a-889f-aef922b8fe58","version":[1,2,0]},
+            "modules":[{"type":"data","uuid":"f4d52ae1-2c26-4938-b8c2-7e455d495620","version":[1,0,0]}]}"#,
+    )
+    .unwrap();
+    for (name, bytes) in pack_structures {
+        let p = bp.join("structures").join(format!("{name}.mcstructure"));
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, bytes).unwrap();
+    }
+
+    (root, "test_level")
+}
+
+#[test]
+fn a_name_in_both_world_and_pack_survives_unshadowed_in_list() {
+    // §5's never-guess rule (Task 1) says a name colliding across sources must
+    // never let one copy silently win — `catalog::unify` keeps both entries
+    // rather than deduping, and `catalog::resolve` is what refuses to pick
+    // between them. `list` never calls `resolve` (it has no single name to
+    // resolve), so the CLI-visible half of that rule *this* command can prove
+    // is that both entries survive to the list, neither shadowing the other.
+    // The other half — that a command asking for exactly one structure by
+    // this name refuses with exit 2 naming both sources — is `export`'s
+    // `catalog::resolve` call, and `export` does not yet load pack entries at
+    // all (it only calls `catalog::from_world`); that wiring is a later
+    // task's job. Confirmed empirically before writing this test: pointing
+    // `export <world> collide` at this exact fixture exits 0 and writes the
+    // world's copy, not exit 2 — so an export-based version of this test
+    // would not fail for the reason it claims to guard against.
+    let (root, world_name) = fixture_world_with_construct(
+        &[("mystructure:collide", b"WORLDBYTES")],
+        &[("collide", b"PACKBYTES!")],
+    );
+    let out = bin()
+        .args([
+            "list",
+            world_name,
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let collide_entries: Vec<&serde_json::Value> = v["structures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["name"] == "collide")
+        .collect();
+    assert_eq!(
+        collide_entries.len(),
+        2,
+        "both the world and pack copies of `collide` must be listed, not one shadowing the other: {v}"
+    );
+    let sources: std::collections::BTreeSet<&str> = collide_entries
+        .iter()
+        .map(|e| e["source"].as_str().unwrap())
+        .collect();
+    assert_eq!(sources, ["pack", "world"].into_iter().collect());
 }
