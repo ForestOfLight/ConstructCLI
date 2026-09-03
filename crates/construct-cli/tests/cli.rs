@@ -1289,3 +1289,153 @@ fn deleting_from_a_world_database_is_refused_for_now() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("--source pack"), "stderr:\n{stderr}");
 }
+
+/// All files under `dir`, recursively.
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(walk(&path));
+        } else {
+            found.push(path);
+        }
+    }
+    found
+}
+
+/// A world whose level.dat carries an `experiments` compound.
+fn world_with_experiments(gametest: i8) -> tempfile::TempDir {
+    let root = tempfile::tempdir().unwrap();
+    let world = root.path().join("minecraftWorlds/Test");
+    std::fs::create_dir_all(world.join("db")).unwrap();
+    std::fs::write(world.join("levelname.txt"), "Test").unwrap();
+
+    let mut experiments = std::collections::HashMap::new();
+    experiments.insert("gametest".to_string(), nbtx::Value::Byte(gametest));
+    let mut level = std::collections::HashMap::new();
+    level.insert(
+        "experiments".to_string(),
+        nbtx::Value::Compound(experiments),
+    );
+    level.insert("LevelName".to_string(), nbtx::Value::String("Test".into()));
+
+    let payload = nbtx::to_le_bytes(&nbtx::Value::Compound(level)).unwrap();
+    let mut bytes = 10i32.to_le_bytes().to_vec();
+    bytes.extend_from_slice(&(payload.len() as i32).to_le_bytes());
+    bytes.extend_from_slice(&payload);
+    std::fs::write(world.join("level.dat"), bytes).unwrap();
+    root
+}
+
+#[test]
+fn experiment_reads_the_current_state_without_writing() {
+    let root = world_with_experiments(1);
+    let level = root.path().join("minecraftWorlds/Test/level.dat");
+    let before = std::fs::read(&level).unwrap();
+
+    let out = bin()
+        .args([
+            "experiment",
+            "Test",
+            "--beta-apis",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["beta_apis"], true);
+    assert_eq!(v["changed"], false);
+    assert_eq!(
+        std::fs::read(&level).unwrap(),
+        before,
+        "a read must not write"
+    );
+}
+
+#[test]
+fn experiment_turns_beta_apis_on_and_backs_the_file_up_first() {
+    let root = world_with_experiments(0);
+    let backups = root.path().join("backups");
+    let config = root.path().join("config.toml");
+    std::fs::write(
+        &config,
+        format!("[backups]\ndir = {:?}\nkeep = 5\n", backups),
+    )
+    .unwrap();
+
+    let out = bin()
+        .env("CONSTRUCT_CONFIG", &config)
+        .args([
+            "experiment",
+            "Test",
+            "--beta-apis",
+            "on",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["beta_apis"], true);
+    assert_eq!(v["changed"], true);
+    assert!(v["backup"].is_string());
+
+    // Verified by re-reading, which is what the command itself does.
+    let out = bin()
+        .args([
+            "experiment",
+            "Test",
+            "--beta-apis",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["beta_apis"], true);
+
+    // The backup holds the pre-flip file, so it is not the same as the world's.
+    let saved: Vec<_> = walk(&backups).into_iter().filter(|p| p.is_file()).collect();
+    assert_eq!(saved.len(), 1, "one backup: {saved:?}");
+    assert_ne!(
+        std::fs::read(&saved[0]).unwrap(),
+        std::fs::read(root.path().join("minecraftWorlds/Test/level.dat")).unwrap()
+    );
+}
+
+#[test]
+fn experiment_on_a_world_with_no_level_dat_fails_cleanly() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("minecraftWorlds/Test/db")).unwrap();
+    let out = bin()
+        .args([
+            "experiment",
+            "Test",
+            "--beta-apis",
+            "on",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_ne!(out.status.code(), Some(0));
+}

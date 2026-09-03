@@ -180,6 +180,15 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 out,
             )
         }
+        Command::Experiment { world, beta_apis } => {
+            let w = resolve_world(world)?;
+            commands::experiment::run(
+                &w,
+                beta_apis.map(cli::OnOff::as_bool),
+                &loaded.config.backups,
+                out,
+            )
+        }
     }
 }
 
@@ -266,6 +275,9 @@ fn report(err: &CoreError) {
         }
         CoreError::NotImplemented { .. } => {
             eprintln!("\nUse --source pack to delete an imported structure.");
+        }
+        CoreError::UnwritableLevelDat { .. } => {
+            eprintln!("\nThe world was not modified.");
         }
         _ => {}
     }
