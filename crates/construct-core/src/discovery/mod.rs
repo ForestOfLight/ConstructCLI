@@ -1,3 +1,4 @@
+pub mod installation;
 pub mod platform;
 pub mod reference;
 pub mod worlds;

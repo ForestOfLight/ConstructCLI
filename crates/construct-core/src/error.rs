@@ -40,6 +40,12 @@ pub enum CoreError {
     #[error("more than one installation; no default configured")]
     AmbiguousInstallation { candidates: Vec<String> },
 
+    #[error("no installation named {name}")]
+    InstallationNotFound {
+        name: String,
+        available: Vec<String>,
+    },
+
     #[error("world is in use: {}", world.display())]
     WorldInUse { world: PathBuf },
 

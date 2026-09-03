@@ -193,6 +193,27 @@ fn report(err: &CoreError) {
                 eprintln!("\nConstruct shows the pack copy in-game.");
             }
         }
+        CoreError::InstallationNotFound { available, .. } => {
+            eprintln!("\navailable:");
+            for a in available {
+                eprintln!("  {a}");
+            }
+            eprintln!("\nSet one in config.toml:\n  default_installation = \"<name>\"");
+        }
+        CoreError::AmbiguousInstallation { candidates } => {
+            eprintln!("\ncandidates:");
+            for c in candidates {
+                eprintln!("  {c}");
+            }
+            eprintln!("\nSet one in config.toml:\n  default_installation = \"<name>\"");
+        }
+        CoreError::ConstructNotInstalled { searched } => {
+            eprintln!("\nsearched:");
+            for s in searched {
+                eprintln!("  {}", s.display());
+            }
+            eprintln!("\nInstall it:\n  construct install");
+        }
         _ => {}
     }
 }
@@ -206,7 +227,9 @@ fn exit_code(err: &CoreError) -> i32 {
     match err {
         CoreError::NoInstallations { .. }
         | CoreError::WorldNotFound { .. }
-        | CoreError::StructureNotFound { .. } => 3,
+        | CoreError::StructureNotFound { .. }
+        | CoreError::InstallationNotFound { .. }
+        | CoreError::ConstructNotInstalled { .. } => 3,
         CoreError::AmbiguousWorld { .. }
         | CoreError::AmbiguousStructure { .. }
         | CoreError::AmbiguousInstallation { .. }
