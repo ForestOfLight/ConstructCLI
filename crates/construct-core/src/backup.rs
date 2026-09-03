@@ -6,7 +6,7 @@
 //! which is not unique across roots.
 
 use crate::config::Backups;
-use crate::error::Result;
+use crate::error::{CoreError, Result};
 use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,11 +18,7 @@ pub fn root(backups: &Backups) -> Result<PathBuf> {
     }
     directories::ProjectDirs::from("", "", "constructcli")
         .map(|d| d.data_dir().join("backups"))
-        .ok_or_else(|| {
-            crate::error::CoreError::Io(std::io::Error::other(
-                "no platform data directory for backups; set [backups] dir in config.toml",
-            ))
-        })
+        .ok_or(CoreError::NoBackupDir)
 }
 
 /// One directory name per world, from its qualified reference.
@@ -37,6 +33,22 @@ pub fn sanitize(reference: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Parse a backup filename suffix into (epoch_seconds, disambiguator).
+///
+/// Expected format: `{stamp}` or `{stamp}-{n}`.
+/// Returns `None` if the suffix cannot be parsed.
+fn parse_suffix(suffix: &str) -> Option<(u64, u64)> {
+    if let Some(dash_idx) = suffix.rfind('-') {
+        let (stamp_str, n_str) = suffix.split_at(dash_idx);
+        let stamp = stamp_str.parse::<u64>().ok()?;
+        let n = n_str.trim_start_matches('-').parse::<u64>().ok()?;
+        Some((stamp, n))
+    } else {
+        let stamp = suffix.parse::<u64>().ok()?;
+        Some((stamp, 0))
+    }
 }
 
 /// Copies `src` into the backup directory for `world_reference` and prunes.
@@ -58,18 +70,17 @@ pub fn file(src: &Path, world_reference: &str, backups: &Backups) -> Result<Path
 
     // Find the highest existing n for this timestamp to avoid gaps
     // when old backups are deleted by pruning.
-    let prefix = format!("{name}.{stamp}");
+    let prefix = format!("{name}.");
     let mut next_n = 0u64;
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let file_name = entry.file_name();
             let name_str = file_name.to_string_lossy();
-            if let Some(suffix) = name_str.strip_prefix(&format!("{prefix}-")) {
-                if let Ok(n) = suffix.parse::<u64>() {
-                    next_n = next_n.max(n + 1);
-                }
-            } else if name_str == prefix {
-                next_n = next_n.max(1);
+            if let Some(suffix) = name_str.strip_prefix(&prefix)
+                && let Some((entry_stamp, entry_n)) = parse_suffix(suffix)
+                && entry_stamp == stamp
+            {
+                next_n = next_n.max(entry_n + 1);
             }
         }
     }
@@ -105,16 +116,8 @@ fn prune(dir: &Path, name: &str, keep: usize) {
         .filter_map(|e| {
             let file_name = e.file_name();
             let name_str = file_name.to_string_lossy();
-            // Parse: name.{stamp} or name.{stamp}-{n}
             let suffix = name_str.strip_prefix(&prefix)?;
-            let (stamp_str, n_str) = if let Some(dash_idx) = suffix.rfind('-') {
-                let (s, n) = suffix.split_at(dash_idx);
-                (s, n.trim_start_matches('-'))
-            } else {
-                (suffix, "0")
-            };
-            let stamp = stamp_str.parse::<u64>().ok()?;
-            let n = n_str.parse::<u64>().ok()?;
+            let (stamp, n) = parse_suffix(suffix)?;
             Some((stamp, n, e.path()))
         })
         .collect();
@@ -228,5 +231,94 @@ mod tests {
             a.exists() && b.exists(),
             "one world's backup must not evict another's"
         );
+    }
+
+    #[test]
+    fn retention_across_multiple_timestamps() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("backups");
+        let world_ref = "test/World";
+        let world_dir = store.join(sanitize(world_ref));
+        std::fs::create_dir_all(&world_dir).unwrap();
+
+        // Manually create backups at different timestamps
+        std::fs::write(world_dir.join("level.dat.1000"), b"old").unwrap();
+        std::fs::write(world_dir.join("level.dat.1000-1"), b"old").unwrap();
+        std::fs::write(world_dir.join("level.dat.1000-2"), b"old").unwrap();
+        std::fs::write(world_dir.join("level.dat.1000-3"), b"old").unwrap();
+        std::fs::write(world_dir.join("level.dat.2000"), b"newer").unwrap();
+
+        // Prune to keep only 2 backups
+        prune(&world_dir, "level.dat", 2);
+
+        // The newer timestamp's entry should survive, even though older timestamp has higher n values
+        assert!(
+            world_dir.join("level.dat.2000").exists(),
+            "newer timestamp should survive"
+        );
+        // At least one more from the older timestamp may survive, but the pattern is that
+        // we keep by (timestamp, n) ordering
+        let kept: Vec<_> = std::fs::read_dir(&world_dir).unwrap().flatten().collect();
+        assert_eq!(kept.len(), 2, "should keep exactly 2 backups");
+    }
+
+    #[test]
+    fn source_filename_with_dash_parses_correctly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("level-legacy.dat");
+        std::fs::write(&source, b"content").unwrap();
+
+        let store = tmp.path().join("backups");
+        let cfg = backups(&store, 10);
+
+        // Create multiple backups of a file with a dash in its name
+        let b1 = file(&source, "test/World", &cfg).unwrap();
+        let b2 = file(&source, "test/World", &cfg).unwrap();
+        let b3 = file(&source, "test/World", &cfg).unwrap();
+
+        // All should exist and have correct content
+        assert_eq!(std::fs::read(&b1).unwrap(), b"content");
+        assert_eq!(std::fs::read(&b2).unwrap(), b"content");
+        assert_eq!(std::fs::read(&b3).unwrap(), b"content");
+        assert_ne!(b1, b2);
+        assert_ne!(b2, b3);
+
+        // Verify filenames are correctly parsed (contain the source name)
+        let b1_name = b1.file_name().unwrap().to_string_lossy();
+        assert!(b1_name.starts_with("level-legacy.dat."));
+    }
+
+    #[test]
+    fn unrelated_files_survive_pruning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("backups");
+        let world_dir = store.join(sanitize("test/World"));
+        std::fs::create_dir_all(&world_dir).unwrap();
+
+        // Create backups of our source file
+        std::fs::write(world_dir.join("level.dat.1000"), b"1").unwrap();
+        std::fs::write(world_dir.join("level.dat.1000-1"), b"2").unwrap();
+        std::fs::write(world_dir.join("level.dat.1000-2"), b"3").unwrap();
+
+        // Create unrelated files in the same directory
+        std::fs::write(world_dir.join("not-a-backup.txt"), b"unrelated").unwrap();
+        std::fs::write(world_dir.join("options.txt.1000"), b"another-world").unwrap();
+
+        // Prune level.dat backups to keep only 1
+        prune(&world_dir, "level.dat", 1);
+
+        // Our unrelated files should survive
+        assert!(
+            world_dir.join("not-a-backup.txt").exists(),
+            "unrelated file should survive"
+        );
+        assert!(
+            world_dir.join("options.txt.1000").exists(),
+            "another world's backup should survive"
+        );
+
+        // We should have 1 level.dat backup + 2 unrelated = 3 files total
+        let kept: Vec<_> = std::fs::read_dir(&world_dir).unwrap().flatten().collect();
+        assert_eq!(kept.len(), 3, "should keep 1 level.dat + 2 unrelated");
     }
 }

@@ -83,6 +83,9 @@ pub enum CoreError {
     #[error("{what} is not implemented yet")]
     NotImplemented { what: String },
 
+    #[error("no platform data directory for backups; set [backups] dir in config.toml")]
+    NoBackupDir,
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
