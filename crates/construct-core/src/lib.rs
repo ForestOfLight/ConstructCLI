@@ -8,6 +8,7 @@ pub mod config;
 pub mod discovery;
 pub mod error;
 pub mod leveldat;
+pub mod pack;
 pub mod store;
 
 pub use error::{CoreError, Result};

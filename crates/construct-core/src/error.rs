@@ -65,6 +65,9 @@ pub enum CoreError {
     #[error("config error in {}: {reason}", path.display())]
     BadConfig { path: PathBuf, reason: String },
 
+    #[error("not a usable pack at {}: {reason}", path.display())]
+    BadPack { path: PathBuf, reason: String },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
