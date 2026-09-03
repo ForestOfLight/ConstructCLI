@@ -68,6 +68,9 @@ pub enum CoreError {
     #[error("not a usable pack at {}: {reason}", path.display())]
     BadPack { path: PathBuf, reason: String },
 
+    #[error("Construct is not installed")]
+    ConstructNotInstalled { searched: Vec<PathBuf> },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
