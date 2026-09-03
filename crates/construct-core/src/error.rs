@@ -90,6 +90,16 @@ pub enum CoreError {
     #[error("Construct is not installed")]
     ConstructNotInstalled { searched: Vec<PathBuf> },
 
+    #[error(
+        "install of {} did not finish: the old copy was removed and the new one is staged at {}: {reason}",
+        dest.display(), staging.display()
+    )]
+    IncompleteInstall {
+        dest: PathBuf,
+        staging: PathBuf,
+        reason: String,
+    },
+
     #[error("unusable structure name {name:?}: {reason}")]
     BadStructureName { name: String, reason: String },
 

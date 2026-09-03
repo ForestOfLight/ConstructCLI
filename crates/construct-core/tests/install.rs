@@ -348,6 +348,83 @@ fn installing_the_version_already_present_is_a_no_op() {
 }
 
 #[test]
+#[cfg(unix)]
+fn a_copy_failure_partway_through_leaves_the_original_completely_intact() {
+    // The Critical finding this test exists for: a naive delete-then-copy
+    // destroys the original before the copy is known to succeed, so a copy
+    // failure (disk full, most plausibly) leaves the user with neither the
+    // old pack nor the new one. This provokes a real failure partway through
+    // staging the new pack — before the original is ever touched — and
+    // asserts the original pack is exactly as it was: same manifest, same
+    // version, every structure present with its original bytes.
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("development_behavior_packs");
+    let existing = installed_pack(
+        &root,
+        "Construct[BP]",
+        construct_core::pack::CONSTRUCT_BP_UUID,
+        [1, 1, 0],
+        &[("bomber", b"mine"), ("castle", b"also mine")],
+    );
+
+    let new = tmp.path().join("new/Construct[BP]");
+    installed_pack(
+        new.parent().unwrap(),
+        "Construct[BP]",
+        construct_core::pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        &[],
+    );
+    // A subdirectory of the new pack that the recursive copy cannot read
+    // into, so `copy_dir(src, &staging)` errors out partway through.
+    let unreadable = new.join("scripts");
+    std::fs::create_dir_all(&unreadable).unwrap();
+    std::fs::write(unreadable.join("main.js"), b"// code").unwrap();
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let result = install::place(&root, &new, false);
+
+    // Restore permissions unconditionally so the tempdir can clean itself up
+    // regardless of what the assertions below find.
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(
+        result.is_err(),
+        "expected the unreadable subdirectory to fail the staged copy"
+    );
+
+    // The original must be completely untouched: same manifest, same
+    // version, and every user structure still there with its original
+    // bytes.
+    let manifest = construct_core::pack::manifest::read(&existing).unwrap();
+    assert_eq!(manifest.version, [1, 1, 0]);
+    assert_eq!(manifest.uuid, construct_core::pack::CONSTRUCT_BP_UUID);
+    let structures = existing.join("structures");
+    assert_eq!(
+        std::fs::read(structures.join("bomber.mcstructure")).unwrap(),
+        b"mine"
+    );
+    assert_eq!(
+        std::fs::read(structures.join("castle.mcstructure")).unwrap(),
+        b"also mine"
+    );
+
+    // And nothing was left behind that would corrupt a later run.
+    let leftovers: Vec<_> = std::fs::read_dir(&root)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(".constructcli-staging-"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "expected the failed stage to be cleaned up, found {leftovers:?}"
+    );
+}
+
+#[test]
 fn a_first_install_creates_the_root_and_copies_the_pack() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("development_behavior_packs");
