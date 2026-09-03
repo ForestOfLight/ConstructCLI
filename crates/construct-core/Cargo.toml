@@ -20,3 +20,4 @@ zip.workspace = true
 tempfile.workspace = true
 tar.workspace = true
 flate2.workspace = true
+zip.workspace = true
