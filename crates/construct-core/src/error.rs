@@ -80,6 +80,9 @@ pub enum CoreError {
     #[error("unusable structure name {name:?}: {reason}")]
     BadStructureName { name: String, reason: String },
 
+    #[error("{what} is not implemented yet")]
+    NotImplemented { what: String },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

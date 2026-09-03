@@ -1240,3 +1240,52 @@ fn import_without_construct_points_at_install() {
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stderr).contains("construct install"));
 }
+
+#[test]
+fn delete_unlinks_a_pack_structure() {
+    let root = world_with_construct(&[("bomber", b"x")]);
+    let file = root
+        .path()
+        .join("development_behavior_packs/Construct[BP]/structures/bomber.mcstructure");
+    assert!(file.exists());
+
+    let out = bin()
+        .args([
+            "delete",
+            "Test",
+            "bomber",
+            "--source",
+            "pack",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!file.exists());
+}
+
+#[test]
+fn deleting_from_a_world_database_is_refused_for_now() {
+    // Stage 4 territory. The refusal must arrive before anything is touched.
+    let root = world_with_construct(&[]);
+    let out = bin()
+        .args([
+            "delete",
+            "Test",
+            "house",
+            "--source",
+            "world",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--source pack"), "stderr:\n{stderr}");
+}

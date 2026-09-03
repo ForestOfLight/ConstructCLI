@@ -87,4 +87,12 @@ pub enum Command {
         /// Destination world name, qualified reference, or path.
         dst_world: String,
     },
+
+    /// Remove an imported structure. `--source world` is not implemented yet.
+    Delete {
+        /// World name, qualified reference, or path.
+        world: String,
+        /// Structure name.
+        structure: String,
+    },
 }

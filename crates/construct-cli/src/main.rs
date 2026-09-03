@@ -170,6 +170,16 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 out,
             )
         }
+        Command::Delete { world, structure } => {
+            let w = resolve_world(world)?;
+            commands::delete::run(
+                &w,
+                structure,
+                &installations,
+                cli.source.map(Into::into),
+                out,
+            )
+        }
     }
 }
 
@@ -254,6 +264,9 @@ fn report(err: &CoreError) {
         CoreError::BadStructureName { .. } => {
             eprintln!("\nChoose a name explicitly:\n  construct import <file> --name <name>");
         }
+        CoreError::NotImplemented { .. } => {
+            eprintln!("\nUse --source pack to delete an imported structure.");
+        }
         _ => {}
     }
 }
@@ -274,7 +287,8 @@ fn exit_code(err: &CoreError) -> i32 {
         | CoreError::AmbiguousStructure { .. }
         | CoreError::AmbiguousInstallation { .. }
         | CoreError::MalformedReference { .. }
-        | CoreError::BadStructureName { .. } => 2,
+        | CoreError::BadStructureName { .. }
+        | CoreError::NotImplemented { .. } => 2,
         CoreError::WorldInUse { .. } => 4,
         _ => 1,
     }
