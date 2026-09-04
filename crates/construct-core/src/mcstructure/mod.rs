@@ -5,6 +5,9 @@
 //! documentation by tryashtar, github.com/tryashtar), cross-checked against 13
 //! real files exported from the developer's own worlds.
 
+pub mod decode;
 pub mod geometry;
+pub(crate) mod nbt;
 
+pub use decode::{BlockState, Structure, VOID, decode};
 pub use geometry::{BoundingBox, Coord, Size};

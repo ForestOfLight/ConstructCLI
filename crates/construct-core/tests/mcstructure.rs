@@ -1,0 +1,207 @@
+mod support;
+
+use construct_core::mcstructure::{self, VOID};
+use support::{Build, block, compound, int_list};
+
+#[test]
+fn a_single_block_structure_decodes() {
+    let b = Build::solid([1, 1, 1], [10, 64, -3], "minecraft:stone");
+    let s = mcstructure::decode(&b.bytes(), "test").unwrap();
+
+    assert_eq!(s.format_version, 1);
+    assert_eq!(s.size, mcstructure::Size { x: 1, y: 1, z: 1 });
+    assert_eq!(
+        s.origin,
+        mcstructure::Coord {
+            x: 10,
+            y: 64,
+            z: -3
+        }
+    );
+    assert_eq!(s.layers[0], vec![0]);
+    assert_eq!(s.layers[1], vec![VOID]);
+    assert_eq!(s.palette.len(), 1);
+    assert_eq!(s.palette[0].name, "minecraft:stone");
+    assert_eq!(s.palette[0].version, 18163713);
+    assert!(s.block_position_data.is_empty());
+    assert!(s.entities.is_empty());
+}
+
+#[test]
+fn the_second_layer_carries_waterlogging() {
+    // A waterlogged block: the block itself on layer 0, water on layer 1.
+    let mut b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:oak_fence");
+    b.palette.push(block("minecraft:water"));
+    b.layer1 = vec![1];
+    let s = mcstructure::decode(&b.bytes(), "test").unwrap();
+
+    assert_eq!(s.layers[0], vec![0]);
+    assert_eq!(s.layers[1], vec![1]);
+    assert_eq!(s.palette[1].name, "minecraft:water");
+}
+
+#[test]
+fn void_gaps_decode_as_negative_one() {
+    let mut b = Build::solid([2, 1, 1], [0, 0, 0], "minecraft:stone");
+    b.layer0 = vec![0, VOID];
+    let s = mcstructure::decode(&b.bytes(), "test").unwrap();
+    assert_eq!(s.layers[0], vec![0, VOID]);
+}
+
+#[test]
+fn block_position_data_decodes_keyed_by_index() {
+    let mut b = Build::solid([2, 1, 1], [0, 0, 0], "minecraft:chest");
+    b.block_position_data = vec![(
+        "1".to_string(),
+        compound(vec![(
+            "block_entity_data",
+            compound(vec![("id", nbtx::Value::String("Chest".into()))]),
+        )]),
+    )];
+    let s = mcstructure::decode(&b.bytes(), "test").unwrap();
+
+    assert_eq!(s.block_position_data.len(), 1);
+    assert!(s.block_position_data.contains_key(&1usize));
+}
+
+#[test]
+fn entities_decode_untouched() {
+    let mut b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:air");
+    b.entities = vec![compound(vec![
+        ("identifier", nbtx::Value::String("minecraft:pig".into())),
+        (
+            "Pos",
+            nbtx::Value::List(vec![
+                nbtx::Value::Float(1.5),
+                nbtx::Value::Float(64.0),
+                nbtx::Value::Float(-2.5),
+            ]),
+        ),
+    ])];
+    let s = mcstructure::decode(&b.bytes(), "test").unwrap();
+    assert_eq!(s.entities.len(), 1);
+    assert_eq!(s.entities[0], b.entities[0]);
+}
+
+#[test]
+fn the_real_construct_fixture_decodes() {
+    // The one committed real file: proves the model agrees with what the game
+    // actually writes, which no builder can establish on its own.
+    let bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/construct.mcstructure"
+    ))
+    .unwrap();
+    let s = mcstructure::decode(&bytes, "construct.mcstructure").unwrap();
+    assert_eq!(s.size, mcstructure::Size { x: 7, y: 7, z: 7 });
+    assert_eq!(s.layers[0].len(), 343);
+    assert_eq!(s.layers[1].len(), 343);
+    assert_eq!(s.palette.len(), 6);
+}
+
+// --- the game's own load-time validation rules, from the reference doc ---
+
+#[test]
+fn a_missing_required_field_is_refused() {
+    let b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
+    let nbtx::Value::Compound(mut root) = b.nbt() else {
+        unreachable!()
+    };
+    root.remove("size");
+    let bytes = nbtx::to_le_bytes(&nbtx::Value::Compound(root)).unwrap();
+
+    let err = mcstructure::decode(&bytes, "test").unwrap_err();
+    assert!(
+        format!("{err}").contains("size"),
+        "error must name the field: {err}"
+    );
+}
+
+#[test]
+fn block_indices_with_other_than_two_layers_is_refused() {
+    let b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
+    let nbtx::Value::Compound(mut root) = b.nbt() else {
+        unreachable!()
+    };
+    let nbtx::Value::Compound(mut structure) = root["structure"].clone() else {
+        unreachable!()
+    };
+    structure.insert(
+        "block_indices".into(),
+        nbtx::Value::List(vec![int_list(&[0])]),
+    );
+    root.insert("structure".into(), nbtx::Value::Compound(structure));
+    let bytes = nbtx::to_le_bytes(&nbtx::Value::Compound(root)).unwrap();
+
+    let err = mcstructure::decode(&bytes, "test").unwrap_err();
+    assert!(
+        format!("{err}").contains('2'),
+        "error must say two are required: {err}"
+    );
+}
+
+#[test]
+fn layers_of_different_lengths_are_refused() {
+    let mut b = Build::solid([2, 1, 1], [0, 0, 0], "minecraft:stone");
+    b.layer1 = vec![VOID];
+    let err = mcstructure::decode(&b.bytes(), "test").unwrap_err();
+    assert!(
+        format!("{err}").contains("same"),
+        "error must say they must match: {err}"
+    );
+}
+
+#[test]
+fn a_layer_length_that_disagrees_with_size_is_refused() {
+    let mut b = Build::solid([2, 1, 1], [0, 0, 0], "minecraft:stone");
+    b.layer0 = vec![0, 0, 0];
+    b.layer1 = vec![VOID, VOID, VOID];
+    let err = mcstructure::decode(&b.bytes(), "test").unwrap_err();
+    assert!(
+        format!("{err}").contains("size"),
+        "error must blame size: {err}"
+    );
+}
+
+#[test]
+fn a_missing_default_palette_is_refused() {
+    // The doc: "If the `default` palette is not present, loading the structure
+    // results in no blocks being placed." Silently producing nothing is worse
+    // than refusing.
+    let b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
+    let nbtx::Value::Compound(mut root) = b.nbt() else {
+        unreachable!()
+    };
+    let nbtx::Value::Compound(mut structure) = root["structure"].clone() else {
+        unreachable!()
+    };
+    structure.insert("palette".into(), compound(vec![]));
+    root.insert("structure".into(), nbtx::Value::Compound(structure));
+    let bytes = nbtx::to_le_bytes(&nbtx::Value::Compound(root)).unwrap();
+
+    let err = mcstructure::decode(&bytes, "test").unwrap_err();
+    assert!(
+        format!("{err}").contains("default"),
+        "error must name it: {err}"
+    );
+}
+
+#[test]
+fn a_negative_size_is_refused() {
+    let b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
+    let nbtx::Value::Compound(mut root) = b.nbt() else {
+        unreachable!()
+    };
+    root.insert("size".into(), int_list(&[-1, 1, 1]));
+    let bytes = nbtx::to_le_bytes(&nbtx::Value::Compound(root)).unwrap();
+    assert!(mcstructure::decode(&bytes, "test").is_err());
+}
+
+#[test]
+fn bytes_that_are_not_nbt_at_all_are_refused_by_name() {
+    let err = mcstructure::decode(b"not nbt", "broken.mcstructure").unwrap_err();
+    assert!(
+        format!("{err}").contains("broken.mcstructure"),
+        "the error must name the file: {err}"
+    );
+}

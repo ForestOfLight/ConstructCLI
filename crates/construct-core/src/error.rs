@@ -87,6 +87,9 @@ pub enum CoreError {
     #[error("not a usable pack at {}: {reason}", path.display())]
     BadPack { path: PathBuf, reason: String },
 
+    #[error("malformed structure {what}: {reason}")]
+    BadStructureFile { what: String, reason: String },
+
     #[error("Construct is not installed")]
     ConstructNotInstalled { searched: Vec<PathBuf> },
 
