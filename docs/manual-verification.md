@@ -1,6 +1,6 @@
 # Manual verification
 
-Things automated tests cannot settle. Stage 1 items only; §16 of the design
+Things automated tests cannot settle. Stage 1 and 2 items; §16 of the design
 spec holds the full list.
 
 - [ ] `construct worlds` finds every world the launcher shows, with matching names.
@@ -27,3 +27,20 @@ spec holds the full list.
       back in-game. Expected to be a non-issue — the ACL problem was specific to
       UWP's `LocalState` inside an AppContainer, and GDK uses ordinary
       `AppData\Roaming`.
+- [ ] **Does Construct pick up an imported structure after a world reload?**
+      `construct import <file> --world <world>`, reload the world, and look
+      for it in Construct's in-game list.
+- [ ] **Does the `level.dat` Beta APIs flip register in-game?**
+      `construct experiment <world> --beta-apis on`, then check that world's
+      Experiments settings. The command already proves the file round-trips;
+      only the game proves the flip is honored.
+- [ ] **Does a `.mcstructure` under `structures/<namespace>/` load as
+      `<namespace>:<name>`, nesting included?** `docs/bedrock-mcstructure-files.md`
+      documents both the flat and nested forms straight from the game's own
+      loading rules, not inference from one shipped pack — this item confirms
+      that documentation against the shipping game rather than settling an
+      open question.
+- [ ] **Does `construct install` produce a working Construct?** Install into
+      a scratch world, load it, and run `/construct`.
+- [ ] *(Windows)* **Do dev packs in `Users\Shared` apply to a world owned by
+      a specific account?**
