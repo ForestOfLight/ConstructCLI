@@ -572,7 +572,7 @@ git commit -m "Add .mcstructure geometry: sizes, origins, and the ZYX index"
 - Consumes: `Size`, `Coord` from Task 2.
 - Produces:
   - `pub struct Structure { pub format_version: i32, pub size: Size, pub origin: Coord, pub layers: [Vec<i32>; 2], pub palette: Vec<BlockState>, pub block_position_data: BTreeMap<usize, nbtx::Value>, pub entities: Vec<nbtx::Value> }`
-  - `pub struct BlockState { pub name: String, pub states: nbtx::Value, pub version: i32 }` — `Eq + Hash + Clone`
+  - `pub struct BlockState { pub name: String, pub states: nbtx::Value, pub version: i32 }` — `Clone + PartialEq + Hash`, but **not `Eq`**: `nbtx::Value` has no `Eq` impl and cannot have one (it holds floats)
   - `pub const VOID: i32 = -1;`
   - `pub fn decode(bytes: &[u8], what: &str) -> Result<Structure>`
   - `CoreError::BadStructureFile { what: String, reason: String }`
@@ -964,7 +964,12 @@ use std::collections::BTreeMap;
 pub const VOID: i32 = -1;
 
 /// One entry of `block_palette`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// Deliberately not `Eq`: `nbtx::Value` implements `PartialEq` and `Hash` but
+/// has no `Eq` impl and cannot have one, because it holds `Float(f32)` and
+/// `Double(f64)`. Palette deduplication therefore uses a linear scan rather
+/// than a `HashMap` — see `merge::unify_palettes`.
+#[derive(Debug, Clone, PartialEq, Hash)]
 pub struct BlockState {
     pub name: String,
     /// Kept as raw NBT: state values are strings, ints, or bytes depending on
@@ -1544,7 +1549,6 @@ Prepend to `crates/construct-core/src/merge.rs`:
 //! the plan's "Entity positions need no translation" note and §9.
 
 use crate::mcstructure::{BlockState, Structure};
-use std::collections::HashMap;
 
 /// Builds one palette covering every piece, plus a per-piece remap from that
 /// piece's own indices to the merged palette's.
@@ -1554,19 +1558,21 @@ use std::collections::HashMap;
 /// and a stair facing north onto one facing south.
 pub(crate) fn unify_palettes(pieces: &[Structure]) -> (Vec<BlockState>, Vec<Vec<i32>>) {
     let mut palette: Vec<BlockState> = Vec::new();
-    let mut seen: HashMap<BlockState, i32> = HashMap::new();
     let mut remaps = Vec::with_capacity(pieces.len());
 
     for piece in pieces {
         let mut remap = Vec::with_capacity(piece.palette.len());
         for entry in &piece.palette {
-            let index = match seen.get(entry) {
-                Some(i) => *i,
+            // A linear scan, not a HashMap: `BlockState` cannot be `Eq`
+            // (`nbtx::Value` holds floats), and a hand-written `impl Eq` would
+            // be a reflexivity claim a HashMap silently relies on. Palettes are
+            // small — the largest across 13 real files is 31 entries — so the
+            // quadratic term is not a real cost.
+            let index = match palette.iter().position(|e| e == entry) {
+                Some(i) => i as i32,
                 None => {
-                    let i = palette.len() as i32;
                     palette.push(entry.clone());
-                    seen.insert(entry.clone(), i);
-                    i
+                    (palette.len() - 1) as i32
                 }
             };
             remap.push(index);
@@ -1578,7 +1584,10 @@ pub(crate) fn unify_palettes(pieces: &[Structure]) -> (Vec<BlockState>, Vec<Vec<
 }
 ```
 
-`BlockState` must be `Eq + Hash`, which Task 3 already derives. `nbtx::Value` implements both.
+`BlockState` is `PartialEq + Hash` but **not** `Eq`, which is why this deduplicates by linear
+scan rather than with a `HashMap`. Do not "fix" that by adding `impl Eq for BlockState {}`:
+`nbtx::Value` holds `Float(f32)`/`Double(f64)`, so reflexivity is not guaranteed, and a
+`HashMap` would silently rely on it.
 
 In `crates/construct-core/src/lib.rs`, add `pub mod merge;` after `pub mod mcstructure;`.
 
@@ -1845,7 +1854,9 @@ fn a_mix_of_zero_and_real_origins_proceeds_with_a_warning() {
 #[test]
 fn a_union_too_large_to_allocate_is_refused() {
     let a = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
-    let b = Build::solid([1, 1, 1], [100_000, 0, 0], "minecraft:dirt");
+    // Two axes, not one: [100_000, 0, 0] alone is a union of only 100_001
+    // blocks, far below DEFAULT_MAX_VOLUME, and would not refuse at all.
+    let b = Build::solid([1, 1, 1], [100_000, 0, 100_000], "minecraft:dirt");
     let err = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default()).unwrap_err();
     assert!(format!("{err}").contains("large"), "{err}");
 }
@@ -1855,7 +1866,10 @@ fn an_oversized_but_allocatable_union_warns_rather_than_refusing() {
     // Minecraft loads structures past 64*256*64 without trouble, so this is a
     // performance warning, not a limit (§9).
     let a = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
-    let b = Build::solid([1, 1, 1], [200, 0, 200], "minecraft:dirt");
+    // 2001 x 1 x 2001 = 4,004,001 blocks: above PERFORMANCE_WARN_VOLUME
+    // (64*256*64 = 1,048,576) and below DEFAULT_MAX_VOLUME (64,000,000), which
+    // is precisely the band this test is about.
+    let b = Build::solid([1, 1, 1], [2000, 0, 2000], "minecraft:dirt");
     let report = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default()).unwrap();
     assert!(
         report.warnings.iter().any(|w| w.contains("large")),
@@ -2342,10 +2356,13 @@ Then replace the `MergeReport { structure: Structure { … } }` construction's `
             let Some(&out_i) = placement[p].get(&local_index) else {
                 continue;
             };
+            // Insert only for the piece that owns the cell. There is exactly
+            // one owner per cell, so no stale entry can survive and nothing
+            // needs removing. An `else { remove }` arm here would be actively
+            // wrong under OnOverlap::First, where the winner writes first and
+            // the later loser would delete the winner's data.
             if owner[0][out_i] == Some(p) {
                 block_position_data.insert(out_i, data.clone());
-            } else {
-                block_position_data.remove(&out_i);
             }
         }
     }
@@ -2362,7 +2379,7 @@ Then replace the `MergeReport { structure: Structure { … } }` construction's `
 
 and use `block_position_data` and `entities` in the returned `Structure`.
 
-The `else { block_position_data.remove(&out_i); }` arm matters: a losing piece processed *after* the winner must not leave stale data behind, and under `OnOverlap::First` the winner is the earlier piece.
+Note there is no `else` arm removing anything. Each cell has exactly one owner, so inserting only for the owner cannot leave stale data — and a remove arm would break `OnOverlap::First`, where the winner writes first and the later loser would delete it again.
 
 - [ ] **Step 4: Verify**
 
