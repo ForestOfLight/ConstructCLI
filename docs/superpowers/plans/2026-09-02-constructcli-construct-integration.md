@@ -4583,6 +4583,129 @@ git commit -m "Document the Construct integration"
 
 ---
 
+### Task 21: Structures nest deeper than one level
+
+Added mid-execution. `docs/bedrock-mcstructure-files.md` — third-party documentation of the
+`.mcstructure` format and its loading rules — settles §17 and corrects an assumption Task 5 shipped.
+
+**The rule, from that document:**
+
+| Path under the pack | Identifier |
+|---|---|
+| `structures/house.mcstructure` | `mystructure:house` |
+| `structures/dungeon/entrance.mcstructure` | `dungeon:entrance` |
+| `structures/stuff/towers/diamond.mcstructure` | `stuff:towers/diamond` |
+
+**The first subfolder is the namespace; every folder after it is part of the name.** Task 5's
+`structures::list` walks exactly one level and silently ignores anything deeper, on the reasoning
+that nothing deeper was addressable in-game. That reasoning is now known to be wrong, so a
+structure at `structures/stuff/towers/diamond.mcstructure` is invisible to `list` and unreachable
+by `export`, `copy`, and `delete`.
+
+**Files:**
+- Modify: `crates/construct-core/src/pack/structures.rs`
+- Modify: `crates/construct-core/tests/pack.rs`
+
+**Interfaces:** unchanged. `list`, `path_for`, `write`, `remove`, and `derive_name` keep their
+signatures; only `list`'s depth behaviour and the id it derives change.
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[test]
+fn a_structure_nested_below_the_namespace_folder_is_addressable() {
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    touch(&pack.join("structures/stuff/towers/diamond.mcstructure"), b"x");
+
+    let found = structures::list(&pack);
+    assert_eq!(found.len(), 1);
+    // First subfolder is the namespace; everything after it is part of the name.
+    assert_eq!(found[0].id, "stuff:towers/diamond");
+    assert_eq!(found[0].name, "stuff:towers/diamond");
+}
+
+#[test]
+fn depth_does_not_change_the_flat_or_one_level_rules() {
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    touch(&pack.join("structures/house.mcstructure"), b"x");
+    touch(&pack.join("structures/Understudy/players.mcstructure"), b"x");
+    touch(&pack.join("structures/a/b/c/d.mcstructure"), b"x");
+
+    let ids: Vec<String> = structures::list(&pack).into_iter().map(|s| s.id).collect();
+    assert!(ids.contains(&"mystructure:house".to_string()));
+    assert!(ids.contains(&"understudy:players".to_string()));
+    assert!(ids.contains(&"a:b/c/d".to_string()));
+}
+
+#[test]
+fn only_the_namespace_segment_is_lowercased() {
+    // Minecraft namespaces are lowercase, but the path after the namespace is
+    // part of the name and is left exactly as it sits on disk.
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    touch(&pack.join("structures/Stuff/Towers/Diamond.mcstructure"), b"x");
+    assert_eq!(structures::list(&pack)[0].id, "stuff:Towers/Diamond");
+}
+
+#[test]
+fn writing_still_refuses_a_separator_in_a_name() {
+    // Reading and writing stay asymmetric on purpose (§17): `list` reports whatever
+    // depth exists, but nothing this tool writes creates a nested path, because the
+    // character that would enable it is the one that makes traversal possible.
+    assert!(structures::path_for(Path::new("/p"), "stuff:towers/diamond").is_err());
+    assert!(structures::derive_name("towers/diamond").is_err());
+}
+```
+
+- [ ] **Step 2: Run them and watch them fail**
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+cargo test -p construct-core --test pack
+```
+
+Expected: the first three fail — today `list` never descends past one level, so the nested files
+are simply absent from its output. The fourth should already pass; it is there to pin the
+asymmetry so a later change cannot quietly relax `path_for` while widening `list`.
+
+- [ ] **Step 3: Make `list` walk to full depth**
+
+Replace the two-pass structure with a recursive walk that carries the path relative to
+`structures/`. For each `.mcstructure` file found at a relative path:
+
+- no directory component → `mystructure:<stem>`
+- one or more components → `<first component lowercased>:<rest joined with '/' >/<stem>`, i.e. the
+  first component is the namespace and the remainder of the path, including the file stem, is the
+  name.
+
+Keep the existing sort by id, keep `size_bytes` from the entry metadata, and keep `name` as
+`key::display_name(&id)` so the `mystructure:` prefix is still stripped for display and any other
+namespace stays visible.
+
+On Windows the relative path's components must be joined with `/` regardless of the platform
+separator, since the identifier is a Minecraft id and not a filesystem path.
+
+- [ ] **Step 4: Run the tests**
+
+```bash
+cargo test -p construct-core --test pack
+cargo test --workspace
+```
+
+Every earlier `structures::list` test must still pass unchanged — the flat and one-level rules are
+unchanged, and this only adds depth below them.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/construct-core
+git commit -m "Structures nest deeper than one level"
+```
+
+---
+
 ## Self-Review
 
 Run against the spec after the plan was written.
@@ -4610,6 +4733,10 @@ risky path exists."
 constructs one passes it. `Source` gains `Ord` in Task 1 because `catalog::sort` needs it.
 `commands::catalog::for_world` (CLI) and `pack::for_world` (core) share a name in different
 modules — always call them module-qualified.
+
+**Task 21 was added mid-execution**, after `docs/bedrock-mcstructure-files.md` settled §17 and
+showed Task 5's one-level-deep assumption to be wrong. It is listed last because it corrects a
+shipped behaviour rather than blocking anything after it.
 
 **Task 7 writes logic that Task 9 extracts.** That is intentional: the second caller is what
 earns the extraction, and doing it earlier would be designing an interface for one user.
