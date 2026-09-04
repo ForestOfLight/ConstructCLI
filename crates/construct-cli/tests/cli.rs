@@ -1603,6 +1603,49 @@ fn stub_github(addon: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
     (base, handle)
 }
 
+/// Like `stub_github`, but the release advertises a larger asset size than
+/// the bytes actually served for `/download` — simulating a connection that
+/// drops mid-download without needing to actually sever one. Exists only for
+/// the truncated-download test; not joined, for the same reason `stub_github`
+/// isn't.
+fn stub_github_wrong_size(
+    addon: Vec<u8>,
+    claimed_size: u64,
+) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let release = format!(
+        r#"{{"tag_name":"v1.2.0","assets":[{{"name":"Construct-v1.2.0.mcaddon","size":{claimed_size},"browser_download_url":"{base}/download"}}]}}"#
+    );
+
+    let handle = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let body: Vec<u8> = if line.contains("/download") {
+                addon.clone()
+            } else {
+                release.clone().into_bytes()
+            };
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+        }
+    });
+    (base, handle)
+}
+
 /// A single-request stub answering only the release lookup, for commands like
 /// `status` that check a version but never download anything. Kept separate
 /// from `stub_github` rather than adding a parameter to it: that one's loop
@@ -1786,6 +1829,30 @@ fn install_reports_an_unreachable_github_without_touching_anything() {
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(!root.path().join("development_behavior_packs").exists());
+}
+
+#[test]
+fn install_names_both_byte_counts_when_the_download_is_truncated() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
+    let addon = build_mcaddon_bytes();
+    let actual = addon.len() as u64;
+    let claimed = actual + 1000;
+    let (base, _server) = stub_github_wrong_size(addon, claimed);
+
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args(["install", "--com-mojang", root.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!root.path().join("development_behavior_packs").exists());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&claimed.to_string()) && stderr.contains(&actual.to_string()),
+        "expected both the claimed and actual byte counts in the error: {stderr}"
+    );
 }
 
 #[test]

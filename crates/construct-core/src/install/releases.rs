@@ -161,6 +161,17 @@ impl Releases for GitHub {
         let mut reader = response.body_mut().as_reader();
         let mut file = std::fs::File::create(to)?;
         let written = std::io::copy(&mut reader, &mut file)?;
+        // Without this, a connection that drops mid-download surfaces much
+        // later as a confusing zip error rather than naming the actual
+        // problem here, where both numbers are in hand.
+        if written != asset.size {
+            return Err(CoreError::Network {
+                reason: format!(
+                    "download truncated: expected {} bytes, got {written}",
+                    asset.size
+                ),
+            });
+        }
         Ok(written)
     }
 }
