@@ -24,8 +24,13 @@ pub struct Size {
 impl Size {
     /// Total block count. Computed in `i64`: sizes come from a file this tool
     /// did not write, and a wrapped `i32` would silently under-allocate.
+    /// Saturates at `i64::MAX` rather than overflowing: an absurd volume is
+    /// refused downstream anyway (decoder compares against file's declared layer
+    /// length, merge compares against a max-volume cap).
     pub fn volume(&self) -> i64 {
-        i64::from(self.x.max(0)) * i64::from(self.y.max(0)) * i64::from(self.z.max(0))
+        i64::from(self.x.max(0))
+            .saturating_mul(i64::from(self.y.max(0)))
+            .saturating_mul(i64::from(self.z.max(0)))
     }
 
     /// The flattened index of a coordinate, or `None` if it lies outside.
@@ -33,9 +38,16 @@ impl Size {
         if c.x < 0 || c.y < 0 || c.z < 0 || c.x >= self.x || c.y >= self.y || c.z >= self.z {
             return None;
         }
-        let i = i64::from(self.z) * i64::from(self.y) * i64::from(c.x)
-            + i64::from(self.z) * i64::from(c.y)
-            + i64::from(c.z);
+        let sz = i64::from(self.z);
+        let sy = i64::from(self.y);
+        let cx = i64::from(c.x);
+        let cy = i64::from(c.y);
+        let cz = i64::from(c.z);
+        let i = sz
+            .checked_mul(sy)?
+            .checked_mul(cx)?
+            .checked_add(sz.checked_mul(cy)?)?
+            .checked_add(cz)?;
         usize::try_from(i).ok()
     }
 
@@ -76,9 +88,9 @@ impl BoundingBox {
 
     pub fn size(&self) -> Size {
         Size {
-            x: self.max_exclusive.x - self.min.x,
-            y: self.max_exclusive.y - self.min.y,
-            z: self.max_exclusive.z - self.min.z,
+            x: self.max_exclusive.x.saturating_sub(self.min.x),
+            y: self.max_exclusive.y.saturating_sub(self.min.y),
+            z: self.max_exclusive.z.saturating_sub(self.min.z),
         }
     }
 
@@ -167,5 +179,57 @@ mod tests {
             z: 2000,
         };
         assert_eq!(s.volume(), 8_000_000_000);
+    }
+
+    #[test]
+    fn a_size_with_max_dimensions_saturates_volume_and_index_doesnt_panic() {
+        // i32::MAX^3 = 9.9×10²⁷ far exceeds i64::MAX = 9.2×10¹⁸.
+        // volume() must saturate to i64::MAX, and index_of() must not panic.
+        let s = Size {
+            x: i32::MAX,
+            y: i32::MAX,
+            z: i32::MAX,
+        };
+        assert_eq!(s.volume(), i64::MAX);
+        // Test that index_of on an in-range coordinate either returns None or
+        // a correct value, but does not panic.
+        let result = s.index_of(Coord { x: 0, y: 0, z: 0 });
+        // With i32::MAX dimensions, the coordinate (0,0,0) is in range and
+        // should produce index 0.
+        assert_eq!(result, Some(0));
+    }
+
+    #[test]
+    fn a_bounding_box_spanning_extreme_coordinates_saturates_size_and_doesnt_panic() {
+        // i32::MAX - i32::MIN = 4294967295, which overflows i32::MAX.
+        // size() must use saturating_sub to avoid panic.
+        let b = BoundingBox {
+            min: Coord {
+                x: i32::MIN,
+                y: i32::MIN,
+                z: i32::MIN,
+            },
+            max_exclusive: Coord {
+                x: i32::MAX,
+                y: i32::MAX,
+                z: i32::MAX,
+            },
+        };
+        let size = b.size();
+        // With saturating_sub, each dimension saturates to i32::MAX.
+        assert_eq!(size.x, i32::MAX);
+        assert_eq!(size.y, i32::MAX);
+        assert_eq!(size.z, i32::MAX);
+    }
+
+    #[test]
+    fn a_size_with_negative_dimensions_has_zero_volume_and_rejects_all_coordinates() {
+        // Negative dimensions are invalid but must not panic.
+        // volume() treats them as 0 (via .max(0)).
+        // index_of() rejects all coordinates via the boundary guard.
+        let s = Size { x: -5, y: 3, z: 2 };
+        assert_eq!(s.volume(), 0);
+        assert_eq!(s.index_of(Coord { x: 0, y: 0, z: 0 }), None);
+        assert_eq!(s.index_of(Coord { x: 1, y: 1, z: 1 }), None);
     }
 }
