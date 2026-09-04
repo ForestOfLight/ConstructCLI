@@ -9,6 +9,7 @@ pub mod config;
 pub mod discovery;
 pub mod error;
 pub mod install;
+pub mod inuse;
 pub mod leveldat;
 pub mod pack;
 pub mod store;

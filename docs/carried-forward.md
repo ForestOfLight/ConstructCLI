@@ -111,3 +111,34 @@ Two things surfaced after the fix wave, judged not worth another round.
 - **No test proves an *ordinary* 403 takes the generic network path** rather than being reported as
   a rate limit. The `x-ratelimit-remaining` check that separates them was confirmed by reading the
   code, not by a test. The rate-limited 403 and the 404 both have tests.
+
+## The pack-enable step is still unguarded against a live world
+
+`install --world` now refuses up front when Minecraft appears to have the
+world open (`construct_core::inuse`, exit 4), which covers the `level.dat`
+flip that prompted it. The pack-enable step writes
+`world_behavior_packs.json` / `world_resource_packs.json`, and the game
+rewrites *those* from memory on world exit too — observed directly on
+2026-09-04, mtime moving at 11:09:15 as a session ended.
+
+Deliberately not guarded, on the grounds that `install --world` refuses
+before it does anything, so the only way to reach the unguarded write is to
+open the world during the seconds the command is running. If that turns out
+to matter, the fix is to re-check `inuse::looks_in_use` immediately before
+`worldpacks::upsert` and treat a positive as a partial failure (exit 5), not
+to move the up-front check.
+
+## The in-use window rests on a single measurement
+
+`inuse::ACTIVITY_WINDOW` is 10 seconds, twice the longest gap measured
+between autosaves of a live world (19 writes in 90s, max gap 5s) on
+mcpelauncher/macOS 1.26.45.1. Nothing confirms other Minecraft builds save as
+often. A build that saves less frequently gets a false negative, and the
+silent-revert bug returns for it; there is a manual-checklist item for
+re-measuring per platform.
+
+Detection is by write recency because `db/LOCK` is unusable here: the
+mcpelauncher build creates no LOCK file even with a world open, and the only
+LOCK on the test machine was a stale leftover from an unclean exit. If a
+platform is found where the game does hold an flock'd LOCK, adding that as a
+definitive positive alongside the heuristic would be a strict improvement.

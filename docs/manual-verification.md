@@ -3,13 +3,13 @@
 Things automated tests cannot settle. Stage 1 and 2 items; §16 of the design
 spec holds the full list.
 
-- [ ] `construct worlds` finds every world the launcher shows, with matching names.
-- [ ] `construct list` on a world with structures matches what Construct shows in-game.
-- [ ] **Locked world:** load a world in Minecraft, leave it running, then
+- [x] `construct worlds` finds every world the launcher shows, with matching names.
+- [x] `construct list` on a world with structures matches what Construct shows in-game.
+- [x] **Locked world:** load a world in Minecraft, leave it running, then
       `construct list <that world>`. It must print the snapshot notice and still
       list structures. POSIX `fcntl` locks are per-process, so this cannot be
       tested from inside the test binary — only a second process proves it.
-- [ ] **World left unchanged:** run `construct list` and `construct export`
+- [x] **World left unchanged:** run `construct list` and `construct export`
       against a world, then confirm the world's `db/` directory is unchanged
       and the world still loads in Minecraft. Byte-identity across every file
       in `db/` has already been verified programmatically; this step is about
@@ -27,14 +27,14 @@ spec holds the full list.
       back in-game. Expected to be a non-issue — the ACL problem was specific to
       UWP's `LocalState` inside an AppContainer, and GDK uses ordinary
       `AppData\Roaming`.
-- [ ] **Does Construct pick up an imported structure after a world reload?**
+- [x] **Does Construct pick up an imported structure after a world reload?**
       `construct import <file> --world <world>`, reload the world, and look
       for it in Construct's in-game list.
-- [ ] **Does the `level.dat` Beta APIs flip register in-game?**
+- [x] **Does the `level.dat` Beta APIs flip register in-game?**
       `construct experiment <world> --beta-apis on`, then check that world's
       Experiments settings. The command already proves the file round-trips;
       only the game proves the flip is honored.
-- [ ] **Does a `.mcstructure` under `structures/<namespace>/` load as
+- [x] **Does a `.mcstructure` under `structures/<namespace>/` load as
       `<namespace>:<name>`, nesting included?** `docs/bedrock-mcstructure-files.md`
       — a local, untracked copy of tryashtar's third-party `.mcstructure` format
       documentation, published on GitHub (github.com/tryashtar) — documents both
@@ -45,3 +45,12 @@ spec holds the full list.
       a scratch world, load it, and run `/construct`.
 - [ ] *(Windows)* **Do dev packs in `Users\Shared` apply to a world owned by
       a specific account?**
+- [ ] **Does the in-use refusal fire on Minecraft builds other than
+      mcpelauncher/macOS?** With a world loaded, run
+      `construct experiment <world> --beta-apis on` and expect exit 4 and the
+      "Close the world" message; then close the world and expect the flip to
+      succeed. The 10-second window comes from one measured autosave cadence
+      (~5s, mcpelauncher/macOS, 2026-09-04). A build that saves less often
+      would slip through the window and revert the change silently again —
+      which is exactly the bug this replaced, so it is worth re-measuring per
+      platform rather than assuming.
