@@ -247,3 +247,125 @@ fn bytes_that_are_not_nbt_at_all_are_refused_by_name() {
         "the error must name the file: {err}"
     );
 }
+
+// --- encoding ---
+
+/// Decoding an encoded structure must give back an equal structure. Byte
+/// equality is deliberately *not* asserted: nbtx stores compounds in a
+/// HashMap, so key order is not stable, and a golden-file comparison would
+/// fail for reasons that mean nothing (spec §12).
+fn assert_round_trips(s: &construct_core::mcstructure::Structure) {
+    let bytes = mcstructure::encode(s, "test").unwrap();
+    let again = mcstructure::decode(&bytes, "test").unwrap();
+    assert_eq!(again.format_version, s.format_version);
+    assert_eq!(again.size, s.size);
+    assert_eq!(again.origin, s.origin);
+    assert_eq!(again.layers, s.layers);
+    assert_eq!(again.palette, s.palette);
+    assert_eq!(again.block_position_data, s.block_position_data);
+    assert_eq!(again.entities, s.entities);
+}
+
+#[test]
+fn a_single_block_structure_round_trips() {
+    let b = Build::solid([1, 1, 1], [10, 64, -3], "minecraft:stone");
+    assert_round_trips(&mcstructure::decode(&b.bytes(), "test").unwrap());
+}
+
+#[test]
+fn a_waterlogged_structure_round_trips() {
+    let mut b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:oak_fence");
+    b.palette.push(block("minecraft:water"));
+    b.layer1 = vec![1];
+    assert_round_trips(&mcstructure::decode(&b.bytes(), "test").unwrap());
+}
+
+#[test]
+fn a_structure_with_void_gaps_round_trips() {
+    let mut b = Build::solid([3, 1, 1], [0, 0, 0], "minecraft:stone");
+    b.layer0 = vec![0, VOID, 0];
+    assert_round_trips(&mcstructure::decode(&b.bytes(), "test").unwrap());
+}
+
+#[test]
+fn a_structure_with_block_entities_round_trips() {
+    let mut b = Build::solid([2, 1, 1], [0, 0, 0], "minecraft:chest");
+    b.block_position_data = vec![(
+        "1".to_string(),
+        compound(vec![(
+            "block_entity_data",
+            compound(vec![("id", nbtx::Value::String("Chest".into()))]),
+        )]),
+    )];
+    assert_round_trips(&mcstructure::decode(&b.bytes(), "test").unwrap());
+}
+
+#[test]
+fn a_structure_with_entities_round_trips() {
+    let mut b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:air");
+    b.entities = vec![compound(vec![
+        ("identifier", nbtx::Value::String("minecraft:pig".into())),
+        (
+            "Pos",
+            nbtx::Value::List(vec![
+                nbtx::Value::Float(1.5),
+                nbtx::Value::Float(64.0),
+                nbtx::Value::Float(-2.5),
+            ]),
+        ),
+    ])];
+    assert_round_trips(&mcstructure::decode(&b.bytes(), "test").unwrap());
+}
+
+#[test]
+fn an_empty_entity_list_survives_encoding() {
+    // This is the case that made stage 3 impossible before nbtx was patched:
+    // a structure with no entities has an empty list, which stock nbtx wrote
+    // five bytes short and could not read back.
+    let b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
+    let s = mcstructure::decode(&b.bytes(), "test").unwrap();
+    assert!(s.entities.is_empty());
+    let bytes = mcstructure::encode(&s, "test").unwrap();
+    assert!(mcstructure::decode(&bytes, "test").is_ok());
+}
+
+#[test]
+fn the_real_construct_fixture_round_trips() {
+    let bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/construct.mcstructure"
+    ))
+    .unwrap();
+    let s = mcstructure::decode(&bytes, "construct.mcstructure").unwrap();
+    assert_round_trips(&s);
+
+    // The payload length must be preserved exactly. This is the assertion that
+    // catches the empty-list defect regressing: each unwritten empty list
+    // costs exactly five bytes.
+    let re = mcstructure::encode(&s, "construct.mcstructure").unwrap();
+    assert_eq!(
+        re.len(),
+        bytes.len(),
+        "re-encoding changed the payload length"
+    );
+}
+
+#[test]
+fn encoding_refuses_a_structure_whose_layers_disagree_with_its_size() {
+    // Guards against merge handing the encoder an inconsistent grid: the file
+    // would be written and then fail to load in-game, far from the cause.
+    let b = Build::solid([2, 1, 1], [0, 0, 0], "minecraft:stone");
+    let mut s = mcstructure::decode(&b.bytes(), "test").unwrap();
+    s.layers[0].push(0);
+    let err = mcstructure::encode(&s, "test").unwrap_err();
+    assert!(format!("{err}").contains("size"), "{err}");
+}
+
+#[test]
+fn encoding_refuses_a_palette_index_out_of_range() {
+    let b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
+    let mut s = mcstructure::decode(&b.bytes(), "test").unwrap();
+    s.layers[0] = vec![5]; // palette has one entry
+    let err = mcstructure::encode(&s, "test").unwrap_err();
+    assert!(format!("{err}").contains("palette"), "{err}");
+}

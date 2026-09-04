@@ -6,8 +6,10 @@
 //! real files exported from the developer's own worlds.
 
 pub mod decode;
+pub mod encode;
 pub mod geometry;
 pub(crate) mod nbt;
 
 pub use decode::{BlockState, Structure, VOID, decode};
+pub use encode::encode;
 pub use geometry::{BoundingBox, Coord, Size};
