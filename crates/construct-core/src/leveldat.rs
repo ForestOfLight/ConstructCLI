@@ -360,6 +360,15 @@ mod tests {
     }
 
     #[test]
+    // Needs a real Minecraft world ("Amelix CMP") at a fixed path under the
+    // developer's home directory. Absent that world it `eprintln!`s and
+    // returns `Ok`, asserting nothing — passing on CI and every other
+    // machine regardless of whether the parser even works. `#[ignore]` makes
+    // that skip visible (`cargo test` reports it as ignored) instead of a
+    // silent, vacuous pass; run it explicitly with
+    // `cargo test -- --ignored parses_a_real_world_level_dat` on a machine
+    // that has the world.
+    #[ignore = "needs a real Minecraft world at a fixed local path; see comment above"]
     fn parses_a_real_world_level_dat() {
         let path = dirs_next_to_home(
             "Library/Application Support/mcpelauncher/games/com.mojang/minecraftWorlds/Amelix CMP/level.dat",
