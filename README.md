@@ -79,6 +79,13 @@ shows the change. `delete` currently only removes an imported structure
 only leveldb write this tool will ever make, and `--source world` refuses
 with a usage error until then.
 
+A name — from `--name`, or derived from the file stem when it's omitted —
+may use only `a-z0-9_.-`; a `/` is refused. `list` reports structures
+Construct or a hand-edited pack nested at any depth, but nothing this tool
+*writes* creates a nested path: `/` is exactly the character that makes path
+traversal possible, the same class of bug `export`'s derived filenames
+already had once, caught before stage 1 shipped.
+
 A `<world>` is a world's display name, a folder name, a qualified
 `<installation>/<account>/<world>` reference, or a path to a world directory.
 When a name is ambiguous, the error prints the qualified forms to pick from.
@@ -99,9 +106,10 @@ document. This is the contract the eventual GUI is meant to build on.
 
 Three environment variables:
 
-- `CONSTRUCT_INSTALLATION` — which installation `install`, `import`, and
-  `status` target when they aren't pinned to a `--world`. Same role as
-  `config.toml`'s `default_installation`, and checked first.
+- `CONSTRUCT_INSTALLATION` — which installation `install` and `import`
+  target when they aren't pinned to a `--world`, and which installation
+  `status` reports on (it has no `--world` flag of its own to pin with).
+  Same role as `config.toml`'s `default_installation`, and checked first.
 - `CONSTRUCT_GITHUB_TOKEN` (or `GITHUB_TOKEN`, which CI environments already
   set) — raises GitHub's rate limit above the unauthenticated default. Read
   by `install` and `status`.
