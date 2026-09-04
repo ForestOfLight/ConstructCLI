@@ -12,5 +12,6 @@ pub mod install;
 pub mod leveldat;
 pub mod pack;
 pub mod store;
+pub mod worldpacks;
 
 pub use error::{CoreError, Result};
