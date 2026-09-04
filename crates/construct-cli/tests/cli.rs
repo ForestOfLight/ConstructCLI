@@ -1926,6 +1926,67 @@ fn install_exits_5_with_the_packs_already_placed_when_the_world_pack_list_is_mal
 }
 
 #[test]
+fn install_world_warns_when_a_world_local_construct_copy_shadows_the_shared_install() {
+    // `install --world` always places into the installation's shared
+    // dev-pack root, but `pack::for_world` (and every structure command
+    // through it) prefers a world's own `behavior_packs/Construct[BP]` copy
+    // when it has one. Without a warning, this world would keep silently
+    // running the untouched 1.1.0 copy after `install` reports 1.2.0.
+    let root = tempfile::tempdir().unwrap();
+    let world = root.path().join("minecraftWorlds/Test");
+    std::fs::create_dir_all(world.join("db")).unwrap();
+    std::fs::write(world.join("levelname.txt"), "Test").unwrap();
+    write_level_dat(&world.join("level.dat"), 0);
+
+    let local_bp = world.join("behavior_packs/Construct[BP]");
+    std::fs::create_dir_all(&local_bp).unwrap();
+    std::fs::write(
+        local_bp.join("manifest.json"),
+        r#"{"format_version":2,
+            "header":{"name":"Construct [BP] v1.1.0","uuid":"8c0c0153-d8b9-482a-889f-aef922b8fe58","version":[1,1,0]},
+            "modules":[{"type":"data","uuid":"f4d52ae1-2c26-4938-b8c2-7e455d495620","version":[1,0,0]}]}"#,
+    )
+    .unwrap();
+
+    let addon = build_mcaddon_bytes(); // ships v1.2.0, per stub_github
+    let (base, _server) = stub_github(addon);
+
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args([
+            "install",
+            "--world",
+            "Test",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("shadows") && stderr.contains(&local_bp.display().to_string()),
+        "expected a warning naming the shadowing world-local copy: {stderr}"
+    );
+
+    // The shared copy really was upgraded...
+    let shared_manifest = std::fs::read_to_string(
+        root.path()
+            .join("development_behavior_packs/Construct[BP]/manifest.json"),
+    )
+    .unwrap();
+    assert!(shared_manifest.contains("1, 2, 0") || shared_manifest.contains("[1,2,0]"));
+    // ...but the world-local copy install never touches is still 1.1.0.
+    let local_manifest = std::fs::read_to_string(local_bp.join("manifest.json")).unwrap();
+    assert!(local_manifest.contains("1.1.0"));
+}
+
+#[test]
 fn status_reports_the_installed_version_and_which_worlds_have_it() {
     let root = world_with_construct(&[]);
     let world = root.path().join("minecraftWorlds/Test");

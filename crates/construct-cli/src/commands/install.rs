@@ -106,6 +106,25 @@ pub fn run(
     let mut enable_error = None;
     let mut beta_apis = None;
     if let Some(world) = world {
+        // Placement above always writes into the installation's shared
+        // dev-pack root. But a world with its own `behavior_packs/Construct[BP]`
+        // copy is governed by that copy, not the shared one (`pack::for_world`'s
+        // precedence — the same one `import`/`copy`/`delete`/`list` resolve
+        // through). Without this, install would report a version bump the
+        // world never actually gets, and every later structure command would
+        // keep writing into the untouched local copy.
+        if let Ok(target) = pack::for_world(world, installation)
+            && let Some(shared) = &target.also_at
+        {
+            out.warn(format!(
+                "two copies of Construct in {}; the world's own copy at {} shadows the one \
+                 just installed at {}",
+                world.display_name,
+                target.pack.dir.display(),
+                shared.display()
+            ));
+        }
+
         // The packs are already placed on disk; from here a failure is
         // partial, not total, same as the level.dat flip below. Try both
         // upserts rather than stopping at the first failure — they touch
