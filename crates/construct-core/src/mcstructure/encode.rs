@@ -20,6 +20,15 @@ fn int_list(v: &[i32]) -> nbtx::Value {
 }
 
 pub fn encode(s: &Structure, what: &str) -> Result<Vec<u8>> {
+    if s.size.x < 0 || s.size.y < 0 || s.size.z < 0 {
+        return Err(bad(
+            what,
+            format!(
+                "size has a negative dimension: [{}, {}, {}]",
+                s.size.x, s.size.y, s.size.z
+            ),
+        ));
+    }
     let volume =
         usize::try_from(s.size.volume()).map_err(|_| bad(what, "size is too large to address"))?;
     for (i, layer) in s.layers.iter().enumerate() {

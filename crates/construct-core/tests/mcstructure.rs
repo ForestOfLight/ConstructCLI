@@ -369,3 +369,29 @@ fn encoding_refuses_a_palette_index_out_of_range() {
     let err = mcstructure::encode(&s, "test").unwrap_err();
     assert!(format!("{err}").contains("palette"), "{err}");
 }
+
+#[test]
+fn encoding_refuses_a_negative_size_dimension() {
+    // Direct construction: decode would reject this first, but Structure's
+    // fields are pub, and merge will build them directly. The encoder must
+    // catch what merge produces.
+    let s = mcstructure::Structure {
+        format_version: 1,
+        size: mcstructure::Size { x: -5, y: 3, z: 2 },
+        origin: mcstructure::Coord { x: 0, y: 0, z: 0 },
+        layers: [vec![], vec![]],
+        palette: vec![],
+        block_position_data: Default::default(),
+        entities: vec![],
+    };
+    let err = mcstructure::encode(&s, "test").unwrap_err();
+    let err_str = format!("{err}");
+    assert!(
+        err_str.contains("negative dimension"),
+        "error must mention negative dimension: {err}"
+    );
+    assert!(
+        err_str.contains("-5"),
+        "error must name the negative value: {err}"
+    );
+}
