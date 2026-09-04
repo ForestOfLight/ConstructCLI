@@ -1,0 +1,171 @@
+//! Sizes, origins, and the flattened block index.
+//!
+//! A `.mcstructure` stores its blocks in one flat list per layer, in **ZYX**
+//! order: `index = SZ*SY*X + SZ*Y + Z`. Getting this order wrong produces a
+//! structure that loads without error and is transposed, so it is isolated
+//! here and tested exhaustively rather than open-coded at each use.
+
+/// A block coordinate, also used for world origins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Coord {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+}
+
+/// A structure's dimensions in blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Size {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+}
+
+impl Size {
+    /// Total block count. Computed in `i64`: sizes come from a file this tool
+    /// did not write, and a wrapped `i32` would silently under-allocate.
+    pub fn volume(&self) -> i64 {
+        i64::from(self.x.max(0)) * i64::from(self.y.max(0)) * i64::from(self.z.max(0))
+    }
+
+    /// The flattened index of a coordinate, or `None` if it lies outside.
+    pub fn index_of(&self, c: Coord) -> Option<usize> {
+        if c.x < 0 || c.y < 0 || c.z < 0 || c.x >= self.x || c.y >= self.y || c.z >= self.z {
+            return None;
+        }
+        let i = i64::from(self.z) * i64::from(self.y) * i64::from(c.x)
+            + i64::from(self.z) * i64::from(c.y)
+            + i64::from(c.z);
+        usize::try_from(i).ok()
+    }
+
+    /// The coordinate a flattened index refers to, or `None` if out of range.
+    pub fn coord_of(&self, i: usize) -> Option<Coord> {
+        let i = i64::try_from(i).ok()?;
+        if i < 0 || i >= self.volume() {
+            return None;
+        }
+        let sz = i64::from(self.z);
+        let sy = i64::from(self.y);
+        Some(Coord {
+            x: (i / sz / sy) as i32,
+            y: (i / sz % sy) as i32,
+            z: (i % sz) as i32,
+        })
+    }
+}
+
+/// A half-open box in world space: `min` inclusive, `max_exclusive` exclusive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoundingBox {
+    pub min: Coord,
+    pub max_exclusive: Coord,
+}
+
+impl BoundingBox {
+    pub fn of(origin: Coord, size: Size) -> Self {
+        Self {
+            min: origin,
+            max_exclusive: Coord {
+                x: origin.x.saturating_add(size.x),
+                y: origin.y.saturating_add(size.y),
+                z: origin.z.saturating_add(size.z),
+            },
+        }
+    }
+
+    pub fn size(&self) -> Size {
+        Size {
+            x: self.max_exclusive.x - self.min.x,
+            y: self.max_exclusive.y - self.min.y,
+            z: self.max_exclusive.z - self.min.z,
+        }
+    }
+
+    /// The smallest box containing all of `boxes`, or `None` when empty.
+    pub fn union(boxes: &[BoundingBox]) -> Option<BoundingBox> {
+        let mut it = boxes.iter();
+        let first = *it.next()?;
+        Some(it.fold(first, |acc, b| BoundingBox {
+            min: Coord {
+                x: acc.min.x.min(b.min.x),
+                y: acc.min.y.min(b.min.y),
+                z: acc.min.z.min(b.min.z),
+            },
+            max_exclusive: Coord {
+                x: acc.max_exclusive.x.max(b.max_exclusive.x),
+                y: acc.max_exclusive.y.max(b.max_exclusive.y),
+                z: acc.max_exclusive.z.max(b.max_exclusive.z),
+            },
+        }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_index_order_is_zyx() {
+        // From docs/bedrock-mcstructure-files.md: index = SZ*SY*X + SZ*Y + Z.
+        // A 2x3x4 structure: z varies fastest, then y, then x.
+        let s = Size { x: 2, y: 3, z: 4 };
+        assert_eq!(s.index_of(Coord { x: 0, y: 0, z: 0 }), Some(0));
+        assert_eq!(s.index_of(Coord { x: 0, y: 0, z: 1 }), Some(1));
+        assert_eq!(s.index_of(Coord { x: 0, y: 1, z: 0 }), Some(4));
+        assert_eq!(s.index_of(Coord { x: 1, y: 0, z: 0 }), Some(12));
+        assert_eq!(s.index_of(Coord { x: 1, y: 2, z: 3 }), Some(23));
+    }
+
+    #[test]
+    fn every_index_round_trips_through_coordinates() {
+        let s = Size { x: 3, y: 5, z: 7 };
+        for i in 0..s.volume() as usize {
+            let c = s.coord_of(i).expect("index inside the volume must convert");
+            assert_eq!(s.index_of(c), Some(i), "index {i} did not round-trip");
+        }
+    }
+
+    #[test]
+    fn coordinates_outside_the_size_have_no_index() {
+        let s = Size { x: 2, y: 2, z: 2 };
+        assert_eq!(s.index_of(Coord { x: 2, y: 0, z: 0 }), None);
+        assert_eq!(s.index_of(Coord { x: 0, y: -1, z: 0 }), None);
+        assert_eq!(s.coord_of(8), None);
+    }
+
+    #[test]
+    fn a_bounding_box_spans_origin_to_origin_plus_size() {
+        let b = BoundingBox::of(Coord { x: 10, y: 0, z: -5 }, Size { x: 2, y: 3, z: 4 });
+        assert_eq!(b.min, Coord { x: 10, y: 0, z: -5 });
+        assert_eq!(b.max_exclusive, Coord { x: 12, y: 3, z: -1 });
+        assert_eq!(b.size(), Size { x: 2, y: 3, z: 4 });
+    }
+
+    #[test]
+    fn a_union_covers_every_box_including_negative_coordinates() {
+        let a = BoundingBox::of(Coord { x: 0, y: 0, z: 0 }, Size { x: 2, y: 2, z: 2 });
+        let b = BoundingBox::of(Coord { x: -3, y: 5, z: 1 }, Size { x: 1, y: 1, z: 1 });
+        let u = BoundingBox::union(&[a, b]).unwrap();
+        assert_eq!(u.min, Coord { x: -3, y: 0, z: 0 });
+        assert_eq!(u.max_exclusive, Coord { x: 2, y: 6, z: 2 });
+        assert_eq!(u.size(), Size { x: 5, y: 6, z: 2 });
+    }
+
+    #[test]
+    fn a_union_of_nothing_is_nothing() {
+        assert_eq!(BoundingBox::union(&[]), None);
+    }
+
+    #[test]
+    fn a_volume_that_overflows_i32_is_still_computed_in_i64() {
+        // 2000^3 is 8e9, far past i32. Sizes come from a file we did not write,
+        // so the arithmetic must not wrap silently.
+        let s = Size {
+            x: 2000,
+            y: 2000,
+            z: 2000,
+        };
+        assert_eq!(s.volume(), 8_000_000_000);
+    }
+}
