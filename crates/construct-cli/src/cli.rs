@@ -114,6 +114,9 @@ pub enum Command {
         #[arg(long, value_name = "WORLD")]
         world: Option<String>,
     },
+
+    /// Show the installed version, the latest available, and where it's enabled.
+    Status,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]

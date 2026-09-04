@@ -200,13 +200,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                     loaded.config.default_installation.as_deref(),
                 )?,
             };
-            let token = std::env::var("CONSTRUCT_GITHUB_TOKEN")
-                .or_else(|_| std::env::var("GITHUB_TOKEN"))
-                .ok();
-            let client = match std::env::var("CONSTRUCT_GITHUB_API") {
-                Ok(base) => releases::GitHub::with_base(base, token),
-                Err(_) => releases::GitHub::new(token),
-            };
+            let client = github_client();
             commands::install::run(
                 &client,
                 version.as_deref(),
@@ -217,6 +211,27 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 out,
             )
         }
+        Command::Status => {
+            let installation = discovery::installation::choose(
+                &installations,
+                std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
+                loaded.config.default_installation.as_deref(),
+            )?;
+            let client = github_client();
+            commands::status::run(&client, installation, &worlds, out)
+        }
+    }
+}
+
+/// The GitHub releases client `install` and `status` both need, pointed at a
+/// stub server under `CONSTRUCT_GITHUB_API` in tests, the real API otherwise.
+fn github_client() -> releases::GitHub {
+    let token = std::env::var("CONSTRUCT_GITHUB_TOKEN")
+        .or_else(|_| std::env::var("GITHUB_TOKEN"))
+        .ok();
+    match std::env::var("CONSTRUCT_GITHUB_API") {
+        Ok(base) => releases::GitHub::with_base(base, token),
+        Err(_) => releases::GitHub::new(token),
     }
 }
 

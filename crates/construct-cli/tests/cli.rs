@@ -1743,3 +1743,74 @@ fn install_exits_5_with_the_packs_already_placed_when_level_dat_cannot_be_flippe
         "expected the manual recovery command in stderr: {stderr}"
     );
 }
+
+#[test]
+fn status_reports_the_installed_version_and_which_worlds_have_it() {
+    let root = world_with_construct(&[]);
+    let world = root.path().join("minecraftWorlds/Test");
+    std::fs::write(
+        world.join("world_behavior_packs.json"),
+        r#"[{"pack_id":"8c0c0153-d8b9-482a-889f-aef922b8fe58","version":[1,2,0]}]"#,
+    )
+    .unwrap();
+
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", "http://127.0.0.1:1")
+        .args([
+            "status",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "offline must not fail: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["installed"], "1.2.0");
+    assert_eq!(v["latest"], serde_json::Value::Null);
+    assert_eq!(v["enabled_worlds"][0], "Test");
+    assert!(
+        v["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("latest")),
+        "the payload must say why latest is missing: {v}"
+    );
+}
+
+#[test]
+fn status_without_construct_points_at_install() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", "http://127.0.0.1:1")
+        .args(["status", "--com-mojang", root.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("construct install"));
+}
+
+#[test]
+fn a_world_without_construct_enabled_is_not_listed() {
+    let root = world_with_construct(&[]);
+    // No world_behavior_packs.json at all.
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", "http://127.0.0.1:1")
+        .args([
+            "status",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["enabled_worlds"].as_array().unwrap().len(), 0);
+}

@@ -6,4 +6,5 @@ pub mod export;
 pub mod import;
 pub mod install;
 pub mod list;
+pub mod status;
 pub mod worlds;
