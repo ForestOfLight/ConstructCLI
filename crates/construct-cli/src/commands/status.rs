@@ -12,7 +12,7 @@ use crate::output::Out;
 use construct_core::discovery::{Installation, World};
 use construct_core::install::releases::Releases;
 use construct_core::pack::{self, manifest};
-use construct_core::{CoreError, Result, worldpacks};
+use construct_core::{Result, worldpacks};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -30,12 +30,9 @@ pub fn run(
     worlds: &[World],
     out: &mut Out,
 ) -> Result<()> {
-    let bp_root = pack::behavior_root(&installation.dev_pack_root);
-    let installed = pack::find_by_uuid(&bp_root, pack::CONSTRUCT_BP_UUID).ok_or_else(|| {
-        CoreError::ConstructNotInstalled {
-            searched: vec![bp_root.clone()],
-        }
-    })?;
+    // The installation's shared copy, not a world-local override: `status`
+    // reports on the installation, the same thing `install` writes to.
+    let installed = pack::for_installation(installation)?.pack;
     let version = manifest::version_string(installed.manifest.version);
 
     // Offline is not a failure: report what is here and say what could not be

@@ -1561,6 +1561,36 @@ fn stub_github(addon: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
     (base, handle)
 }
 
+/// A single-request stub answering only the release lookup, for commands like
+/// `status` that check a version but never download anything. Kept separate
+/// from `stub_github` rather than adding a parameter to it: that one's loop
+/// is sized to `install`'s exact two-request sequence, and every existing
+/// caller of it relies on that shape unchanged.
+fn stub_github_release(tag: &str) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let release = format!(r#"{{"tag_name":"{tag}","assets":[]}}"#);
+
+    let handle = std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut line = String::new();
+        let _ = BufReader::new(stream.try_clone().unwrap()).read_line(&mut line);
+        let body = release.into_bytes();
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(head.as_bytes());
+        let _ = stream.write_all(&body);
+        let _ = stream.flush();
+    });
+    (base, handle)
+}
+
 #[test]
 fn install_places_both_packs_and_enables_them_in_a_world() {
     let root = tempfile::tempdir().unwrap();
@@ -1813,4 +1843,83 @@ fn a_world_without_construct_enabled_is_not_listed() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["enabled_worlds"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn status_reports_up_to_date_when_installed_matches_latest() {
+    // world_with_construct installs 1.2.0; a release tagged v1.2.0 is the
+    // same version, `v` prefix and all.
+    let root = world_with_construct(&[]);
+
+    let (base, _server) = stub_github_release("v1.2.0");
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args([
+            "status",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["latest"], "v1.2.0");
+    assert_eq!(
+        v["warnings"].as_array().unwrap().len(),
+        0,
+        "a successful check leaves no warning: {v}"
+    );
+
+    // The human-readable line takes the same branch; needs its own server
+    // since each stub answers exactly one request.
+    let (base, _server) = stub_github_release("v1.2.0");
+    let human = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args(["status", "--com-mojang", root.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(text.contains("up to date"), "got: {text}");
+}
+
+#[test]
+fn status_reports_an_update_is_available() {
+    let root = world_with_construct(&[]);
+
+    let (base, _server) = stub_github_release("v1.3.0");
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args([
+            "status",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["latest"], "v1.3.0");
+    assert_eq!(v["installed"], "1.2.0");
+
+    let (base, _server) = stub_github_release("v1.3.0");
+    let human = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args(["status", "--com-mojang", root.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        text.contains("construct install"),
+        "expected the human output to point at construct install: {text}"
+    );
 }
