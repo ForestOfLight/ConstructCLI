@@ -521,21 +521,21 @@ mod tests {
 
     #[test]
     fn a_file_that_cannot_round_trip_refuses_to_be_written() {
-        // nbtx 3.0.1 drops the element type and length of an empty list, five
-        // bytes short, producing NBT it cannot parse back (§9). The `build`
-        // helper cannot construct this fixture: it round-trips through
-        // `nbtx::to_le_bytes`, which is exactly what can't serialize an empty
-        // list. So these bytes are hand-written, not built. Verified by a
-        // scratch probe: they parse to Compound({"gaps": List([])}) and
-        // re-serialize to 11 bytes against an original of 16.
+        // nbtx parses TAG_Int_Array into Value::List, which re-serializes as a
+        // list — one byte longer, since a list carries an element-type byte an
+        // array does not. The length check catches it. (Before Task 1 this
+        // fixture used an empty list; that defect is fixed, so an array tag is
+        // now the reachable way to be unfaithful. No array tag appears in any
+        // real .mcstructure examined, but level.dat is a different file and
+        // this gate is what stands between a stray one and a corrupted save.)
         //
-        // { "gaps": List([]) }
+        // { "gaps": IntArray([7]) }
         let payload: Vec<u8> = vec![
             0x0a, 0x00, 0x00, // TAG_Compound, root name ""
-            0x09, // TAG_List
+            0x0b, // TAG_Int_Array
             0x04, 0x00, b'g', b'a', b'p', b's', // name "gaps"
-            0x00, // element type TAG_End
-            0x00, 0x00, 0x00, 0x00, // length 0
+            0x01, 0x00, 0x00, 0x00, // one element
+            0x07, 0x00, 0x00, 0x00, // the element: 7
             0x00, // TAG_End of compound
         ];
         let mut bytes = 10i32.to_le_bytes().to_vec();
@@ -560,6 +560,22 @@ mod tests {
         let err = write(&dat, &path).unwrap_err();
         assert!(matches!(err, CoreError::UnwritableLevelDat { .. }));
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn the_patched_nbtx_round_trips_an_empty_list() {
+        // Guards the [patch.crates-io] redirect in the root Cargo.toml. With
+        // stock nbtx 3.0.1 this fails, and with it failing the whole codec is
+        // unusable — so the failure should point straight at the dependency
+        // rather than at a hundred confusing codec errors.
+        let mut map = HashMap::new();
+        map.insert("empty".to_string(), nbtx::Value::List(vec![]));
+        let value = nbtx::Value::Compound(map);
+
+        let bytes = nbtx::to_le_bytes(&value).expect("patched nbtx must serialize an empty list");
+        let parsed: nbtx::Value = nbtx::from_le_bytes(&mut bytes.as_slice())
+            .expect("patched nbtx must parse its own empty list back");
+        assert_eq!(parsed, value);
     }
 
     #[test]

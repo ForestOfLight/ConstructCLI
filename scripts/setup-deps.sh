@@ -36,4 +36,9 @@ clone_and_patch bedrock-rs \
   2d9e4087a207bdcbad6e4cdc83de46e94712b2f4 \
   0002-bedrock-rs-non-x86_64-compilation.patch
 
+clone_and_patch nbtx \
+  https://github.com/bedrock-crustaceans/bedrockrs-nbt \
+  bd28e77 \
+  0003-nbtx-empty-list-serialization.patch
+
 echo "done — dependencies ready in third_party/checkouts/"

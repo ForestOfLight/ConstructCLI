@@ -780,8 +780,6 @@ dependencies = [
 [[package]]
 name = "nbtx"
 version = "3.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "453a481818ef92bc4f42d4fb3a276d2446f5432c16cc7daa731a6efa1bc64cfc"
 dependencies = [
  "byteorder",
  "paste",

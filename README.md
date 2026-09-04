@@ -37,9 +37,10 @@ way to get the tool.
 You need Rust, CMake, and a C++ compiler, because the leveldb
 backend is Mojang's own C++ implementation rather than a reimplementation.
 The upstream `bedrock-rs` and `leveldb-sys` crates do not compile as published
-on macOS or on any non-x86_64 target, so this repo carries fixes in
-`third_party/patches/` and applies them to pinned checkouts of both upstreams.
-Run the setup script once after cloning, before building:
+on macOS or on any non-x86_64 target, and `nbtx` cannot serialize an empty
+list — every `.mcstructure` has one — so this repo carries fixes in
+`third_party/patches/` and applies them to pinned checkouts of all three
+upstreams. Run the setup script once after cloning, before building:
 
 ```
 git clone https://github.com/ForestOfLight/ConstructCLI
