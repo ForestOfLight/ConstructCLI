@@ -3009,6 +3009,189 @@ git commit -m "Record what stage 3 measured, corrected, and left behind"
 
 ---
 
+---
+
+### Task 10: Refuse deeply nested NBT instead of aborting the process
+
+Added during execution, after Task 3's review found it and the controller reproduced it.
+
+**The defect.** `nbtx`'s deserializer is recursive descent with no depth limit, so a small
+file of deeply nested compounds exhausts the stack. Measured against this workspace: 100 and
+5,000 levels of nesting refuse cleanly, but **50,000 levels — a 250 KB file — produces
+`fatal runtime error: stack overflow, aborting` and exit 134.** That is a `SIGABRT`, not a
+catchable panic, so no `Result`-based handling in `decode` can intercept it, and it violates
+the global constraint that `construct-core` never panics.
+
+The exposure is not limited to stage 3. `leveldat.rs` has fed `nbtx::from_le_bytes` a
+world's `level.dat` since stage 1 with the same weakness; `mcstructure::decode` is simply the
+first call site taking fully untrusted, potentially adversarial bytes.
+
+**Why in the dependency rather than in `construct-core`.** The alternative — pre-scanning the
+byte stream for depth before handing it to `nbtx` — means writing a second, complete NBT
+structural parser and keeping it in sync with the real one. Fixing it once inside the
+deserializer covers `.mcstructure`, `level.dat`, and every future caller.
+
+**Files:**
+- Create: `third_party/patches/0004-nbtx-recursion-depth-limit.patch`
+- Modify: `scripts/setup-deps.sh`, `crates/construct-core/src/mcstructure/decode.rs` (module
+  doc only), `crates/construct-core/tests/mcstructure.rs`
+
+**Interfaces:**
+- Consumes: the patched `nbtx` checkout from Task 1.
+- Produces: no new public names in `construct-core`. `decode` gains a new refusal path.
+
+- [ ] **Step 1: Confirm the defect first-hand**
+
+Write a throwaway program under `/tmp` that builds `depth` nested `TAG_Compound`s and feeds
+them to `construct_core::mcstructure::decode`. The byte pattern for one level is
+`0x0a 0x01 0x00 b'a'` (TAG_Compound, name length 1, name `a`), followed by one `0x00`
+(TAG_End) per level at the end. Run it at 100, 5000, and 50000 and record what each does.
+Expected: the first two refuse with a `BadStructureFile` error, the third aborts with a stack
+overflow and exit code 134.
+
+- [ ] **Step 2: Add the depth counter to the deserializer**
+
+In `third_party/checkouts/nbtx/src/nbt/de.rs`, add a field to `pub struct Deserializer`
+alongside `next_ty` and `is_key`:
+
+```rust
+    /// How many container levels deep this deserializer currently is. NBT
+    /// nesting is parsed by recursive descent, so an attacker-supplied file of
+    /// deeply nested compounds exhausts the stack — an abort, not a catchable
+    /// panic. `SeqDeserializer` and `MapDeserializer` both borrow this
+    /// `Deserializer` mutably, so one counter covers the whole nesting.
+    depth: usize,
+```
+
+Initialise it to `0` wherever the struct is constructed.
+
+The limit itself:
+
+```rust
+/// Deepest container nesting accepted before a file is refused.
+///
+/// Real `.mcstructure` files nest about 7 levels to reach a block state, and
+/// perhaps 15 through a chest's item tags; a `level.dat` is comparable. 512 is
+/// far beyond any legitimate file and far below the ~5,000-plus levels that
+/// begin to threaten the stack.
+pub const MAX_DEPTH: usize = 512;
+```
+
+- [ ] **Step 3: Enforce it on both container entry points**
+
+`deserialize_map` and `deserialize_seq` are the only two paths that recurse. In each, before
+constructing the `MapDeserializer`/`SeqDeserializer`, increment and check; decrement after the
+visitor returns. Return the crate's existing error type — do not panic, and do not `unwrap`.
+Both functions must decrement on the error path as well as the success path, or a file with a
+recoverable error deep inside one branch would poison the count for later branches.
+
+- [ ] **Step 4: Add the upstream regression test**
+
+In `third_party/checkouts/nbtx/src/test.rs`:
+
+```rust
+#[test]
+fn nesting_past_the_depth_limit_is_refused_not_aborted() {
+    // Without a limit this overflows the stack, which is an abort rather than
+    // a catchable panic — no Result-based handling can intercept it.
+    let depth = crate::nbt::de::MAX_DEPTH + 10;
+    let mut bytes = Vec::new();
+    for _ in 0..depth {
+        bytes.extend_from_slice(&[0x0a, 0x01, 0x00, b'a']);
+    }
+    for _ in 0..depth {
+        bytes.push(0x00);
+    }
+    let parsed: Result<crate::Value, _> = crate::from_le_bytes(&mut bytes.as_slice());
+    assert!(parsed.is_err(), "deeply nested NBT must be refused, not accepted");
+}
+
+#[test]
+fn ordinary_nesting_is_still_accepted() {
+    // A guard set too low would refuse real files. This is deeper than any
+    // real .mcstructure or level.dat and must still parse.
+    let mut value = crate::Value::Compound(Default::default());
+    for _ in 0..64 {
+        let mut m = std::collections::HashMap::new();
+        m.insert("inner".to_string(), value);
+        value = crate::Value::Compound(m);
+    }
+    let bytes = crate::to_le_bytes(&value).unwrap();
+    let parsed: crate::Value = crate::from_le_bytes(&mut bytes.as_slice()).unwrap();
+    assert_eq!(parsed, value);
+}
+```
+
+Run `cd third_party/checkouts/nbtx && cargo test`. All previously passing tests must still
+pass — Task 1 left 17 there.
+
+- [ ] **Step 5: Capture the patch and wire it in**
+
+```bash
+cd third_party/checkouts/nbtx
+git diff > ../../patches/0004-nbtx-recursion-depth-limit.patch
+```
+
+The checkout already carries Task 1's changes, so `git diff` against the pinned revision
+produces a patch containing **both** fixes. That is wrong — each patch must apply
+independently. Instead, capture only this task's changes: commit Task 1's patch state locally
+first (`git -C third_party/checkouts/nbtx add -A && git -C third_party/checkouts/nbtx commit -m wip`)
+before making this task's edits, then `git diff` yields only the new work. Verify by applying
+`0003` and then `0004` in that order to a pristine clone at `bd28e77` and confirming both apply
+and the suite passes.
+
+Then add to `scripts/setup-deps.sh`'s `nbtx` entry, which currently passes a single patch. Give
+`clone_and_patch` the ability to apply several patches in order, or add a second call — whichever
+keeps the script readable — so a fresh clone gets `0003` then `0004`.
+
+- [ ] **Step 6: Add the decoder-level test**
+
+In `crates/construct-core/tests/mcstructure.rs`:
+
+```rust
+#[test]
+fn deeply_nested_nbt_is_refused_rather_than_overflowing_the_stack() {
+    // A 250 KB file of 50,000 nested compounds used to abort the process with
+    // a stack overflow — exit 134, not a catchable panic. The depth limit in
+    // the patched nbtx turns it into an ordinary refusal.
+    let depth = 50_000;
+    let mut bytes = Vec::new();
+    for _ in 0..depth {
+        bytes.extend_from_slice(&[0x0a, 0x01, 0x00, b'a']);
+    }
+    for _ in 0..depth {
+        bytes.push(0x00);
+    }
+    let err = mcstructure::decode(&bytes, "deep.mcstructure").unwrap_err();
+    assert!(
+        format!("{err}").contains("deep.mcstructure"),
+        "the refusal must name the file: {err}"
+    );
+}
+```
+
+- [ ] **Step 7: Record it in the decoder's module doc**
+
+Add to `crates/construct-core/src/mcstructure/decode.rs`'s module comment:
+
+```rust
+//! Nesting depth is bounded by the patched `nbtx` (see
+//! `third_party/patches/0004-*`): NBT is parsed by recursive descent, so an
+//! unbounded file of nested compounds would exhaust the stack — an abort, not
+//! an error this function could return.
+```
+
+- [ ] **Step 8: Verify and commit**
+
+```bash
+cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --all --check
+git add third_party/patches/0004-nbtx-recursion-depth-limit.patch scripts/setup-deps.sh         crates/construct-core/src/mcstructure/decode.rs crates/construct-core/tests/mcstructure.rs
+git commit -m "Refuse deeply nested NBT instead of overflowing the stack"
+```
+
+Re-run the Step 1 probe afterwards: 50,000 levels must now refuse cleanly with exit 0 rather
+than aborting with 134.
+
 ## Self-Review
 
 **1. Spec coverage.** §9's model (Task 3), merge steps 1–6 (Tasks 5–7), void gaps (Task 6), overlap and `--on-overlap` (Tasks 6–7), `block_position_data` following the winner (Task 7), identical-origin refusal and the mixed-origin warning (Task 6), the allocation guard and the oversize performance warning (Task 6), the encoder blocker (Task 1). §5's `export --merge -o FILE` and its usage rules (Task 8). §11's exit codes: usage `2` for `--merge` without `-o`, `1` for a refused merge or an existing target. §12's five fixture shapes (Task 3/4: single block, block entities, waterlogged second layer, entities, void gaps), the semantic comparison rule, and the overlap tests including the chest-contents case.
