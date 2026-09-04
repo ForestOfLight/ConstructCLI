@@ -99,3 +99,15 @@ only in a `structures/` tree this tool or Construct did not build entirely itsel
   captured run. The code was independently verified; the ordering was not. Later dispatches
   required pasted output, and Task 17's implementer honestly disclosed that its brief
   supplied the code verbatim so no red run ever existed.
+
+## Found by the final review's own re-review
+
+Two things surfaced after the fix wave, judged not worth another round.
+
+- **`install --world` still backs up `level.dat` unconditionally**, before checking whether Beta
+  APIs is already on — the same shape that was fixed in `experiment`. Lower impact there, since
+  `install --world` is not something a user repeats in a loop the way `experiment` might be, but it
+  is the same class of backup churn and the fix is the same one.
+- **No test proves an *ordinary* 403 takes the generic network path** rather than being reported as
+  a rate limit. The `x-ratelimit-remaining` check that separates them was confirmed by reading the
+  code, not by a test. The rate-limited 403 and the 404 both have tests.
