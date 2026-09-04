@@ -9,12 +9,20 @@ use crate::store::snapshot::copy_dir;
 use std::path::{Path, PathBuf};
 
 /// Prefix for the staging directory `place` uses while swapping a pack in.
-/// Dotted so it is plainly not a pack folder. `find_installed_by_uuid`
-/// additionally excludes any directory carrying this prefix by name: mid-run
-/// (or after a crash, before the next run recovers or ignores it) a staging
-/// directory can carry a manifest with the same header UUID as the pack it
-/// is staging, and must never be mistaken for the installed copy.
+/// Dotted so it is plainly not a pack folder — `pack::packs_in` skips any
+/// dotted directory outright, so a staging directory (finished or not) can
+/// never be mistaken for the installed copy by this module or any other
+/// caller of `packs_in`/`find_by_uuid`.
 const STAGING_PREFIX: &str = ".constructcli-staging-";
+
+/// Marks a staging directory as fully written — every copy that belongs in
+/// it has returned `Ok` — placed inside the staging directory itself as the
+/// very last step of staging, before anything belonging to `dest` is
+/// touched. This is the one fact `recover_finished_staging` can trust: a
+/// staging directory's `manifest.json` alone does not prove the rest of the
+/// pack arrived, because `copy_dir` walks the source in filesystem order and
+/// can write `manifest.json` before a large pack's other files.
+const STAGING_SENTINEL: &str = ".constructcli-staging-complete";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placed {
@@ -31,12 +39,13 @@ pub struct Placed {
 ///
 /// The new pack is staged fully beside `root` before anything belonging to
 /// the old install is touched. Only once the stage is complete — the new
-/// pack copied in and the user's structures carried across from the still-
-/// live original — is the old directory removed and the stage renamed into
-/// its place. Every fallible step that does bulk I/O (the copy of the new
-/// pack, the copy of preserved structures) happens while the original is
-/// completely intact, so a failure there — disk full, most plausibly —
-/// leaves the user with their original pack, not with neither copy.
+/// pack copied in, the user's structures carried across from the still-live
+/// original, and the completion sentinel written — is the old directory
+/// removed and the stage renamed into its place. Every fallible step that
+/// does bulk I/O (the copy of the new pack, the copy of preserved
+/// structures) happens while the original is completely intact, so a
+/// failure there — disk full, most plausibly — leaves the user with their
+/// original pack, not with neither copy.
 ///
 /// The remove-then-rename swap at the end is not itself atomic, so a crash
 /// between the two can leave a destination that is gone and a staging
@@ -49,11 +58,11 @@ pub fn place(root: &Path, src: &Path, force: bool) -> Result<Placed> {
     // Complete any swap a previous run left half-finished, or leave it
     // strictly alone if this call cannot positively confirm it is safe to
     // move. Must run before the UUID lookup below: a recovered directory
-    // needs to be either gone (renamed into place) or excluded from that
-    // lookup, never left sitting there as a UUID-matching impostor.
+    // needs to be gone from `root` under its staging name by the time that
+    // lookup runs.
     recover_finished_staging(root);
 
-    let existing = find_installed_by_uuid(root, &incoming.uuid);
+    let existing = pack::find_by_uuid(root, &incoming.uuid);
 
     // Idempotent: the same version already installed is nothing to do.
     if let Some(existing) = &existing
@@ -110,6 +119,15 @@ pub fn place(root: &Path, src: &Path, force: bool) -> Result<Placed> {
         }
     }
 
+    // The stage is only now, after every preceding copy has returned `Ok`,
+    // marked complete. This sentinel — not a parseable manifest — is what
+    // `recover_finished_staging` requires before it will ever move a
+    // staging directory into place.
+    if let Err(e) = std::fs::write(staging.join(STAGING_SENTINEL), b"") {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(CoreError::from(e));
+    }
+
     // The point of no return: from here it is a delete plus a same-directory
     // rename, no bulk I/O in between. If either step fails, the staged copy
     // is left exactly where it is — named in the error — rather than being
@@ -128,6 +146,13 @@ pub fn place(root: &Path, src: &Path, force: bool) -> Result<Placed> {
         staging,
         reason: format!("the staged pack could not be moved into place: {e}"),
     })?;
+
+    // Best-effort: a crash between the rename above and this cleanup leaves
+    // the sentinel behind inside an installed pack. That is inert —
+    // `packs_in` keys on `manifest.json`, the game ignores unknown
+    // dotfiles, and the next upgrade replaces the directory wholesale — so
+    // this is not worth failing an install that has already succeeded over.
+    let _ = std::fs::remove_file(dest.join(STAGING_SENTINEL));
 
     Ok(Placed {
         dir: dest,
@@ -160,39 +185,22 @@ fn staged_dest_name(staging_dir_name: &str) -> Option<&str> {
     parts.next()
 }
 
-fn is_staging_name(dir: &Path) -> bool {
-    dir.file_name()
-        .and_then(|n| n.to_str())
-        .map(|n| n.starts_with(STAGING_PREFIX))
-        .unwrap_or(false)
-}
-
-/// Like `pack::find_by_uuid`, but ignores this module's own staging
-/// directories — see `STAGING_PREFIX`. Without this, a leftover or
-/// in-progress staging directory carrying the same header UUID as the pack
-/// it is staging could be matched instead of the real installed copy.
-fn find_installed_by_uuid(root: &Path, uuid: &str) -> Option<pack::Pack> {
-    pack::packs_in(root)
-        .into_iter()
-        .find(|p| p.manifest.uuid == uuid && !is_staging_name(&p.dir))
-}
-
 /// Completes any swap a previous run of `place` left interrupted between
 /// `remove_dir_all(&dest)` and the `rename` that follows it — the one window
 /// where `dest` is briefly absent and the staged replacement is the only
 /// copy of the user's data left on disk.
 ///
 /// For each staging directory found under `root`: if its recorded
-/// destination does not exist and the staging directory holds a readable
-/// manifest, the interrupted swap is completed by renaming it into place —
-/// the subsequent install then usually proceeds as an idempotent no-op. A
-/// staging directory this call cannot positively confirm is a finished,
-/// abandoned swap — no readable manifest, or a destination that already
-/// exists again (which is what another process's staging directory looks
-/// like while that process is still writing it) — is left completely alone.
-/// Leaked garbage is a housekeeping annoyance; deleting a directory that
-/// might still be someone's only copy of the user's data is not a trade
-/// worth making to avoid it.
+/// destination does not exist and the staging directory carries
+/// `STAGING_SENTINEL`, the interrupted swap is completed by renaming it into
+/// place — the subsequent install then usually proceeds as an idempotent
+/// no-op. A staging directory this call cannot positively confirm is a
+/// finished, abandoned swap — no sentinel (which covers both "still being
+/// written, by this process or another" and "crashed before it finished"),
+/// or a destination that already exists again — is left completely alone.
+/// Leaked garbage is a housekeeping annoyance; deleting, or prematurely
+/// promoting, a directory that might still be someone's only copy of the
+/// user's data is not a trade worth making to avoid it.
 fn recover_finished_staging(root: &Path) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
@@ -209,8 +217,8 @@ fn recover_finished_staging(root: &Path) {
         if dest.exists() {
             continue;
         }
-        if manifest::read(&path).is_ok() {
-            let _ = std::fs::rename(&path, &dest);
+        if path.join(STAGING_SENTINEL).is_file() && std::fs::rename(&path, &dest).is_ok() {
+            let _ = std::fs::remove_file(dest.join(STAGING_SENTINEL));
         }
     }
 }

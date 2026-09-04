@@ -37,7 +37,16 @@ pub fn world_behavior_root(world: &World) -> PathBuf {
 /// Every readable pack directly under `root`.
 ///
 /// A directory with no manifest, or one that will not parse, is skipped: a
-/// single corrupt pack must not hide every other pack on the machine.
+/// single corrupt pack must not hide every other pack on the machine. A
+/// directory whose name begins with `.` is skipped outright, without even
+/// trying to read a manifest from it: no Minecraft pack is named that way,
+/// but `install::place` stages a pack under such a name while swapping it
+/// in, and mid-swap (or after a crash, before the next run recovers or
+/// abandons it) that staging directory can carry a fully valid manifest
+/// with the same header UUID as the pack it is staging. Every caller of
+/// `packs_in`/`find_by_uuid` — this module's own `for_world`,
+/// `for_installation`, and `install::place` alike — must never mistake it
+/// for the installed copy.
 pub fn packs_in(root: &Path) -> Vec<Pack> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
@@ -45,6 +54,7 @@ pub fn packs_in(root: &Path) -> Vec<Pack> {
     let mut out: Vec<Pack> = entries
         .flatten()
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
         .filter_map(|e| {
             let dir = e.path();
             manifest::read(&dir)

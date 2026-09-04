@@ -440,13 +440,17 @@ fn a_crash_between_remove_and_rename_recovers_on_the_next_run() {
         std::process::id(),
         123456789u64
     );
-    installed_pack(
+    let staging_dir = installed_pack(
         &root,
         &staging_name,
         construct_core::pack::CONSTRUCT_BP_UUID,
         [1, 2, 0],
         &[("bomber", b"mine"), ("castle", b"also mine")],
     );
+    // The sentinel `place` writes only after every copy into the stage has
+    // returned `Ok`. This hand-built directory models a stage that really
+    // did finish before the crash, so it must carry one.
+    std::fs::write(staging_dir.join(".constructcli-staging-complete"), b"").unwrap();
     // `dest` (Construct[BP]) intentionally does not exist -- it was already
     // removed by the run that crashed before it could rename the stage in.
 
@@ -550,6 +554,59 @@ fn a_foreign_staging_directory_is_never_deleted_or_mistaken_for_the_installed_pa
     assert_eq!(
         std::fs::read(foreign.join("structures/someone-elses-structure.mcstructure")).unwrap(),
         b"not yours"
+    );
+}
+
+#[test]
+fn an_unfinished_staging_directory_is_not_recovered() {
+    // `copy_dir` walks its source in filesystem order, so a crash during
+    // staging can leave a directory with a perfectly readable manifest.json
+    // but the rest of the pack still missing -- a crash between "manifest
+    // copied" and "everything else copied," not between remove and rename.
+    // Recovery must not promote that shape: no sentinel means "not
+    // provably finished," never "close enough."
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("development_behavior_packs");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let staging_name = format!(
+        ".constructcli-staging-{}-{}-Construct[BP]",
+        std::process::id(),
+        987654321u64
+    );
+    // Only the manifest landed before the (simulated) crash -- no
+    // scripts.js, and critically, no completion sentinel.
+    installed_pack(
+        &root,
+        &staging_name,
+        construct_core::pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        &[],
+    );
+    // `Construct[BP]`, the real destination, does not exist yet -- this is
+    // what a first install's starting state normally looks like, not
+    // evidence that anything finished.
+
+    let new = tmp.path().join("new/Construct[BP]");
+    installed_pack(
+        new.parent().unwrap(),
+        "Construct[BP]",
+        construct_core::pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        &[],
+    );
+    std::fs::write(new.join("scripts.js"), b"the real thing").unwrap();
+
+    let placed = install::place(&root, &new, false).unwrap();
+
+    assert!(
+        placed.changed,
+        "the truncated stage must not be mistaken for an already-finished install"
+    );
+    assert_eq!(
+        std::fs::read(placed.dir.join("scripts.js")).unwrap(),
+        b"the real thing",
+        "the destination must be the full pack copied from src, not the truncated stage"
     );
 }
 

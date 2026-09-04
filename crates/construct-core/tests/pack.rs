@@ -105,6 +105,27 @@ fn a_pack_with_a_broken_manifest_is_skipped_rather_than_failing_the_scan() {
 }
 
 #[test]
+fn a_dotted_directory_is_never_seen_as_an_installed_pack() {
+    // `install::place` stages a pack under a dotted directory name while
+    // swapping it in, and that directory can carry a fully valid manifest
+    // -- with the same header UUID as the pack it is staging -- for as
+    // long as the swap is in flight or before the next run recovers or
+    // abandons it. Every caller of `packs_in`/`find_by_uuid`, not just
+    // `install`, must never mistake it for the installed copy.
+    let root = tempfile::tempdir().unwrap();
+    make_pack(
+        root.path(),
+        ".constructcli-staging-1234-5678-Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [9, 9, 9],
+        false,
+    );
+
+    assert!(pack::packs_in(root.path()).is_empty());
+    assert!(pack::find_by_uuid(root.path(), pack::CONSTRUCT_BP_UUID).is_none());
+}
+
+#[test]
 fn a_missing_root_yields_no_packs() {
     assert!(pack::packs_in(Path::new("/no/such/root")).is_empty());
 }
