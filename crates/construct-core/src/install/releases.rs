@@ -114,7 +114,15 @@ impl Releases for GitHub {
         if let Some(token) = &self.token {
             req = req.header("Authorization", &format!("Bearer {token}"));
         }
-        let mut response = req.call().map_err(map_transport)?;
+        // ureq 3.x defaults to treating any >=400 status as a transport `Err`,
+        // which would make the status checks below unreachable. Ask it to hand
+        // back the response instead so `RateLimited` and `AssetNotFound` fire.
+        let mut response = req
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .call()
+            .map_err(map_transport)?;
         let status = response.status().as_u16();
         // 403 and 429 both carry the rate limit; the header is what separates
         // "you are out of requests" from "you may not have this".

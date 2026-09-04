@@ -1591,6 +1591,96 @@ fn stub_github_release(tag: &str) -> (String, std::thread::JoinHandle<()>) {
     (base, handle)
 }
 
+/// A single-request stub answering with a chosen status, headers and body —
+/// for the error paths GitHub's HTTP responses drive rather than its JSON
+/// (rate limiting, a missing version). Never joined, for the same reason
+/// `stub_github` isn't: a second `accept()` that never comes would hang the
+/// suite.
+fn stub_github_status(
+    status: u16,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let body = body.as_bytes().to_vec();
+    let extra_headers: String = headers
+        .iter()
+        .map(|(k, v)| format!("{k}: {v}\r\n"))
+        .collect();
+    let reason = match status {
+        403 => "Forbidden",
+        404 => "Not Found",
+        429 => "Too Many Requests",
+        _ => "Error",
+    };
+
+    let handle = std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut line = String::new();
+        let _ = BufReader::new(stream.try_clone().unwrap()).read_line(&mut line);
+        let head = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n{extra_headers}\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(head.as_bytes());
+        let _ = stream.write_all(&body);
+        let _ = stream.flush();
+    });
+    (base, handle)
+}
+
+#[test]
+fn install_reports_rate_limiting_with_the_token_guidance_when_github_returns_403() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
+    let (base, _server) = stub_github_status(
+        403,
+        &[("x-ratelimit-remaining", "0")],
+        r#"{"message":"API rate limit exceeded"}"#,
+    );
+
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args(["install", "--com-mojang", root.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("60") && stderr.contains("CONSTRUCT_GITHUB_TOKEN"),
+        "expected the unauthenticated-limit guidance: {stderr}"
+    );
+    assert!(!root.path().join("development_behavior_packs").exists());
+}
+
+#[test]
+fn install_exits_3_and_lists_available_assets_when_the_version_is_missing() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
+    let (base, _server) = stub_github_status(404, &[], r#"{"message":"Not Found"}"#);
+
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args([
+            "install",
+            "--version",
+            "9.9.9",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    assert!(!root.path().join("development_behavior_packs").exists());
+}
+
 #[test]
 fn install_places_both_packs_and_enables_them_in_a_world() {
     let root = tempfile::tempdir().unwrap();
