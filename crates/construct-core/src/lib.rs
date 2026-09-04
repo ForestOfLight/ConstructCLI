@@ -12,6 +12,7 @@ pub mod install;
 pub mod inuse;
 pub mod leveldat;
 pub mod mcstructure;
+pub mod merge;
 pub mod pack;
 pub mod store;
 pub mod worldpacks;
