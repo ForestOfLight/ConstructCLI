@@ -65,6 +65,38 @@ fn block_position_data_decodes_keyed_by_index() {
 }
 
 #[test]
+fn a_block_position_data_of_the_wrong_tag_type_is_refused_not_dropped() {
+    // block_position_data must be a compound. A List (or any other wrong
+    // type) must be refused by name, not silently treated as empty — for a
+    // real structure that would mean a chest's inventory vanishing with no
+    // error at all.
+    let b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:chest");
+    let nbtx::Value::Compound(mut root) = b.nbt() else {
+        unreachable!()
+    };
+    let nbtx::Value::Compound(mut structure) = root["structure"].clone() else {
+        unreachable!()
+    };
+    let nbtx::Value::Compound(mut palette) = structure["palette"].clone() else {
+        unreachable!()
+    };
+    let nbtx::Value::Compound(mut default) = palette["default"].clone() else {
+        unreachable!()
+    };
+    default.insert("block_position_data".into(), nbtx::Value::List(vec![]));
+    palette.insert("default".into(), nbtx::Value::Compound(default));
+    structure.insert("palette".into(), nbtx::Value::Compound(palette));
+    root.insert("structure".into(), nbtx::Value::Compound(structure));
+    let bytes = nbtx::to_le_bytes(&nbtx::Value::Compound(root)).unwrap();
+
+    let err = mcstructure::decode(&bytes, "test").unwrap_err();
+    assert!(
+        format!("{err}").contains("block_position_data"),
+        "error must name the field: {err}"
+    );
+}
+
+#[test]
 fn entities_decode_untouched() {
     let mut b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:air");
     b.entities = vec![compound(vec![
@@ -180,9 +212,12 @@ fn a_missing_default_palette_is_refused() {
     let bytes = nbtx::to_le_bytes(&nbtx::Value::Compound(root)).unwrap();
 
     let err = mcstructure::decode(&bytes, "test").unwrap_err();
+    // "default" alone would also match the generic "required field \"default\"
+    // is missing" fallback message; assert on wording only the dedicated
+    // no-default-palette message contains.
     assert!(
-        format!("{err}").contains("default"),
-        "error must name it: {err}"
+        format!("{err}").contains("no blocks"),
+        "error must give the dedicated no-default-palette reason: {err}"
     );
 }
 
@@ -194,7 +229,14 @@ fn a_negative_size_is_refused() {
     };
     root.insert("size".into(), int_list(&[-1, 1, 1]));
     let bytes = nbtx::to_le_bytes(&nbtx::Value::Compound(root)).unwrap();
-    assert!(mcstructure::decode(&bytes, "test").is_err());
+    let err = mcstructure::decode(&bytes, "test").unwrap_err();
+    // Must be refused by the dedicated negative-dimension guard, not merely
+    // fail later for some other reason (e.g. a stale layer length): the
+    // message must name the negative dimension specifically.
+    assert!(
+        format!("{err}").contains("negative dimension"),
+        "error must name the negative dimension, not just any failure: {err}"
+    );
 }
 
 #[test]

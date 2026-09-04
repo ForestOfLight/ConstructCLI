@@ -45,6 +45,17 @@ pub(crate) fn as_list<'a>(
     }
 }
 
+pub(crate) fn as_compound<'a>(
+    v: &'a nbtx::Value,
+    name: &str,
+    what: &str,
+) -> Result<&'a std::collections::HashMap<String, nbtx::Value>> {
+    match v {
+        nbtx::Value::Compound(m) => Ok(m),
+        _ => Err(bad(what, format!("field {name:?} is not a compound"))),
+    }
+}
+
 /// A list of exactly three ints — `size` and `structure_world_origin`.
 pub(crate) fn as_triple(v: &nbtx::Value, name: &str, what: &str) -> Result<[i32; 3]> {
     let list = as_list(v, name, what)?;

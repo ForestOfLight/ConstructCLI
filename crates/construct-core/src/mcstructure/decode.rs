@@ -8,7 +8,7 @@
 //! field.
 
 use super::geometry::{Coord, Size};
-use super::nbt::{as_int, as_int_vec, as_list, as_triple, bad, field};
+use super::nbt::{as_compound, as_int, as_int_vec, as_list, as_triple, bad, field};
 use crate::error::Result;
 use std::collections::BTreeMap;
 
@@ -150,22 +150,24 @@ pub fn decode(bytes: &[u8], what: &str) -> Result<Structure> {
     }
 
     let mut block_position_data = BTreeMap::new();
-    if let nbtx::Value::Compound(m) = field(default, "block_position_data", what)? {
-        for (key, value) in m {
-            let index: usize = key.parse().map_err(|_| {
-                bad(
-                    what,
-                    format!("block_position_data key {key:?} is not a block index"),
-                )
-            })?;
-            if index >= volume {
-                return Err(bad(
-                    what,
-                    format!("block_position_data key {key:?} is outside the structure"),
-                ));
-            }
-            block_position_data.insert(index, value.clone());
+    for (key, value) in as_compound(
+        field(default, "block_position_data", what)?,
+        "block_position_data",
+        what,
+    )? {
+        let index: usize = key.parse().map_err(|_| {
+            bad(
+                what,
+                format!("block_position_data key {key:?} is not a block index"),
+            )
+        })?;
+        if index >= volume {
+            return Err(bad(
+                what,
+                format!("block_position_data key {key:?} is outside the structure"),
+            ));
         }
+        block_position_data.insert(index, value.clone());
     }
 
     let entities = as_list(field(structure, "entities", what)?, "entities", what)?.clone();
