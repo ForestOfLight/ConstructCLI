@@ -47,6 +47,9 @@ construct list <world>                    # structures in a world
 construct export <world> <structure>      # write <structure>.mcstructure
 construct export <world> <s1> <s2>        # one file each
 construct export <world> <s> -o out.mcstructure
+construct install                         # download and install the latest Construct
+construct install --version 1.2.0         # a specific release
+construct install --world <world>         # also enable it in a world and turn Beta APIs on
 ```
 
 A `<world>` is a world's display name, a folder name, a qualified
@@ -67,6 +70,15 @@ Global flags, available on every command:
 warnings are printed both to stderr and in a `warnings` array in that
 document. This is the contract the eventual GUI is meant to build on.
 
+`construct install` reads two environment variables:
+
+- `CONSTRUCT_GITHUB_TOKEN` (or `GITHUB_TOKEN`) — raises GitHub's rate limit
+  above the unauthenticated default.
+- `CONSTRUCT_GITHUB_API` — overrides the GitHub API base URL. This is what
+  lets the test suite exercise `install`, download included, without ever
+  touching the network; it doubles as an escape hatch for an enterprise
+  proxy that mirrors the GitHub API under a different address.
+
 ### Exit codes
 
 | Code | Meaning |
@@ -76,6 +88,7 @@ document. This is the contract the eventual GUI is meant to build on.
 | 2 | usage error |
 | 3 | not found |
 | 4 | world in use |
+| 5 | partial success — `install` placed the packs but could not flip Beta APIs on |
 
 ## Safety
 

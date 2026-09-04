@@ -5,6 +5,7 @@ mod output;
 use clap::Parser;
 use cli::{Cli, Command};
 use construct_core::error::CoreError;
+use construct_core::install::releases;
 use construct_core::{config, discovery};
 use output::Out;
 
@@ -189,6 +190,33 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 out,
             )
         }
+        Command::Install { version, world } => {
+            let w = world.as_deref().map(resolve_world).transpose()?;
+            let installation = match &w {
+                Some(w) => discovery::installation::for_world(&installations, w)?,
+                None => discovery::installation::choose(
+                    &installations,
+                    std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
+                    loaded.config.default_installation.as_deref(),
+                )?,
+            };
+            let token = std::env::var("CONSTRUCT_GITHUB_TOKEN")
+                .or_else(|_| std::env::var("GITHUB_TOKEN"))
+                .ok();
+            let client = match std::env::var("CONSTRUCT_GITHUB_API") {
+                Ok(base) => releases::GitHub::with_base(base, token),
+                Err(_) => releases::GitHub::new(token),
+            };
+            commands::install::run(
+                &client,
+                version.as_deref(),
+                w.as_ref(),
+                installation,
+                &loaded.config.backups,
+                cli.force,
+                out,
+            )
+        }
     }
 }
 
@@ -292,6 +320,13 @@ fn report(err: &CoreError) {
                 eprintln!("  {a}");
             }
         }
+        CoreError::IncompleteInstall { staging, .. } => {
+            eprintln!(
+                "\nThe new pack is staged at {} — move it into place by hand, \
+                 or delete it and re-run install.",
+                staging.display()
+            );
+        }
         CoreError::UnwritableLevelDat { written: true, .. } => {
             // Unlike the refusal-before-write case above, `write` already
             // renamed a new level.dat into place before verification failed:
@@ -308,11 +343,16 @@ fn report(err: &CoreError) {
     }
 }
 
-/// 0 success · 1 failure · 2 usage · 3 not found · 4 world in use.
+/// 0 success · 1 failure · 2 usage · 3 not found · 4 world in use · 5 partial
+/// success.
 ///
 /// Ambiguity is 2, not 3: the target exists, the reference was underspecified.
 /// A malformed reference is also 2: the input never named anything real, so
 /// it's the user's syntax that's wrong, not a lookup that failed.
+///
+/// 5 never comes from this function: `commands::install::run` exits directly
+/// with it when the packs are installed but the `level.dat` write failed, so
+/// the success payload already printed is not overwritten by an error path.
 fn exit_code(err: &CoreError) -> i32 {
     match err {
         CoreError::NoInstallations { .. }

@@ -104,6 +104,16 @@ pub enum Command {
         #[arg(long, required = true, num_args = 0..=1, value_name = "on|off")]
         beta_apis: Option<OnOff>,
     },
+
+    /// Download and install Construct.
+    Install {
+        /// A specific version, e.g. 1.2.0. Defaults to the latest release.
+        #[arg(long, value_name = "VERSION")]
+        version: Option<String>,
+        /// Also enable Construct in this world and turn Beta APIs on.
+        #[arg(long, value_name = "WORLD")]
+        world: Option<String>,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]

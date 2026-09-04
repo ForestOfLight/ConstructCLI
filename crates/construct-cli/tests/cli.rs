@@ -1443,3 +1443,227 @@ fn experiment_on_a_world_with_no_level_dat_fails_cleanly() {
         .unwrap();
     assert_ne!(out.status.code(), Some(0));
 }
+
+/// Writes a `level.dat` at `path`: version 10, an `experiments` compound
+/// carrying just `gametest`. Like `world_with_experiments` above, but writes
+/// straight to a caller-given path rather than building a whole com.mojang
+/// layout, so `install` tests can lay a world out however they need to.
+fn write_level_dat(path: &std::path::Path, gametest: i8) {
+    let mut experiments = std::collections::HashMap::new();
+    experiments.insert("gametest".to_string(), nbtx::Value::Byte(gametest));
+    let mut level = std::collections::HashMap::new();
+    level.insert(
+        "experiments".to_string(),
+        nbtx::Value::Compound(experiments),
+    );
+    level.insert("LevelName".to_string(), nbtx::Value::String("Test".into()));
+
+    let payload = nbtx::to_le_bytes(&nbtx::Value::Compound(level)).unwrap();
+    let mut bytes = 10i32.to_le_bytes().to_vec();
+    bytes.extend_from_slice(&(payload.len() as i32).to_le_bytes());
+    bytes.extend_from_slice(&payload);
+    std::fs::write(path, bytes).unwrap();
+}
+
+/// The same synthetic `.mcaddon` shape as construct-core's
+/// `real_shaped_addon` (crates/construct-core/tests/install.rs), built in
+/// memory instead of on disk. Carries Construct's real header UUIDs, since
+/// `install` now verifies them before placing anything (§18's addition).
+fn build_mcaddon_bytes() -> Vec<u8> {
+    use std::io::Write;
+
+    fn manifest(name: &str, uuid: &str, module: &str) -> Vec<u8> {
+        format!(
+            r#"{{"format_version":2,
+                "header":{{"name":"{name}","uuid":"{uuid}","version":[1,2,0]}},
+                "modules":[{{"type":"{module}","uuid":"22222222-2222-2222-2222-222222222222","version":[1,0,0]}}]}}"#
+        )
+        .into_bytes()
+    }
+
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    let mut zip = zip::ZipWriter::new(&mut cursor);
+    let options: zip::write::FileOptions<'_, ()> =
+        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+    let bp = manifest(
+        "Construct [BP] v1.2.0",
+        "8c0c0153-d8b9-482a-889f-aef922b8fe58",
+        "data",
+    );
+    let rp = manifest(
+        "Construct [RP] v1.2.0",
+        "375ec465-3dc1-429f-8b4c-a337889e1ed4",
+        "resources",
+    );
+
+    zip.start_file("Construct[BP]/manifest.json", options)
+        .unwrap();
+    zip.write_all(&bp).unwrap();
+    zip.start_file("Construct[BP]/scripts/main.js", options)
+        .unwrap();
+    zip.write_all(b"// code").unwrap();
+    zip.start_file("Construct[BP]/structures/construct.mcstructure", options)
+        .unwrap();
+    zip.write_all(b"shipped").unwrap();
+    zip.start_file("Construct[RP]/manifest.json", options)
+        .unwrap();
+    zip.write_all(&rp).unwrap();
+    zip.finish().unwrap();
+
+    cursor.into_inner()
+}
+
+/// A single-threaded HTTP server that answers exactly the two requests
+/// `install` makes, then stops. Returns its base URL and a join handle.
+///
+/// This is what lets `install` be tested end to end — download included —
+/// without the network or a mocking framework.
+///
+/// The handle is deliberately left unjoined by callers: `ureq` may serve both
+/// requests over one connection, in which case the server's second `accept()`
+/// never returns and joining would hang the whole suite forever. The thread
+/// is daemon-like — it exits on its own once both requests land, or the test
+/// process exits around it either way.
+fn stub_github(addon: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let release = format!(
+        r#"{{"tag_name":"v1.2.0","assets":[{{"name":"Construct-v1.2.0.mcaddon","size":{},"browser_download_url":"{base}/download"}}]}}"#,
+        addon.len()
+    );
+
+    let handle = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let body: Vec<u8> = if line.contains("/download") {
+                addon.clone()
+            } else {
+                release.clone().into_bytes()
+            };
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+        }
+    });
+    (base, handle)
+}
+
+#[test]
+fn install_places_both_packs_and_enables_them_in_a_world() {
+    let root = tempfile::tempdir().unwrap();
+    let world = root.path().join("minecraftWorlds/Test");
+    std::fs::create_dir_all(world.join("db")).unwrap();
+    std::fs::write(world.join("levelname.txt"), "Test").unwrap();
+    write_level_dat(&world.join("level.dat"), 0); // gametest = 0
+
+    let addon = build_mcaddon_bytes(); // the same synthetic archive as the core tests
+    let (base, _server) = stub_github(addon);
+
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args([
+            "install",
+            "--world",
+            "Test",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["version"], "1.2.0");
+    assert_eq!(v["world"], "Test");
+    assert_eq!(v["beta_apis"], true);
+
+    assert!(
+        root.path()
+            .join("development_behavior_packs/Construct[BP]/manifest.json")
+            .is_file()
+    );
+    assert!(
+        root.path()
+            .join("development_resource_packs/Construct[RP]/manifest.json")
+            .is_file()
+    );
+
+    let enabled = std::fs::read_to_string(world.join("world_behavior_packs.json")).unwrap();
+    assert!(enabled.contains("8c0c0153-d8b9-482a-889f-aef922b8fe58"));
+    let enabled_rp = std::fs::read_to_string(world.join("world_resource_packs.json")).unwrap();
+    assert!(enabled_rp.contains("375ec465-3dc1-429f-8b4c-a337889e1ed4"));
+}
+
+#[test]
+fn install_reports_an_unreachable_github_without_touching_anything() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
+    let out = bin()
+        // Port 1 refuses immediately on every platform we target.
+        .env("CONSTRUCT_GITHUB_API", "http://127.0.0.1:1")
+        .args(["install", "--com-mojang", root.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!root.path().join("development_behavior_packs").exists());
+}
+
+#[test]
+fn install_verifies_the_addon_is_actually_construct_before_placing_anything() {
+    // A `.mcaddon` shaped correctly (one BP, one RP, matched by module type)
+    // but carrying uuids that are not Construct's. `install` asked GitHub
+    // specifically for Construct, so it must check the answer rather than
+    // installing whatever it was handed under Construct's well-known uuids.
+    use std::io::Write;
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    let mut zip = zip::ZipWriter::new(&mut cursor);
+    let options: zip::write::FileOptions<'_, ()> =
+        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    zip.start_file("BP/manifest.json", options).unwrap();
+    zip.write_all(
+        br#"{"format_version":2,"header":{"name":"Not Construct","uuid":"11111111-1111-1111-1111-111111111111","version":[1,0,0]},"modules":[{"type":"data","uuid":"22222222-2222-2222-2222-222222222222","version":[1,0,0]}]}"#,
+    )
+    .unwrap();
+    zip.start_file("RP/manifest.json", options).unwrap();
+    zip.write_all(
+        br#"{"format_version":2,"header":{"name":"Not Construct RP","uuid":"33333333-3333-3333-3333-333333333333","version":[1,0,0]},"modules":[{"type":"resources","uuid":"44444444-4444-4444-4444-444444444444","version":[1,0,0]}]}"#,
+    )
+    .unwrap();
+    zip.finish().unwrap();
+    let addon = cursor.into_inner();
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
+    let (base, _server) = stub_github(addon);
+
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args(["install", "--com-mojang", root.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_ne!(out.status.code(), Some(0));
+    assert!(!root.path().join("development_behavior_packs").exists());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("11111111-1111-1111-1111-111111111111"),
+        "expected the found uuid to be named in the error: {stderr}"
+    );
+}

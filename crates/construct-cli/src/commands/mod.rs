@@ -4,5 +4,6 @@ pub mod delete;
 pub mod experiment;
 pub mod export;
 pub mod import;
+pub mod install;
 pub mod list;
 pub mod worlds;
