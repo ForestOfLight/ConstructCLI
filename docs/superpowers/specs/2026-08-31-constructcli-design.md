@@ -810,9 +810,10 @@ data in ordinary `AppData\Roaming`.
   a winner, and `list` shows every namespace — but the ambiguity message says which copy
   Construct would show in-game, since that is the question the user is really asking.
 
-  **Settled, and wider than assumed.** `docs/bedrock-mcstructure-files.md` — third-party
-  documentation of the format and its loading rules — resolves the remaining half and corrects an
-  assumption this design made:
+  **Settled, and wider than assumed.** `docs/bedrock-mcstructure-files.md` — a local copy of
+  tryashtar's third-party documentation of the Bedrock `.mcstructure` format and its loading
+  rules, published on GitHub (github.com/tryashtar, not committed to this repository) — resolves
+  the remaining half and corrects an assumption this design made:
 
   | Path under the pack | Identifier |
   |---|---|

@@ -4,7 +4,8 @@
 //! Construct's own source, which strips exactly that prefix from the ids the
 //! game hands it. Below that, the first subfolder is the namespace and every
 //! folder after it is part of the name (`structures/stuff/towers/diamond` is
-//! `stuff:towers/diamond`) — documented in `docs/bedrock-mcstructure-files.md`.
+//! `stuff:towers/diamond`) — documented in `docs/bedrock-mcstructure-files.md`, a local copy
+//! of tryashtar's `.mcstructure` format documentation (github.com/tryashtar), not committed here.
 //! An earlier version of this file walked only one level deep, on the mistaken
 //! assumption that nothing deeper was addressable in-game.
 

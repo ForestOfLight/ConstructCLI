@@ -4585,8 +4585,9 @@ git commit -m "Document the Construct integration"
 
 ### Task 21: Structures nest deeper than one level
 
-Added mid-execution. `docs/bedrock-mcstructure-files.md` — third-party documentation of the
-`.mcstructure` format and its loading rules — settles §17 and corrects an assumption Task 5 shipped.
+Added mid-execution. `docs/bedrock-mcstructure-files.md` — a local, untracked copy of
+tryashtar's third-party documentation of the Bedrock `.mcstructure` format and its loading
+rules, published on GitHub (github.com/tryashtar) — settles §17 and corrects an assumption Task 5 shipped.
 
 **The rule, from that document:**
 
@@ -4734,9 +4735,10 @@ constructs one passes it. `Source` gains `Ord` in Task 1 because `catalog::sort`
 `commands::catalog::for_world` (CLI) and `pack::for_world` (core) share a name in different
 modules — always call them module-qualified.
 
-**Task 21 was added mid-execution**, after `docs/bedrock-mcstructure-files.md` settled §17 and
-showed Task 5's one-level-deep assumption to be wrong. It is listed last because it corrects a
-shipped behaviour rather than blocking anything after it.
+**Task 21 was added mid-execution**, after `docs/bedrock-mcstructure-files.md` — tryashtar's
+third-party `.mcstructure` documentation on GitHub, kept locally but not committed — settled §17
+and showed Task 5's one-level-deep assumption to be wrong. It is listed last because it corrects
+a shipped behaviour rather than blocking anything after it.
 
 **Task 7 writes logic that Task 9 extracts.** That is intentional: the second caller is what
 earns the extraction, and doing it earlier would be designing an interface for one user.

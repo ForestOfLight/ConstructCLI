@@ -182,8 +182,9 @@ fn a_subdirectory_supplies_the_namespace_lowercased() {
 fn non_mcstructure_files_are_not_listed() {
     // This test used to also assert that `structures/a/b/deep.mcstructure` was
     // ignored as "too deep". Task 21's ruling: that half was retired, not edited
-    // around, because `docs/bedrock-mcstructure-files.md` documents that exact
-    // shape as `a:b/deep` -- listing it is the point of the task, not a
+    // around, because `docs/bedrock-mcstructure-files.md` -- a local, untracked copy
+    // of tryashtar's third-party `.mcstructure` documentation on GitHub -- documents
+    // that exact shape as `a:b/deep` -- listing it is the point of the task, not a
     // regression to paper over. The flat and one-level rules this test also
     // used to brush against are now covered by
     // `depth_does_not_change_the_flat_or_one_level_rules`.

@@ -36,10 +36,11 @@ spec holds the full list.
       only the game proves the flip is honored.
 - [ ] **Does a `.mcstructure` under `structures/<namespace>/` load as
       `<namespace>:<name>`, nesting included?** `docs/bedrock-mcstructure-files.md`
-      documents both the flat and nested forms straight from the game's own
-      loading rules, not inference from one shipped pack — this item confirms
-      that documentation against the shipping game rather than settling an
-      open question.
+      — a local, untracked copy of tryashtar's third-party `.mcstructure` format
+      documentation, published on GitHub (github.com/tryashtar) — documents both
+      the flat and nested forms straight from the game's own loading rules, not
+      inference from one shipped pack — this item confirms that documentation
+      against the shipping game rather than settling an open question.
 - [ ] **Does `construct install` produce a working Construct?** Install into
       a scratch world, load it, and run `/construct`.
 - [ ] *(Windows)* **Do dev packs in `Users\Shared` apply to a world owned by
