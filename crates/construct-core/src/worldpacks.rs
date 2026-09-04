@@ -51,7 +51,19 @@ pub fn upsert(path: &Path, entry: PackRef) -> Result<bool> {
         path: path.to_path_buf(),
         reason: e.to_string(),
     })?;
-    std::fs::write(path, text)?;
+    // Same temp-file-plus-rename approach as `leveldat::write`: a crash or a
+    // full disk mid-write must not leave a truncated or empty file, which
+    // would silently disable every pack the world had enabled.
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let tmp = dir.join(format!(
+        ".{}.construct-tmp",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("world_packs.json")
+    ));
+    std::fs::write(&tmp, &text)?;
+    // Same directory, so the rename is atomic on every platform we target.
+    std::fs::rename(&tmp, path)?;
     Ok(true)
 }
 
