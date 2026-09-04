@@ -425,6 +425,135 @@ fn a_copy_failure_partway_through_leaves_the_original_completely_intact() {
 }
 
 #[test]
+fn a_crash_between_remove_and_rename_recovers_on_the_next_run() {
+    // Reconstructs the point-of-no-return state by hand: `dest` has already
+    // been removed, and a staging directory sits beside it holding the
+    // complete, already-merged replacement -- exactly what a crash between
+    // `remove_dir_all` and `rename` leaves on disk. The next `place()` call,
+    // with no idea a crash happened, must recover it rather than throw it
+    // away: at this point it is the only place the user's structures exist.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("development_behavior_packs");
+
+    let staging_name = format!(
+        ".constructcli-staging-{}-{}-Construct[BP]",
+        std::process::id(),
+        123456789u64
+    );
+    installed_pack(
+        &root,
+        &staging_name,
+        construct_core::pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        &[("bomber", b"mine"), ("castle", b"also mine")],
+    );
+    // `dest` (Construct[BP]) intentionally does not exist -- it was already
+    // removed by the run that crashed before it could rename the stage in.
+
+    let new = tmp.path().join("new/Construct[BP]");
+    installed_pack(
+        new.parent().unwrap(),
+        "Construct[BP]",
+        construct_core::pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        &[],
+    );
+
+    let placed = install::place(&root, &new, false).unwrap();
+
+    assert_eq!(placed.dir, root.join("Construct[BP]"));
+    assert!(
+        placed.dir.is_dir(),
+        "the staging directory should have been recovered into place"
+    );
+    let structures = placed.dir.join("structures");
+    assert_eq!(
+        std::fs::read(structures.join("bomber.mcstructure")).unwrap(),
+        b"mine"
+    );
+    assert_eq!(
+        std::fs::read(structures.join("castle.mcstructure")).unwrap(),
+        b"also mine"
+    );
+
+    let leftovers: Vec<_> = std::fs::read_dir(&root)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(".constructcli-staging-"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "the recovered staging directory should not remain, found {leftovers:?}"
+    );
+}
+
+#[test]
+fn a_foreign_staging_directory_is_never_deleted_or_mistaken_for_the_installed_pack() {
+    // A staging directory this invocation did not create: either another
+    // process's stage still being written, or a leftover whose destination
+    // exists again. It carries a fully readable manifest with the *same*
+    // UUID as the real pack -- the exact shape that would be mistaken for
+    // the installed copy if staging directories were not explicitly
+    // excluded from the UUID lookup, since `.` sorts before the real pack's
+    // name and `find_by_uuid` returns the first match.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("development_behavior_packs");
+    let existing = installed_pack(
+        &root,
+        "Construct[BP]",
+        construct_core::pack::CONSTRUCT_BP_UUID,
+        [1, 1, 0],
+        &[("bomber", b"mine")],
+    );
+
+    let foreign_name = format!(
+        ".constructcli-staging-{}-{}-Construct[BP]",
+        999999u32, 42u64
+    );
+    installed_pack(
+        &root,
+        &foreign_name,
+        construct_core::pack::CONSTRUCT_BP_UUID,
+        [9, 9, 9],
+        &[("someone-elses-structure", b"not yours")],
+    );
+
+    let new = tmp.path().join("new/Construct[BP]");
+    installed_pack(
+        new.parent().unwrap(),
+        "Construct[BP]",
+        construct_core::pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        &[],
+    );
+
+    let placed = install::place(&root, &new, false).unwrap();
+
+    // The upgrade found and used the *real* pack, not the foreign staging
+    // directory -- its prior version and preserved structure prove it.
+    assert_eq!(placed.from, Some([1, 1, 0]));
+    assert_eq!(placed.dir, existing);
+    assert_eq!(
+        std::fs::read(placed.dir.join("structures/bomber.mcstructure")).unwrap(),
+        b"mine"
+    );
+
+    // The foreign staging directory -- something this call did not create,
+    // and whose destination already existed -- must still be exactly as it
+    // was: never deleted, never recovered into place.
+    let foreign = root.join(&foreign_name);
+    assert!(
+        foreign.is_dir(),
+        "a staging directory this run did not create must never be removed"
+    );
+    assert_eq!(
+        std::fs::read(foreign.join("structures/someone-elses-structure.mcstructure")).unwrap(),
+        b"not yours"
+    );
+}
+
+#[test]
 fn a_first_install_creates_the_root_and_copies_the_pack() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("development_behavior_packs");

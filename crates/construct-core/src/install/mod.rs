@@ -9,10 +9,11 @@ use crate::store::snapshot::copy_dir;
 use std::path::{Path, PathBuf};
 
 /// Prefix for the staging directory `place` uses while swapping a pack in.
-/// Dotted so it is plainly not a pack folder, and `pack::packs_in` skips it
-/// anyway on the merits: it filters on whether `manifest.json` parses, not
-/// on the name, so a staging directory with no manifest yet (or a corrupt
-/// one) is simply invisible to it.
+/// Dotted so it is plainly not a pack folder. `find_installed_by_uuid`
+/// additionally excludes any directory carrying this prefix by name: mid-run
+/// (or after a crash, before the next run recovers or ignores it) a staging
+/// directory can carry a manifest with the same header UUID as the pack it
+/// is staging, and must never be mistaken for the installed copy.
 const STAGING_PREFIX: &str = ".constructcli-staging-";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,17 +37,23 @@ pub struct Placed {
 /// pack, the copy of preserved structures) happens while the original is
 /// completely intact, so a failure there — disk full, most plausibly —
 /// leaves the user with their original pack, not with neither copy.
+///
+/// The remove-then-rename swap at the end is not itself atomic, so a crash
+/// between the two can leave a destination that is gone and a staging
+/// directory that holds the complete replacement. `place` recovers that
+/// state on its next run rather than ever deleting a staging directory it
+/// did not create in this call — see `recover_finished_staging`.
 pub fn place(root: &Path, src: &Path, force: bool) -> Result<Placed> {
     let incoming = manifest::read(src)?;
 
-    // A staging directory left behind by a previous run that crashed or was
-    // killed between the remove and the rename must not corrupt this run:
-    // it would carry the same header UUID as the pack it was staging, and
-    // `find_by_uuid` would otherwise happily match it instead of the real
-    // installed copy.
-    cleanup_stale_staging(root);
+    // Complete any swap a previous run left half-finished, or leave it
+    // strictly alone if this call cannot positively confirm it is safe to
+    // move. Must run before the UUID lookup below: a recovered directory
+    // needs to be either gone (renamed into place) or excluded from that
+    // lookup, never left sitting there as a UUID-matching impostor.
+    recover_finished_staging(root);
 
-    let existing = pack::find_by_uuid(root, &incoming.uuid);
+    let existing = find_installed_by_uuid(root, &incoming.uuid);
 
     // Idempotent: the same version already installed is nothing to do.
     if let Some(existing) = &existing
@@ -70,11 +77,16 @@ pub fn place(root: &Path, src: &Path, force: bool) -> Result<Placed> {
             reason: "the extracted pack has no folder name".to_string(),
         })?),
     };
+    let dest_name = dest
+        .file_name()
+        .expect("dest is always root joined with a folder name")
+        .to_string_lossy()
+        .into_owned();
 
     // Stage the new pack beside the destination, on the same filesystem, so
     // the final swap is a rename rather than a copy. Nothing belonging to
     // `dest` has been touched yet.
-    let staging = root.join(staging_name());
+    let staging = root.join(staging_name(&dest_name));
     if let Err(e) = copy_dir(src, &staging) {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(e);
@@ -99,15 +111,22 @@ pub fn place(root: &Path, src: &Path, force: bool) -> Result<Placed> {
     }
 
     // The point of no return: from here it is a delete plus a same-directory
-    // rename, no bulk I/O in between, and the destination directory only
-    // ever moves — it is never simultaneously absent and unwritten.
+    // rename, no bulk I/O in between. If either step fails, the staged copy
+    // is left exactly where it is — named in the error — rather than being
+    // cleaned up: it is a complete, ready-to-use replacement, and deleting
+    // it here would be the same mistake this whole restructure exists to
+    // avoid.
     if dest.exists() {
-        std::fs::remove_dir_all(&dest)?;
+        std::fs::remove_dir_all(&dest).map_err(|e| CoreError::IncompleteInstall {
+            dest: dest.clone(),
+            staging: staging.clone(),
+            reason: format!("the old copy could not be fully removed: {e}"),
+        })?;
     }
     std::fs::rename(&staging, &dest).map_err(|e| CoreError::IncompleteInstall {
         dest: dest.clone(),
         staging,
-        reason: e.to_string(),
+        reason: format!("the staged pack could not be moved into place: {e}"),
     })?;
 
     Ok(Placed {
@@ -119,31 +138,79 @@ pub fn place(root: &Path, src: &Path, force: bool) -> Result<Placed> {
     })
 }
 
-/// A staging directory name that cannot collide with a pack folder and is
-/// unique to this run.
-fn staging_name() -> String {
+/// A staging directory name that records which destination folder it is
+/// staging for — so a later run can recover it — plus a per-run,
+/// collision-free suffix.
+fn staging_name(dest_name: &str) -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("{STAGING_PREFIX}{}-{nanos}", std::process::id())
+    format!("{STAGING_PREFIX}{}-{nanos}-{dest_name}", std::process::id())
 }
 
-/// Removes any staging directories left behind under `root` by a previous
-/// run that did not finish. Best-effort: a `root` that does not exist yet,
-/// or a directory this process cannot remove, is not this function's
-/// problem to solve.
-fn cleanup_stale_staging(root: &Path) {
+/// The destination folder name encoded in a staging directory's name, if it
+/// looks like one `place` created. `None` for anything else under `root`,
+/// including a staging name too malformed to have a recorded destination.
+fn staged_dest_name(staging_dir_name: &str) -> Option<&str> {
+    let rest = staging_dir_name.strip_prefix(STAGING_PREFIX)?;
+    let mut parts = rest.splitn(3, '-');
+    parts.next()?; // pid
+    parts.next()?; // nanos
+    parts.next()
+}
+
+fn is_staging_name(dir: &Path) -> bool {
+    dir.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.starts_with(STAGING_PREFIX))
+        .unwrap_or(false)
+}
+
+/// Like `pack::find_by_uuid`, but ignores this module's own staging
+/// directories — see `STAGING_PREFIX`. Without this, a leftover or
+/// in-progress staging directory carrying the same header UUID as the pack
+/// it is staging could be matched instead of the real installed copy.
+fn find_installed_by_uuid(root: &Path, uuid: &str) -> Option<pack::Pack> {
+    pack::packs_in(root)
+        .into_iter()
+        .find(|p| p.manifest.uuid == uuid && !is_staging_name(&p.dir))
+}
+
+/// Completes any swap a previous run of `place` left interrupted between
+/// `remove_dir_all(&dest)` and the `rename` that follows it — the one window
+/// where `dest` is briefly absent and the staged replacement is the only
+/// copy of the user's data left on disk.
+///
+/// For each staging directory found under `root`: if its recorded
+/// destination does not exist and the staging directory holds a readable
+/// manifest, the interrupted swap is completed by renaming it into place —
+/// the subsequent install then usually proceeds as an idempotent no-op. A
+/// staging directory this call cannot positively confirm is a finished,
+/// abandoned swap — no readable manifest, or a destination that already
+/// exists again (which is what another process's staging directory looks
+/// like while that process is still writing it) — is left completely alone.
+/// Leaked garbage is a housekeeping annoyance; deleting a directory that
+/// might still be someone's only copy of the user's data is not a trade
+/// worth making to avoid it.
+fn recover_finished_staging(root: &Path) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
     for entry in entries.flatten() {
-        if entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with(STAGING_PREFIX)
-        {
-            let _ = std::fs::remove_dir_all(entry.path());
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(dest_name) = staged_dest_name(name) else {
+            continue;
+        };
+        let dest = root.join(dest_name);
+        if dest.exists() {
+            continue;
+        }
+        if manifest::read(&path).is_ok() {
+            let _ = std::fs::rename(&path, &dest);
         }
     }
 }

@@ -91,7 +91,7 @@ pub enum CoreError {
     ConstructNotInstalled { searched: Vec<PathBuf> },
 
     #[error(
-        "install of {} did not finish: the old copy was removed and the new one is staged at {}: {reason}",
+        "install of {} did not finish: {reason}; the new pack is staged at {} for manual recovery",
         dest.display(), staging.display()
     )]
     IncompleteInstall {
