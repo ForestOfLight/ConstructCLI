@@ -191,12 +191,11 @@ mod tests {
             z: i32::MAX,
         };
         assert_eq!(s.volume(), i64::MAX);
-        // Test that index_of on an in-range coordinate either returns None or
-        // a correct value, but does not panic.
-        let result = s.index_of(Coord { x: 0, y: 0, z: 0 });
-        // With i32::MAX dimensions, the coordinate (0,0,0) is in range and
-        // should produce index 0.
-        assert_eq!(result, Some(0));
+        // index_of() on (0,0,0): sz * sy * cx = MAX * MAX * 0 = 0, no overflow.
+        assert_eq!(s.index_of(Coord { x: 0, y: 0, z: 0 }), Some(0));
+        // index_of() on (3,0,0): sz * sy * cx = MAX * MAX * 3 overflows i64.
+        // With checked arithmetic, this returns None. Without it, it panics.
+        assert_eq!(s.index_of(Coord { x: 3, y: 0, z: 0 }), None);
     }
 
     #[test]
