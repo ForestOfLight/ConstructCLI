@@ -2,7 +2,7 @@
 
 use crate::error::{CoreError, Result};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// A parsed `level.dat`.
 ///
@@ -14,6 +14,13 @@ use std::path::Path;
 pub struct LevelDat {
     pub version: i32,
     pub root: nbtx::Value,
+    /// The payload length this file was read with.
+    payload_len: usize,
+    /// Whether re-serializing the untouched value reproduces a payload of the
+    /// same length. See §9: `nbtx` turns array tags into lists (one byte longer
+    /// each) and writes empty lists five bytes short and unparseable. Both
+    /// change the length, so this is a reliable refusal rather than a guess.
+    faithful: bool,
 }
 
 /// Reads and parses the `level.dat` at `path`.
@@ -44,7 +51,20 @@ pub fn parse(bytes: &[u8], path: &Path) -> Result<LevelDat> {
     let root: nbtx::Value =
         nbtx::from_le_bytes(&mut cursor).map_err(|e| bad(&format!("invalid NBT: {e}")))?;
 
-    Ok(LevelDat { version, root })
+    // The fidelity gate (§9, §10): re-serialize the untouched value and check
+    // its length against what we just read. `nbtx` cannot round-trip array
+    // tags or empty lists, and both defects change the payload's length, so a
+    // mismatch here reliably means a write would corrupt this file.
+    let faithful = nbtx::to_le_bytes(&root)
+        .map(|re| re.len() == payload.len())
+        .unwrap_or(false);
+
+    Ok(LevelDat {
+        version,
+        root,
+        payload_len: payload.len(),
+        faithful,
+    })
 }
 
 impl LevelDat {
@@ -90,6 +110,156 @@ impl LevelDat {
                 .collect(),
         )
     }
+
+    /// The payload length this file was read with, and what [`Self::is_faithful`]
+    /// was measured against.
+    pub fn payload_len(&self) -> usize {
+        self.payload_len
+    }
+
+    /// False when this file's NBT cannot be re-serialized without changing —
+    /// an array tag or an empty list (§9). [`Self::to_bytes`] refuses to write
+    /// such a file rather than silently corrupt it.
+    pub fn is_faithful(&self) -> bool {
+        self.faithful
+    }
+
+    /// Whether Beta APIs are on, or `None` when the world has no `experiments`.
+    pub fn beta_apis(&self) -> Option<bool> {
+        Some(self.experiments()?.get(GAMETEST).copied().unwrap_or(0) != 0)
+    }
+
+    /// Sets the Beta APIs state, creating the compound if the world has none.
+    ///
+    /// Read-modify-write, never a replacement: worlds carry other experiment
+    /// keys and rewriting the compound wholesale would silently disable them.
+    /// Disabling leaves the two companion flags at 1 — they record that the
+    /// world once used experiments rather than mirroring the current state.
+    pub fn set_beta_apis(&mut self, on: bool) {
+        let nbtx::Value::Compound(root) = &mut self.root else {
+            return;
+        };
+        let entry = root
+            .entry("experiments".to_string())
+            .or_insert_with(|| nbtx::Value::Compound(Default::default()));
+        let nbtx::Value::Compound(experiments) = entry else {
+            return;
+        };
+        experiments.insert(GAMETEST.to_string(), nbtx::Value::Byte(on as i8));
+        if on {
+            experiments.insert(EVER_USED.to_string(), nbtx::Value::Byte(1));
+            experiments.insert(TOGGLED.to_string(), nbtx::Value::Byte(1));
+        }
+    }
+
+    /// The complete file: the 8-byte header, then the payload.
+    ///
+    /// Refuses when [`Self::is_faithful`] is false — see §9/§10 for why a
+    /// length-preserving round-trip is the property that stands between this
+    /// tool and a corrupted save.
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        if !self.faithful {
+            return Err(CoreError::UnwritableLevelDat {
+                path: PathBuf::new(),
+                reason: "this level.dat uses NBT this tool cannot rewrite without changing it \
+                         (an array tag or an empty list); the world was not modified"
+                    .to_string(),
+                written: false,
+            });
+        }
+        let payload = nbtx::to_le_bytes(&self.root).map_err(|e| CoreError::UnwritableLevelDat {
+            path: PathBuf::new(),
+            reason: format!("could not encode NBT: {e}"),
+            written: false,
+        })?;
+        let mut out = Vec::with_capacity(payload.len() + 8);
+        out.extend_from_slice(&self.version.to_le_bytes());
+        out.extend_from_slice(&(payload.len() as i32).to_le_bytes());
+        out.extend_from_slice(&payload);
+        Ok(out)
+    }
+}
+
+/// The three `Byte` entries that make up the Beta APIs state (§10).
+const GAMETEST: &str = "gametest";
+const EVER_USED: &str = "experiments_ever_used";
+const TOGGLED: &str = "saved_with_toggled_experiments";
+
+/// Writes a `level.dat` atomically: a temporary file beside it, then a rename.
+///
+/// `to_bytes` (and therefore the fidelity gate) runs before anything on disk
+/// is touched, so a refusal here leaves `path` exactly as it was.
+pub fn write(dat: &LevelDat, path: &Path) -> Result<()> {
+    let bytes = dat.to_bytes().map_err(|e| match e {
+        // `to_bytes` has no path to name; supply it here. `written` always
+        // came in `false` from `to_bytes` — nothing below this call has run
+        // yet — so it passes through unchanged.
+        CoreError::UnwritableLevelDat {
+            reason, written, ..
+        } => CoreError::UnwritableLevelDat {
+            path: path.to_path_buf(),
+            reason,
+            written,
+        },
+        other => other,
+    })?;
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let tmp = dir.join(format!(
+        ".{}.construct-tmp",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("level.dat")
+    ));
+    std::fs::write(&tmp, &bytes)?;
+    // Same directory, so the rename is atomic on every platform we target.
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BetaApisChange {
+    pub before: Option<bool>,
+    pub after: bool,
+    pub changed: bool,
+}
+
+/// Reads, flips, writes, then re-reads and verifies.
+///
+/// §10: treat "write succeeded, value unchanged" as a failure. Backing the file
+/// up first is the caller's job — it needs configuration this module does not
+/// have.
+pub fn apply_beta_apis(path: &Path, on: bool) -> Result<BetaApisChange> {
+    let mut dat = read(path)?;
+    let before = dat.beta_apis();
+    if before == Some(on) {
+        return Ok(BetaApisChange {
+            before,
+            after: on,
+            changed: false,
+        });
+    }
+    dat.set_beta_apis(on);
+    write(&dat, path)?;
+
+    let verified = read(path)?;
+    if verified.beta_apis() != Some(on) {
+        // `write` has already renamed a new file into place by this point:
+        // the world genuinely changed, just not into the state asked for.
+        // `written: true` tells the caller not to say "not modified."
+        return Err(CoreError::UnwritableLevelDat {
+            path: path.to_path_buf(),
+            reason: format!(
+                "wrote the Beta APIs flag but read back {:?}",
+                verified.beta_apis()
+            ),
+            written: true,
+        });
+    }
+    Ok(BetaApisChange {
+        before,
+        after: on,
+        changed: true,
+    })
 }
 
 #[cfg(test)]
@@ -190,6 +360,15 @@ mod tests {
     }
 
     #[test]
+    // Needs a real Minecraft world ("Amelix CMP") at a fixed path under the
+    // developer's home directory. Absent that world it `eprintln!`s and
+    // returns `Ok`, asserting nothing — passing on CI and every other
+    // machine regardless of whether the parser even works. `#[ignore]` makes
+    // that skip visible (`cargo test` reports it as ignored) instead of a
+    // silent, vacuous pass; run it explicitly with
+    // `cargo test -- --ignored parses_a_real_world_level_dat` on a machine
+    // that has the world.
+    #[ignore = "needs a real Minecraft world at a fixed local path; see comment above"]
     fn parses_a_real_world_level_dat() {
         let path = dirs_next_to_home(
             "Library/Application Support/mcpelauncher/games/com.mojang/minecraftWorlds/Amelix CMP/level.dat",
@@ -248,5 +427,213 @@ mod tests {
         bytes.push(0x00); // 1 more byte to fill the declared length
         let err = parse(&bytes, Path::new("x")).unwrap_err();
         assert!(matches!(err, CoreError::BadLevelDat { .. }));
+    }
+
+    fn experiments(entries: &[(&str, i8)]) -> nbtx::Value {
+        let mut inner = HashMap::new();
+        for (k, v) in entries {
+            inner.insert(k.to_string(), nbtx::Value::Byte(*v));
+        }
+        let mut root = HashMap::new();
+        root.insert("experiments".to_string(), nbtx::Value::Compound(inner));
+        root.insert("LevelName".to_string(), nbtx::Value::String("Test".into()));
+        nbtx::Value::Compound(root)
+    }
+
+    #[test]
+    fn enabling_creates_the_compound_when_a_world_has_none() {
+        let mut root = HashMap::new();
+        root.insert("LevelName".to_string(), nbtx::Value::String("Test".into()));
+        let bytes = build(10, nbtx::Value::Compound(root));
+        let mut dat = parse(&bytes, Path::new("level.dat")).unwrap();
+
+        assert_eq!(dat.beta_apis(), None);
+        dat.set_beta_apis(true);
+        assert_eq!(dat.experiments().unwrap().get("gametest"), Some(&1));
+        assert_eq!(
+            dat.experiments().unwrap().get("experiments_ever_used"),
+            Some(&1)
+        );
+        assert_eq!(
+            dat.experiments()
+                .unwrap()
+                .get("saved_with_toggled_experiments"),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn enabling_a_world_that_already_has_it_changes_nothing() {
+        let bytes = build(
+            10,
+            experiments(&[
+                ("experiments_ever_used", 1),
+                ("gametest", 1),
+                ("saved_with_toggled_experiments", 1),
+            ]),
+        );
+        let mut dat = parse(&bytes, Path::new("level.dat")).unwrap();
+        let before = dat.experiments().unwrap();
+        dat.set_beta_apis(true);
+        assert_eq!(dat.experiments().unwrap(), before);
+    }
+
+    #[test]
+    fn disabling_clears_only_gametest() {
+        let bytes = build(
+            10,
+            experiments(&[
+                ("experiments_ever_used", 1),
+                ("gametest", 1),
+                ("saved_with_toggled_experiments", 1),
+            ]),
+        );
+        let mut dat = parse(&bytes, Path::new("level.dat")).unwrap();
+        dat.set_beta_apis(false);
+
+        let after = dat.experiments().unwrap();
+        assert_eq!(after.get("gametest"), Some(&0));
+        // Historical records of the world having used experiments, not mirrors
+        // of the current state.
+        assert_eq!(after.get("experiments_ever_used"), Some(&1));
+        assert_eq!(after.get("saved_with_toggled_experiments"), Some(&1));
+    }
+
+    #[test]
+    fn unrelated_experiments_survive_the_flip() {
+        // A wholesale rewrite of the compound would silently disable these.
+        let bytes = build(
+            10,
+            experiments(&[
+                ("data_driven_biomes", 1),
+                ("upcoming_creator_features", 1),
+                ("gametest", 0),
+            ]),
+        );
+        let mut dat = parse(&bytes, Path::new("level.dat")).unwrap();
+        dat.set_beta_apis(true);
+
+        let after = dat.experiments().unwrap();
+        assert_eq!(after.get("data_driven_biomes"), Some(&1));
+        assert_eq!(after.get("upcoming_creator_features"), Some(&1));
+        assert_eq!(after.get("gametest"), Some(&1));
+    }
+
+    #[test]
+    fn a_file_that_cannot_round_trip_refuses_to_be_written() {
+        // nbtx 3.0.1 drops the element type and length of an empty list, five
+        // bytes short, producing NBT it cannot parse back (§9). The `build`
+        // helper cannot construct this fixture: it round-trips through
+        // `nbtx::to_le_bytes`, which is exactly what can't serialize an empty
+        // list. So these bytes are hand-written, not built. Verified by a
+        // scratch probe: they parse to Compound({"gaps": List([])}) and
+        // re-serialize to 11 bytes against an original of 16.
+        //
+        // { "gaps": List([]) }
+        let payload: Vec<u8> = vec![
+            0x0a, 0x00, 0x00, // TAG_Compound, root name ""
+            0x09, // TAG_List
+            0x04, 0x00, b'g', b'a', b'p', b's', // name "gaps"
+            0x00, // element type TAG_End
+            0x00, 0x00, 0x00, 0x00, // length 0
+            0x00, // TAG_End of compound
+        ];
+        let mut bytes = 10i32.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&(payload.len() as i32).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+
+        let dat = parse(&bytes, Path::new("level.dat")).unwrap();
+
+        assert!(!dat.is_faithful());
+        assert!(matches!(
+            dat.to_bytes(),
+            Err(CoreError::UnwritableLevelDat { .. })
+        ));
+
+        // A gate that returns an error but writes anyway is as dangerous as no
+        // gate at all: the write must refuse, and the file on disk must be
+        // untouched, byte for byte.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("level.dat");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let err = write(&dat, &path).unwrap_err();
+        assert!(matches!(err, CoreError::UnwritableLevelDat { .. }));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn an_ordinary_file_round_trips_and_reports_the_new_state() {
+        let bytes = build(10, experiments(&[("gametest", 0)]));
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("level.dat");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let change = apply_beta_apis(&path, true).unwrap();
+        assert_eq!(change.before, Some(false));
+        assert!(change.after);
+        assert!(change.changed);
+
+        // The written file is a real level.dat: it parses, and the value took.
+        let reread = read(&path).unwrap();
+        assert_eq!(reread.beta_apis(), Some(true));
+        assert_eq!(reread.version, 10);
+    }
+
+    #[test]
+    fn applying_the_state_a_world_already_has_reports_no_change() {
+        let bytes = build(
+            10,
+            experiments(&[
+                ("experiments_ever_used", 1),
+                ("gametest", 1),
+                ("saved_with_toggled_experiments", 1),
+            ]),
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("level.dat");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let change = apply_beta_apis(&path, true).unwrap();
+        assert!(!change.changed);
+        assert_eq!(change.before, Some(true));
+    }
+
+    #[test]
+    fn a_write_that_silently_no_ops_is_caught_by_verification_and_flagged_written() {
+        // A deterministic way to reach the post-write verification failure,
+        // not a race: `set_beta_apis` early-returns without touching
+        // anything when `experiments` exists but is not a Compound (see its
+        // match-or-return chain). `write` then persists the file completely
+        // unchanged — faithfully, since an Int round-trips fine — so the
+        // verification re-read still finds `beta_apis() == None` and
+        // disagrees with the requested `true`. This is the only path found
+        // that provokes the mismatch without depending on timing; an
+        // external process racing the atomic rename would also trigger it,
+        // but a unit test cannot construct that reliably.
+        let mut root = HashMap::new();
+        root.insert("experiments".to_string(), nbtx::Value::Int(5));
+        let bytes = build(10, nbtx::Value::Compound(root));
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("level.dat");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let err = apply_beta_apis(&path, true).unwrap_err();
+        match err {
+            CoreError::UnwritableLevelDat { written, .. } => {
+                assert!(
+                    written,
+                    "write() had already succeeded before verification ran"
+                );
+            }
+            other => panic!("expected UnwritableLevelDat, got {other:?}"),
+        }
+
+        // The rename genuinely happened (this is not a case where `write`
+        // itself failed): the file still parses cleanly afterward, and its
+        // content matches what was persisted — unchanged, since the no-op
+        // left the in-memory value exactly as it was read.
+        let after = read(&path).unwrap();
+        assert_eq!(after.beta_apis(), None);
     }
 }

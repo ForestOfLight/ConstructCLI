@@ -1,0 +1,470 @@
+use construct_core::discovery::{Installation, LastPlayedSource, World};
+use construct_core::pack;
+use std::path::Path;
+
+fn test_world(dir: &Path) -> World {
+    World {
+        installation: "test".into(),
+        account: None,
+        folder: dir.file_name().unwrap().to_string_lossy().into_owned(),
+        display_name: "Test".into(),
+        path: dir.to_path_buf(),
+        last_played: None,
+        last_played_source: LastPlayedSource::DirMtime,
+        size_bytes: 0,
+    }
+}
+
+fn test_installation(com_mojang: &Path) -> Installation {
+    Installation {
+        name: "test".into(),
+        dev_pack_root: com_mojang.to_path_buf(),
+        world_roots: Vec::new(),
+    }
+}
+
+/// Writes a minimal pack directory and returns its path.
+fn make_pack(
+    root: &Path,
+    folder: &str,
+    uuid: &str,
+    version: [u32; 3],
+    resources: bool,
+) -> std::path::PathBuf {
+    let dir = root.join(folder);
+    std::fs::create_dir_all(&dir).unwrap();
+    let module = if resources { "resources" } else { "data" };
+    let manifest = format!(
+        r#"{{"format_version":2,
+            "header":{{"name":"{folder}","uuid":"{uuid}","version":[{},{},{}]}},
+            "modules":[{{"type":"{module}","uuid":"11111111-1111-1111-1111-111111111111","version":[1,0,0]}}]}}"#,
+        version[0], version[1], version[2]
+    );
+    std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+    dir
+}
+
+#[test]
+fn construct_is_found_by_uuid_under_any_folder_name() {
+    let root = tempfile::tempdir().unwrap();
+    make_pack(
+        root.path(),
+        "SomethingElse",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        false,
+    );
+    make_pack(
+        root.path(),
+        "Canopy[BP]",
+        "aaaaaaaa-0000-0000-0000-000000000000",
+        [1, 0, 0],
+        false,
+    );
+
+    let found =
+        pack::find_by_uuid(root.path(), pack::CONSTRUCT_BP_UUID).expect("should find Construct");
+    assert_eq!(found.dir.file_name().unwrap(), "SomethingElse");
+    assert_eq!(found.manifest.version, [1, 2, 0]);
+}
+
+#[test]
+fn a_directory_without_a_manifest_is_skipped_not_an_error() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("junk")).unwrap();
+    std::fs::write(root.path().join("loose-file.txt"), "x").unwrap();
+    make_pack(
+        root.path(),
+        "Real",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 0, 0],
+        false,
+    );
+
+    let packs = pack::packs_in(root.path());
+    assert_eq!(packs.len(), 1);
+    assert_eq!(packs[0].manifest.uuid, pack::CONSTRUCT_BP_UUID);
+}
+
+#[test]
+fn a_pack_with_a_broken_manifest_is_skipped_rather_than_failing_the_scan() {
+    // One corrupt pack must not hide every other pack on the machine.
+    let root = tempfile::tempdir().unwrap();
+    let broken = root.path().join("Broken");
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(broken.join("manifest.json"), "{ not json").unwrap();
+    make_pack(
+        root.path(),
+        "Good",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 0, 0],
+        false,
+    );
+
+    assert_eq!(pack::packs_in(root.path()).len(), 1);
+}
+
+#[test]
+fn a_dotted_directory_is_never_seen_as_an_installed_pack() {
+    // `install::place` stages a pack under a dotted directory name while
+    // swapping it in, and that directory can carry a fully valid manifest
+    // -- with the same header UUID as the pack it is staging -- for as
+    // long as the swap is in flight or before the next run recovers or
+    // abandons it. Every caller of `packs_in`/`find_by_uuid`, not just
+    // `install`, must never mistake it for the installed copy.
+    let root = tempfile::tempdir().unwrap();
+    make_pack(
+        root.path(),
+        ".constructcli-staging-1234-5678-Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [9, 9, 9],
+        false,
+    );
+
+    assert!(pack::packs_in(root.path()).is_empty());
+    assert!(pack::find_by_uuid(root.path(), pack::CONSTRUCT_BP_UUID).is_none());
+}
+
+#[test]
+fn a_missing_root_yields_no_packs() {
+    assert!(pack::packs_in(Path::new("/no/such/root")).is_empty());
+}
+
+#[test]
+fn the_pack_roots_are_the_documented_folder_names() {
+    let base = Path::new("/com.mojang");
+    assert_eq!(
+        pack::behavior_root(base),
+        Path::new("/com.mojang/development_behavior_packs")
+    );
+    assert_eq!(
+        pack::resource_root(base),
+        Path::new("/com.mojang/development_resource_packs")
+    );
+}
+
+use construct_core::pack::structures;
+
+fn touch(path: &Path, bytes: &[u8]) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
+#[test]
+fn a_file_directly_in_structures_is_mystructure_namespaced() {
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("Construct[BP]");
+    touch(&pack.join("structures/bomber.mcstructure"), b"12345");
+
+    let found = structures::list(&pack);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id, "mystructure:bomber");
+    assert_eq!(found[0].name, "bomber");
+    assert_eq!(found[0].size_bytes, 5);
+}
+
+#[test]
+fn a_subdirectory_supplies_the_namespace_lowercased() {
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("Understudy");
+    touch(
+        &pack.join("structures/Understudy/players.mcstructure"),
+        b"x",
+    );
+
+    let found = structures::list(&pack);
+    assert_eq!(found[0].id, "understudy:players");
+    // A non-default namespace stays visible in the display name.
+    assert_eq!(found[0].name, "understudy:players");
+}
+
+#[test]
+fn non_mcstructure_files_are_not_listed() {
+    // This test used to also assert that `structures/a/b/deep.mcstructure` was
+    // ignored as "too deep". Task 21's ruling: that half was retired, not edited
+    // around, because `docs/bedrock-mcstructure-files.md` -- a local, untracked copy
+    // of tryashtar's third-party `.mcstructure` documentation on GitHub -- documents
+    // that exact shape as `a:b/deep` -- listing it is the point of the task, not a
+    // regression to paper over. The flat and one-level rules this test also
+    // used to brush against are now covered by
+    // `depth_does_not_change_the_flat_or_one_level_rules`.
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    touch(&pack.join("structures/readme.txt"), b"x");
+    touch(&pack.join("structures/ok.mcstructure"), b"x");
+
+    let found = structures::list(&pack);
+    assert_eq!(
+        found.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+        vec!["mystructure:ok"]
+    );
+}
+
+#[test]
+fn a_pack_with_no_structures_folder_lists_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    assert!(structures::list(&root.path().join("Empty")).is_empty());
+}
+
+#[test]
+fn path_for_puts_the_default_namespace_flat_and_others_in_a_subdirectory() {
+    let pack = Path::new("/p");
+    assert_eq!(
+        structures::path_for(pack, "house").unwrap(),
+        Path::new("/p/structures/house.mcstructure")
+    );
+    assert_eq!(
+        structures::path_for(pack, "mystructure:house").unwrap(),
+        Path::new("/p/structures/house.mcstructure")
+    );
+    assert_eq!(
+        structures::path_for(pack, "understudy:players").unwrap(),
+        Path::new("/p/structures/understudy/players.mcstructure")
+    );
+}
+
+#[test]
+fn path_for_refuses_an_id_that_would_escape_the_pack() {
+    for evil in [
+        "../../etc/passwd",
+        "a/b",
+        "..",
+        "ns:../x",
+        "ns:",
+        ":name",
+        "C:\\x",
+    ] {
+        assert!(
+            structures::path_for(Path::new("/p"), evil).is_err(),
+            "{evil} should be refused"
+        );
+    }
+}
+
+#[test]
+fn write_refuses_an_existing_file_unless_forced() {
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    structures::write(&pack, "house", b"first", false).unwrap();
+
+    let err = structures::write(&pack, "house", b"second", false).unwrap_err();
+    assert!(matches!(
+        err,
+        construct_core::CoreError::TargetExists { .. }
+    ));
+    // Untouched by the refusal.
+    assert_eq!(
+        std::fs::read(pack.join("structures/house.mcstructure")).unwrap(),
+        b"first"
+    );
+
+    structures::write(&pack, "house", b"second", true).unwrap();
+    assert_eq!(
+        std::fs::read(pack.join("structures/house.mcstructure")).unwrap(),
+        b"second"
+    );
+}
+
+#[test]
+fn write_creates_the_structures_folder_and_any_namespace_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    let at = structures::write(&pack, "understudy:players", b"x", false).unwrap();
+    assert_eq!(at, pack.join("structures/understudy/players.mcstructure"));
+    assert!(at.is_file());
+}
+
+#[test]
+fn derive_name_lowercases_and_maps_spaces() {
+    assert_eq!(structures::derive_name("My House").unwrap(), "my_house");
+    assert_eq!(
+        structures::derive_name("tower-2.v1_a").unwrap(),
+        "tower-2.v1_a"
+    );
+}
+
+#[test]
+fn derive_name_rejects_rather_than_mangles() {
+    // A mangled name is one Construct will not list, so the user is told to
+    // pass --name instead of being handed something silently different.
+    for bad in ["café", "a/b", "what?", "", "  ", "..", "."] {
+        assert!(
+            structures::derive_name(bad).is_err(),
+            "{bad:?} should be rejected"
+        );
+    }
+}
+
+use construct_core::catalog::{self, Source};
+
+#[test]
+fn pack_entries_carry_their_file_path() {
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("Construct[BP]");
+    touch(&pack.join("structures/bomber.mcstructure"), b"12345");
+
+    let entries = catalog::from_pack(&pack);
+    assert_eq!(entries[0].source, Source::Pack);
+    assert_eq!(entries[0].id, "mystructure:bomber");
+    assert_eq!(
+        entries[0].path.as_deref(),
+        Some(pack.join("structures/bomber.mcstructure").as_path())
+    );
+}
+
+#[test]
+fn unify_interleaves_both_sources_by_name() {
+    let world = vec![
+        catalog::Entry {
+            name: "house".into(),
+            id: "mystructure:house".into(),
+            source: Source::World,
+            size_bytes: 1,
+            path: None,
+        },
+        catalog::Entry {
+            name: "zebra".into(),
+            id: "mystructure:zebra".into(),
+            source: Source::World,
+            size_bytes: 1,
+            path: None,
+        },
+    ];
+    let pack = vec![catalog::Entry {
+        name: "barn".into(),
+        id: "mystructure:barn".into(),
+        source: Source::Pack,
+        size_bytes: 1,
+        path: Some(std::path::PathBuf::from("/p/structures/barn.mcstructure")),
+    }];
+    let all = catalog::unify(world, pack);
+    assert_eq!(
+        all.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+        vec!["barn", "house", "zebra"]
+    );
+}
+
+#[test]
+fn a_worlds_own_copy_of_construct_wins_over_the_shared_one() {
+    let base = tempfile::tempdir().unwrap();
+    let com_mojang = base.path().join("com.mojang");
+    let shared = com_mojang.join("development_behavior_packs");
+    make_pack(
+        &shared,
+        "Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        false,
+    );
+
+    let world_dir = com_mojang.join("minecraftWorlds/Test");
+    std::fs::create_dir_all(world_dir.join("db")).unwrap();
+    make_pack(
+        &world_dir.join("behavior_packs"),
+        "Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 1, 0],
+        false,
+    );
+
+    let world = test_world(&world_dir);
+    let installation = test_installation(&com_mojang);
+
+    let target = pack::for_world(&world, &installation).unwrap();
+    assert_eq!(target.scope, pack::Scope::WorldLocal);
+    assert_eq!(target.pack.manifest.version, [1, 1, 0]);
+    assert_eq!(target.also_at, Some(shared.join("Construct[BP]")));
+}
+
+#[test]
+fn without_a_local_copy_the_shared_installation_pack_is_used() {
+    let base = tempfile::tempdir().unwrap();
+    let com_mojang = base.path().join("com.mojang");
+    make_pack(
+        &com_mojang.join("development_behavior_packs"),
+        "Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        false,
+    );
+    let world_dir = com_mojang.join("minecraftWorlds/Test");
+    std::fs::create_dir_all(&world_dir).unwrap();
+
+    let target = pack::for_world(&test_world(&world_dir), &test_installation(&com_mojang)).unwrap();
+    assert_eq!(target.scope, pack::Scope::Shared);
+    assert_eq!(target.also_at, None);
+}
+
+#[test]
+fn no_construct_anywhere_says_where_it_looked() {
+    let base = tempfile::tempdir().unwrap();
+    let com_mojang = base.path().join("com.mojang");
+    let world_dir = com_mojang.join("minecraftWorlds/Test");
+    std::fs::create_dir_all(&world_dir).unwrap();
+
+    let err =
+        pack::for_world(&test_world(&world_dir), &test_installation(&com_mojang)).unwrap_err();
+    let construct_core::CoreError::ConstructNotInstalled { searched } = err else {
+        panic!("expected ConstructNotInstalled");
+    };
+    assert_eq!(
+        searched.len(),
+        2,
+        "both the world copy and the shared root: {searched:?}"
+    );
+}
+
+#[test]
+fn a_structure_nested_below_the_namespace_folder_is_addressable() {
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    touch(
+        &pack.join("structures/stuff/towers/diamond.mcstructure"),
+        b"x",
+    );
+
+    let found = structures::list(&pack);
+    assert_eq!(found.len(), 1);
+    // First subfolder is the namespace; everything after it is part of the name.
+    assert_eq!(found[0].id, "stuff:towers/diamond");
+    assert_eq!(found[0].name, "stuff:towers/diamond");
+}
+
+#[test]
+fn depth_does_not_change_the_flat_or_one_level_rules() {
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    touch(&pack.join("structures/house.mcstructure"), b"x");
+    touch(
+        &pack.join("structures/Understudy/players.mcstructure"),
+        b"x",
+    );
+    touch(&pack.join("structures/a/b/c/d.mcstructure"), b"x");
+
+    let ids: Vec<String> = structures::list(&pack).into_iter().map(|s| s.id).collect();
+    assert!(ids.contains(&"mystructure:house".to_string()));
+    assert!(ids.contains(&"understudy:players".to_string()));
+    assert!(ids.contains(&"a:b/c/d".to_string()));
+}
+
+#[test]
+fn only_the_namespace_segment_is_lowercased() {
+    // Minecraft namespaces are lowercase, but the path after the namespace is
+    // part of the name and is left exactly as it sits on disk.
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    touch(
+        &pack.join("structures/Stuff/Towers/Diamond.mcstructure"),
+        b"x",
+    );
+    assert_eq!(structures::list(&pack)[0].id, "stuff:Towers/Diamond");
+}
+
+#[test]
+fn writing_still_refuses_a_separator_in_a_name() {
+    // Reading and writing stay asymmetric on purpose (§17): `list` reports whatever
+    // depth exists, but nothing this tool writes creates a nested path, because the
+    // character that would enable it is the one that makes traversal possible.
+    assert!(structures::path_for(Path::new("/p"), "stuff:towers/diamond").is_err());
+    assert!(structures::derive_name("towers/diamond").is_err());
+}

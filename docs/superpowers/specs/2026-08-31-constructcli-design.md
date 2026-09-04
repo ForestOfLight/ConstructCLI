@@ -757,8 +757,10 @@ These cannot be settled by automated tests and must be confirmed in the game:
    --beta-apis` confirms the file round-trips; only the game confirms it is honored.)
 4. Do dev packs in `Users\Shared` apply to a world owned by a specific account? *(Windows)*
 5. Do files written into the GDK folder by an ordinary process read back in-game? *(Windows)*
-6. Does a `.mcstructure` in `structures/<Namespace>/` load as `<namespace>:<name>`? The flat
-   form is settled (§17); the subdirectory form is still inferred from one shipped pack.
+6. Does a `.mcstructure` in `structures/<Namespace>/` load as `<namespace>:<name>`, and does a
+   deeper `structures/<ns>/<a>/<b>.mcstructure` load as `<ns>:<a>/<b>`? Both forms are now
+   documented (§17) rather than inferred; this confirms the documentation against the shipping
+   game.
 
 Items 4 and 5 need real Windows hardware. Item 5 is expected to be a non-issue: the ACL
 problem was specific to UWP's `LocalState` inside an AppContainer sandbox, and GDK stores
@@ -807,6 +809,36 @@ data in ordinary `AppData\Roaming`.
   structures outside `mystructure:` entirely. §5 refuses an ambiguous name rather than picking
   a winner, and `list` shows every namespace — but the ambiguity message says which copy
   Construct would show in-game, since that is the question the user is really asking.
+
+  **Settled, and wider than assumed.** `docs/bedrock-mcstructure-files.md` — a local copy of
+  tryashtar's third-party documentation of the Bedrock `.mcstructure` format and its loading
+  rules, published on GitHub (github.com/tryashtar, not committed to this repository) — resolves
+  the remaining half and corrects an assumption this design made:
+
+  | Path under the pack | Identifier |
+  |---|---|
+  | `structures/house.mcstructure` | `mystructure:house` |
+  | `structures/dungeon/entrance.mcstructure` | `dungeon:entrance` |
+  | `structures/stuff/towers/diamond.mcstructure` | `stuff:towers/diamond` |
+
+  **The first subfolder is the namespace; every folder after it is part of the name.** Nesting is
+  therefore not limited to one level, which is what an earlier reading of the evidence assumed —
+  `list` must walk `structures/` to its full depth, and an id may legitimately contain `/` after
+  the colon.
+
+  Two further behaviours are documented there and worth recording:
+
+  - A file directly in `structures/` and one in an explicit `structures/mystructure/` folder
+    collide. The `mystructure` folder wins, the root file is ignored, and the game logs
+    `There was a conflict loading a structure in the default namespace`.
+  - **A world's embedded structures take priority over a pack's when the game loads one.** This is
+    the opposite direction from Construct's in-game *list*, which lets the pack copy shadow the
+    world copy. Both are true: the addon's list and the engine's loader disagree, so the CLI says
+    which copy Construct displays rather than claiming which one the game would place.
+
+  Reading and writing stay asymmetric on purpose. `list` shows whatever depth is on disk, but
+  `import --name` still refuses a `/` in the name: creating nested paths is a capability nobody has
+  asked for, and the character that would enable it is the one that makes traversal possible.
 - The **disable** direction of the Beta APIs flip (§10). The enabled state is measured; that
   the companion flags stay at `1` when turning it off is inferred.
 - ~~`leveldb-sys` vendors leveldb rather than using a submodule~~ — **confirmed**: no

@@ -65,4 +65,68 @@ pub enum Command {
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
     },
+
+    /// Copy a .mcstructure file into Construct's structures folder.
+    Import {
+        /// The .mcstructure file to import.
+        file: PathBuf,
+        /// Target this world's Construct copy.
+        #[arg(long, value_name = "WORLD")]
+        world: Option<String>,
+        /// Override the name derived from the file stem.
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+    },
+
+    /// Copy a structure into another world's Construct.
+    Copy {
+        /// Source world name, qualified reference, or path.
+        src_world: String,
+        /// Structure name.
+        structure: String,
+        /// Destination world name, qualified reference, or path.
+        dst_world: String,
+    },
+
+    /// Remove an imported structure. `--source world` is not implemented yet.
+    Delete {
+        /// World name, qualified reference, or path.
+        world: String,
+        /// Structure name.
+        structure: String,
+    },
+
+    /// Read or set a world's experimental toggles.
+    Experiment {
+        /// World name, qualified reference, or path.
+        world: String,
+        /// Beta APIs (`gametest`). Omit the value to print the current state.
+        #[arg(long, required = true, num_args = 0..=1, value_name = "on|off")]
+        beta_apis: Option<OnOff>,
+    },
+
+    /// Download and install Construct.
+    Install {
+        /// A specific version, e.g. 1.2.0. Defaults to the latest release.
+        #[arg(long, value_name = "VERSION")]
+        version: Option<String>,
+        /// Also enable Construct in this world and turn Beta APIs on.
+        #[arg(long, value_name = "WORLD")]
+        world: Option<String>,
+    },
+
+    /// Show the installed version, the latest available, and where it's enabled.
+    Status,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
+pub enum OnOff {
+    On,
+    Off,
+}
+
+impl OnOff {
+    pub fn as_bool(self) -> bool {
+        self == OnOff::On
+    }
 }

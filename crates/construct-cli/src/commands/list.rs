@@ -1,9 +1,9 @@
+use crate::commands::catalog;
 use crate::commands::worlds::human_size;
 use crate::output::Out;
 use construct_core::Result;
-use construct_core::catalog::{self, Source};
-use construct_core::discovery::World;
-use construct_core::store;
+use construct_core::catalog::Source;
+use construct_core::discovery::{Installation, World};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -20,18 +20,14 @@ struct Row<'a> {
     size_bytes: u64,
 }
 
-pub fn run(world: &World, source: Option<Source>, out: &mut Out) -> Result<()> {
-    let store = store::open_world_store(world)?;
-    if let Some(bytes) = store.via_snapshot {
-        out.warn(format!("reading from a {} snapshot", human_size(bytes)));
-    }
-
-    let mut entries = catalog::from_world(&store)?;
-    // Stage 2 adds pack entries here. Until then, filtering to `pack` is
-    // legitimately empty rather than an error.
-    if let Some(s) = source {
-        entries.retain(|e| e.source == s);
-    }
+pub fn run(
+    world: &World,
+    installations: &[Installation],
+    source: Option<Source>,
+    out: &mut Out,
+) -> Result<()> {
+    let loaded = catalog::for_world(world, installations, source, out)?;
+    let entries = loaded.entries;
 
     if !out.is_json() {
         if entries.is_empty() {

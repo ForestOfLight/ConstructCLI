@@ -5,6 +5,7 @@ mod output;
 use clap::Parser;
 use cli::{Cli, Command};
 use construct_core::error::CoreError;
+use construct_core::install::releases;
 use construct_core::{config, discovery};
 use output::Out;
 
@@ -106,7 +107,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
         Command::Worlds => commands::worlds::run(&worlds, out),
         Command::List { world } => {
             let w = resolve_world(world)?;
-            commands::list::run(&w, cli.source.map(Into::into), out)
+            commands::list::run(&w, &installations, cli.source.map(Into::into), out)
         }
         Command::Export {
             world,
@@ -126,6 +127,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
             let w = resolve_world(world)?;
             commands::export::run(
                 &w,
+                &installations,
                 structures,
                 output.as_deref(),
                 cli.source.map(Into::into),
@@ -133,6 +135,103 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 out,
             )
         }
+        Command::Import { file, world, name } => {
+            let w = world.as_deref().map(resolve_world).transpose()?;
+            let installation = match &w {
+                Some(w) => discovery::installation::for_world(&installations, w)?,
+                None => discovery::installation::choose(
+                    &installations,
+                    std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
+                    loaded.config.default_installation.as_deref(),
+                )?,
+            };
+            commands::import::run(
+                file,
+                w.as_ref(),
+                installation,
+                name.as_deref(),
+                cli.force,
+                out,
+            )
+        }
+        Command::Copy {
+            src_world,
+            structure,
+            dst_world,
+        } => {
+            let src = resolve_world(src_world)?;
+            let dst = resolve_world(dst_world)?;
+            commands::copy::run(
+                &src,
+                structure,
+                &dst,
+                &installations,
+                cli.source.map(Into::into),
+                cli.force,
+                out,
+            )
+        }
+        Command::Delete { world, structure } => {
+            let w = resolve_world(world)?;
+            commands::delete::run(
+                &w,
+                structure,
+                &installations,
+                cli.source.map(Into::into),
+                out,
+            )
+        }
+        Command::Experiment { world, beta_apis } => {
+            let w = resolve_world(world)?;
+            commands::experiment::run(
+                &w,
+                beta_apis.map(cli::OnOff::as_bool),
+                &loaded.config.backups,
+                out,
+            )
+        }
+        Command::Install { version, world } => {
+            let w = world.as_deref().map(resolve_world).transpose()?;
+            let installation = match &w {
+                Some(w) => discovery::installation::for_world(&installations, w)?,
+                None => discovery::installation::choose(
+                    &installations,
+                    std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
+                    loaded.config.default_installation.as_deref(),
+                )?,
+            };
+            let client = github_client();
+            commands::install::run(
+                &client,
+                version.as_deref(),
+                w.as_ref(),
+                installation,
+                &loaded.config.backups,
+                cli.force,
+                out,
+            )
+        }
+        Command::Status => {
+            let installation = discovery::installation::choose(
+                &installations,
+                std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
+                loaded.config.default_installation.as_deref(),
+            )?;
+            let client = github_client();
+            commands::status::run(&client, installation, &worlds, out)
+        }
+    }
+}
+
+/// The GitHub releases client `install` and `status` both need, pointed at a
+/// stub server under `CONSTRUCT_GITHUB_API` in tests, the real API otherwise.
+fn github_client() -> releases::GitHub {
+    let token = std::env::var("CONSTRUCT_GITHUB_TOKEN")
+        .or_else(|_| std::env::var("GITHUB_TOKEN"))
+        .ok();
+    match std::env::var("CONSTRUCT_GITHUB_API") {
+        Ok(base) => releases::GitHub::with_base(base, token),
+        Err(_) => releases::GitHub::new(token),
     }
 }
 
@@ -182,29 +281,107 @@ fn report(err: &CoreError) {
         CoreError::TargetExists { .. } => {
             eprintln!("\nPass --force to overwrite.");
         }
-        CoreError::AmbiguousStructure { name } => {
+        CoreError::AmbiguousStructure { name, sources } => {
+            eprintln!("\n{name} exists in: {}", sources.join(", "));
             eprintln!("\nDisambiguate with --source:");
-            eprintln!("  construct list --source world   # or: --source pack");
-            eprintln!("  (structure: {name})");
+            eprintln!("  construct list <world> --source world   # or: --source pack");
+            // Construct's own list resolves this by letting the pack copy win
+            // (§17). The CLI refuses instead — but the user is usually asking
+            // which one the game shows, so answer it.
+            if sources.iter().any(|s| s == "pack") {
+                eprintln!("\nConstruct shows the pack copy in-game.");
+            }
+        }
+        CoreError::InstallationNotFound { available, .. } => {
+            eprintln!("\navailable:");
+            for a in available {
+                eprintln!("  {a}");
+            }
+            eprintln!("\nSet one in config.toml:\n  default_installation = \"<name>\"");
+        }
+        CoreError::AmbiguousInstallation { candidates } => {
+            eprintln!("\ncandidates:");
+            for c in candidates {
+                eprintln!("  {c}");
+            }
+            eprintln!("\nSet one in config.toml:\n  default_installation = \"<name>\"");
+        }
+        CoreError::ConstructNotInstalled { searched } => {
+            eprintln!("\nsearched:");
+            for s in searched {
+                eprintln!("  {}", s.display());
+            }
+            eprintln!("\nInstall it:\n  construct install");
+        }
+        CoreError::BadStructureName { .. } => {
+            eprintln!("\nChoose a name explicitly:\n  construct import <file> --name <name>");
+        }
+        CoreError::NotImplemented { .. } => {
+            eprintln!("\nUse --source pack to delete an imported structure.");
+        }
+        CoreError::UnwritableLevelDat { written: false, .. } => {
+            eprintln!("\nThe world was not modified.");
+        }
+        CoreError::RateLimited => {
+            eprintln!(
+                "\nGitHub allows {} requests an hour unauthenticated.\n\
+                 Set a token to raise it:\n  export CONSTRUCT_GITHUB_TOKEN=<token>",
+                construct_core::install::releases::UNAUTHENTICATED_LIMIT
+            );
+        }
+        CoreError::AssetNotFound { available, .. } if !available.is_empty() => {
+            eprintln!("\navailable assets:");
+            for a in available {
+                eprintln!("  {a}");
+            }
+        }
+        CoreError::IncompleteInstall { staging, .. } => {
+            eprintln!(
+                "\nThe new pack is staged at {} — move it into place by hand, \
+                 or delete it and re-run install.",
+                staging.display()
+            );
+        }
+        CoreError::UnwritableLevelDat { written: true, .. } => {
+            // Unlike the refusal-before-write case above, `write` already
+            // renamed a new level.dat into place before verification failed:
+            // the world genuinely changed, just not into the requested
+            // state. Saying "not modified" here would be false, and would
+            // give the user no reason to reach for the backup that was just
+            // taken for them.
+            eprintln!(
+                "\nlevel.dat was rewritten but did not read back as expected.\n\
+                 Restore it from the backup printed above before relying on this world."
+            );
         }
         _ => {}
     }
 }
 
-/// 0 success · 1 failure · 2 usage · 3 not found · 4 world in use.
+/// 0 success · 1 failure · 2 usage · 3 not found · 4 world in use · 5 partial
+/// success.
 ///
 /// Ambiguity is 2, not 3: the target exists, the reference was underspecified.
 /// A malformed reference is also 2: the input never named anything real, so
 /// it's the user's syntax that's wrong, not a lookup that failed.
+///
+/// 5 never comes from this function: `commands::install::run` exits directly
+/// with it when the packs are installed but the `level.dat` write failed, so
+/// the success payload already printed is not overwritten by an error path.
 fn exit_code(err: &CoreError) -> i32 {
     match err {
         CoreError::NoInstallations { .. }
         | CoreError::WorldNotFound { .. }
-        | CoreError::StructureNotFound { .. } => 3,
+        | CoreError::StructureNotFound { .. }
+        | CoreError::InstallationNotFound { .. }
+        | CoreError::ConstructNotInstalled { .. }
+        | CoreError::AssetNotFound { .. } => 3,
         CoreError::AmbiguousWorld { .. }
         | CoreError::AmbiguousStructure { .. }
         | CoreError::AmbiguousInstallation { .. }
-        | CoreError::MalformedReference { .. } => 2,
+        | CoreError::MalformedReference { .. }
+        | CoreError::BadStructureName { .. }
+        | CoreError::NotImplemented { .. } => 2,
         CoreError::WorldInUse { .. } => 4,
         _ => 1,
     }

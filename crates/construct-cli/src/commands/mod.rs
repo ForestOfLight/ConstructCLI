@@ -1,3 +1,10 @@
+pub mod catalog;
+pub mod copy;
+pub mod delete;
+pub mod experiment;
 pub mod export;
+pub mod import;
+pub mod install;
 pub mod list;
+pub mod status;
 pub mod worlds;

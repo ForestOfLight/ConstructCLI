@@ -41,9 +41,26 @@ impl StructureStore for BedrockStore {
     }
 
     fn get(&self, id: &str) -> Result<Option<Vec<u8>>> {
-        let k = key::encode(id);
-        let got = self.db.get(&k).map_err(|e| CoreError::Db(e.to_string()))?;
-        Ok(got.map(|buf| buf.to_vec()))
+        for k in key::candidates(id) {
+            if let Some(buf) = self.db.get(&k).map_err(|e| CoreError::Db(e.to_string()))? {
+                return Ok(Some(buf.to_vec()));
+            }
+        }
+        Ok(None)
+    }
+
+    fn sizes(&self) -> Result<Vec<(String, u64)>> {
+        // One pass over the iterator, which yields key and value together.
+        // Stage 1 read every structure twice on a `list` — 63.5 MB on a real
+        // 910-structure world.
+        let mut out = Vec::new();
+        let mut keys = self.db.keys();
+        for kv in &mut keys {
+            if let Some(id) = key::decode(&kv.key()) {
+                out.push((id, kv.value().len() as u64));
+            }
+        }
+        Ok(out)
     }
 }
 

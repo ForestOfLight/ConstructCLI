@@ -34,11 +34,17 @@ pub enum CoreError {
     #[error("structure not found: {name}")]
     StructureNotFound { name: String, near: Vec<String> },
 
-    #[error("structure {name} exists in both a world and a pack")]
-    AmbiguousStructure { name: String },
+    #[error("structure {name} matches {} sources", sources.len())]
+    AmbiguousStructure { name: String, sources: Vec<String> },
 
     #[error("more than one installation; no default configured")]
     AmbiguousInstallation { candidates: Vec<String> },
+
+    #[error("no installation named {name}")]
+    InstallationNotFound {
+        name: String,
+        available: Vec<String>,
+    },
 
     #[error("world is in use: {}", world.display())]
     WorldInUse { world: PathBuf },
@@ -59,11 +65,61 @@ pub enum CoreError {
     #[error("malformed level.dat at {}: {reason}", path.display())]
     BadLevelDat { path: PathBuf, reason: String },
 
+    #[error("cannot rewrite {}: {reason}", path.display())]
+    UnwritableLevelDat {
+        path: PathBuf,
+        reason: String,
+        /// Whether a write already landed on disk before this error was
+        /// raised. `to_bytes` refuses before touching disk (`false`); the
+        /// post-write verification in `apply_beta_apis` fires only after
+        /// `write` has already renamed a new file into place (`true`). The
+        /// two cases need different advice: one leaves the world untouched,
+        /// the other leaves it in a state nobody asked for.
+        written: bool,
+    },
+
     #[error("cannot read {}: {reason}", path.display())]
     UnreadableWorld { path: PathBuf, reason: String },
 
     #[error("config error in {}: {reason}", path.display())]
     BadConfig { path: PathBuf, reason: String },
+
+    #[error("not a usable pack at {}: {reason}", path.display())]
+    BadPack { path: PathBuf, reason: String },
+
+    #[error("Construct is not installed")]
+    ConstructNotInstalled { searched: Vec<PathBuf> },
+
+    #[error(
+        "install of {} did not finish: {reason}; the new pack is staged at {} for manual recovery",
+        dest.display(), staging.display()
+    )]
+    IncompleteInstall {
+        dest: PathBuf,
+        staging: PathBuf,
+        reason: String,
+    },
+
+    #[error("unusable structure name {name:?}: {reason}")]
+    BadStructureName { name: String, reason: String },
+
+    #[error("{what} is not implemented yet")]
+    NotImplemented { what: String },
+
+    #[error("no platform data directory for backups; set [backups] dir in config.toml")]
+    NoBackupDir,
+
+    #[error("could not reach GitHub: {reason}")]
+    Network { reason: String },
+
+    #[error("GitHub rate limit reached")]
+    RateLimited,
+
+    #[error("no Construct .mcaddon for {version}")]
+    AssetNotFound {
+        version: String,
+        available: Vec<String>,
+    },
 
     #[error(transparent)]
     Io(#[from] std::io::Error),

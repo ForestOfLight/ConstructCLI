@@ -3,13 +3,14 @@
 //! A structure's leveldb value is byte-identical to a `.mcstructure` file, so
 //! this command copies bytes and parses nothing.
 
+use crate::commands::catalog as loader;
 use crate::commands::worlds::human_size;
 use crate::output::Out;
 use construct_core::Result;
 use construct_core::catalog::{self, Source};
-use construct_core::discovery::World;
+use construct_core::discovery::{Installation, World};
 use construct_core::error::CoreError;
-use construct_core::store::{self, StructureStore};
+use construct_core::store::StructureStore;
 use serde::Serialize;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -110,17 +111,15 @@ fn sanitize_for_filename(name: &str) -> String {
 
 pub fn run(
     world: &World,
+    installations: &[Installation],
     structures: &[String],
     output: Option<&Path>,
     source: Option<Source>,
     force: bool,
     out: &mut Out,
 ) -> Result<()> {
-    let store = store::open_world_store(world)?;
-    if let Some(bytes) = store.via_snapshot {
-        out.warn(format!("reading from a {} snapshot", human_size(bytes)));
-    }
-    let entries = catalog::from_world(&store)?;
+    let loaded = loader::for_world(world, installations, source, out)?;
+    let entries = loaded.entries;
 
     // Resolve every name and target path before writing anything, so a
     // collision — or a refused name — stops the whole command rather than
@@ -150,14 +149,10 @@ pub fn run(
         }
     }
 
+    let store = loaded.store.as_ref().map(|s| s as &dyn StructureStore);
     let mut written = Vec::new();
     for (entry, target) in plan {
-        let bytes = store
-            .get(&entry.id)?
-            .ok_or_else(|| CoreError::StructureNotFound {
-                name: entry.name.clone(),
-                near: vec![],
-            })?;
+        let bytes = catalog::read_entry(&entry, store)?;
         if let Some(parent) = target.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }

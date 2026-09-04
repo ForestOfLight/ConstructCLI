@@ -1,7 +1,9 @@
-# Carried forward from stage 1
+# Carried forward from stage 2
 
-Things found during stage 1 that were deliberately not fixed, with enough detail to act
-on. Nothing here blocks stage 1; each was triaged and consciously carried.
+Things found during stage 2 that were deliberately not fixed, with enough detail to act
+on. Nothing here blocks stage 2; each was triaged and consciously carried. Stage 1's own
+entries are gone from this file — most were fixed by Task 1 during this stage; the one
+still live is repeated below under its own heading.
 
 ## Prerequisite for stage 4 (writing to a world)
 
@@ -15,57 +17,97 @@ straight move: `guard_test_path` falls back to the *uncanonicalized* path when
 `canonicalize` fails, and on macOS `/var/folders` versus `/private/var/folders` makes that
 fallback fail for a temp path that does not exist yet. Canonicalize the parent first.
 
+Stage 2 adds no leveldb write, so this was deferred again — but it is now the last thing
+standing between stage 4 and a live-world open.
+
+## Security, narrow
+
+- **The install staging sentinel is a fixed, predictable filename.** An adversarial
+  `.mcaddon` could ship a file at that exact path to pre-seed a false "stage complete"
+  marker, which would only matter in combination with a crash timed precisely inside
+  `copy_dir` before the rest of the pack lands. Strictly narrower than the design it
+  replaced, which an ordinary crash defeated with no adversarial input at all. Closing it
+  is cheap: bind the sentinel's contents to the staging directory's own unique name and
+  verify that on recovery.
+
 ## Correctness, narrow
 
-- **`store::get` re-qualifies an already-complete id.** A structure key with no namespace
-  (`structuretemplate_foo`) is shown by `list` but cannot be fetched by `export`, because
-  `get("foo")` looks for `structuretemplate_mystructure:foo`. A real `list`/`export`
-  inconsistency, reachable only in worlds Minecraft did not write — the game always emits
-  `mystructure:`.
-- **An unreadable installation vanishes silently.** `platform::resolve` returns
-  `Vec<Installation>` with no `Result`, and both `read_dir` errors and `is_dir()` collapse
-  to "absent". §6 excuses roots that are *missing*, not roots that exist and cannot be
-  read, so a permissions problem reads as "no worlds found". Fixing it is a signature
-  change.
-- **Reserved config root names are matched case-sensitively**, so `Release` is accepted.
-  It shadows nothing — reference resolution is also case-sensitive — but a user who typed
-  it would wonder why their root does nothing.
+- `catalog::resolve` does not deduplicate `sources`, so a collision within one source
+  would render "exists in: world, world". Not reachable today.
+- `derive_name(".foo")` is accepted and produces a dotfile inside `structures/`.
+- `tag_for("")` yields `"v"`, and the leading-`v` check is a naive `starts_with`.
+- A failed rename in `leveldat::write` leaves a stray `.level.dat.construct-tmp` beside the
+  world's `level.dat`. The original is untouched; only the debris is left.
+- `delete`'s unreachable `path == None` backstop returns `NotImplemented`, which describes
+  the situation less well than an internal-invariant error would — but `construct-core`
+  must not panic.
+- `delete <world> <name>` with no `--source`, for a name that exists only in the database,
+  reports `StructureNotFound` (exit 3) rather than the more accurate `NotImplemented`
+  (exit 2). Resolving across both sources would mean snapshot-copying the world's database
+  for a file unlink, which §8 forbids. Stage 4 removes the refusal and this imperfection
+  with it.
+
+## Edge cases in `structures/`
+
+Found while giving `pack::structures`' id derivation its full-depth walk; both reachable
+only in a `structures/` tree this tool or Construct did not build entirely itself.
+
+- **A non-UTF-8 path component is dropped, not skipped.** The id derivation filters out
+  any path component it cannot render as `&str`, so two structures whose paths differ only
+  by such a component can collapse onto the same id. Can only shorten an id, never insert
+  `..` or an absolute path.
+- **A `foo.mcstructure` that is itself a symlink to a directory is listed as a leaf**, not
+  recursed into. Pre-existing behaviour, unchanged by the depth walk — noted in passing,
+  not a new regression.
+
+## Error shapes
+
+- `CoreError::BadPack` is reused for the install-time UUID mismatch, where the pack is not
+  malformed but simply is not Construct. The `reason` string carries the meaning.
+- `CoreError::Network { reason }` bakes formatted text rather than carrying a status code.
+- `leveldat::to_bytes` fills `path: PathBuf::new()` and relies on `write` to substitute the
+  real path — a latent trap for any future direct caller.
 
 ## Quality and performance
 
-- **`catalog::from_world` reads every structure in full to populate a size column.**
-  Measured on a real 910-structure world: 63.5 MB read, ~1.6 s. Giving `StructureStore` a
-  cheaper `fn size(&self, id: &str) -> Result<u64>` would remove it.
-- **Near-match suggestions use substring containment only**, so the commonest typos —
-  transposition and deletion, e.g. `Amelx` for `Amelix CMP` — produce no suggestion at
-  all. §11 promises "suggest near matches"; edit distance would deliver it.
-- **`catalog::from_world` sorts by name alone.** `Vec::sort_by` is stable and input order
-  is deterministic, so nothing flaps today, but when stage 2 makes `Source::Pack`
-  reachable, two entries can share a display name and the order between them would be
-  inherited from concatenation rather than stated. Add `.then(a.source.cmp(&b.source))`.
-- **`Out::emit`'s non-object `"value"` fallback is unreachable** with today's payloads and
-  would silently change the JSON shape if a later command emitted a non-object.
-- **`AmbiguousStructure` says "exists in both a world and a pack"** and advises `--source`,
-  but `catalog::resolve` raises it for any multi-match. If two entries in the same source
-  ever collide, the advice cannot be followed.
-- **Config `default_installation` / `CONSTRUCT_INSTALLATION` are parsed but unused** in
-  stage 1. Stage 2's `install`/`status` consume them; until then they are silently ignored.
+- `encode_exact` duplicates `encode`'s body; `manifest::read` reconstructs `BadPack` inline
+  rather than reusing `parse`'s closure; `installation::for_world` repeats `choose`'s
+  `names()` one-liner; `commands/catalog.rs` and `commands/copy.rs` each phrase their own
+  `also_at` warning.
+- `import` reads the whole source file before validating the derived name or resolving the
+  target pack, so it fails slower than it needs to on a bad name.
+- Near-match suggestions still use substring containment only, so transposition and
+  deletion typos produce no suggestion. Carried from stage 1 and still true.
 
 ## Test gaps
 
+- No test covers `import`'s two-Construct-copies (`also_at`) warning or its
+  namespaced-`--name` warning.
+- No test asserts `status`'s human-readable output text, only its JSON payload and exit
+  code.
+- A world whose `world_behavior_packs.json` is malformed is silently omitted from
+  `status`'s enabled list, with no warning — asymmetric with how the same command explains
+  an unreachable GitHub.
 - `size_counts_the_db_directory` asserts `>= 1024` where `== 1024` is equally
-  deterministic and stronger.
-- The `list` human-output test asserts substring presence, not table structure, so a
-  formatting regression would pass.
+  deterministic and stronger. Carried from stage 1 and still true.
+- The `list` human-output test asserts substring presence rather than table structure, so
+  a formatting regression would pass. Carried from stage 1 and still true.
 
-## Edge cases in hostile or unusual worlds
+## Process notes
 
-Structure names come from a world file the user may not have authored, and stage 1 already
-refuses path traversal and sanitizes characters illegal on Windows. Two remain, both only
-reachable in worlds Minecraft did not write:
+- Task 3's report presented a predicted compiler failure as TDD evidence rather than a
+  captured run. The code was independently verified; the ordering was not. Later dispatches
+  required pasted output, and Task 17's implementer honestly disclosed that its brief
+  supplied the code verbatim so no red run ever existed.
 
-- A key of exactly `structuretemplate_mystructure:` yields an empty display name. Export
-  refuses it; `list` still shows a blank name.
-- Names differing only by characters that sanitize to the same filename (`a:b` and `a_b`)
-  collide on export. The collision rule catches it — the second is refused as an existing
-  target — so nothing is overwritten, but the error does not explain the cause.
+## Found by the final review's own re-review
+
+Two things surfaced after the fix wave, judged not worth another round.
+
+- **`install --world` still backs up `level.dat` unconditionally**, before checking whether Beta
+  APIs is already on — the same shape that was fixed in `experiment`. Lower impact there, since
+  `install --world` is not something a user repeats in a loop the way `experiment` might be, but it
+  is the same class of backup churn and the fix is the same one.
+- **No test proves an *ordinary* 403 takes the generic network path** rather than being reported as
+  a rate limit. The `x-ratelimit-remaining` check that separates them was confirmed by reading the
+  code, not by a test. The rate-limited 403 and the 404 both have tests.
