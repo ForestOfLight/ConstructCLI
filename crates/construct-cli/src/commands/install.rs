@@ -22,6 +22,7 @@ struct Payload {
     preserved: usize,
     world: Option<String>,
     beta_apis: Option<bool>,
+    enable_error: Option<String>,
     level_dat_error: Option<String>,
 }
 
@@ -102,23 +103,45 @@ pub fn run(
 
     // Everything below this line is the `--world` half.
     let mut level_dat_error = None;
+    let mut enable_error = None;
     let mut beta_apis = None;
     if let Some(world) = world {
-        worldpacks::upsert(
+        // The packs are already placed on disk; from here a failure is
+        // partial, not total, same as the level.dat flip below. Try both
+        // upserts rather than stopping at the first failure — they touch
+        // independent files, so one failing is no reason to skip the other.
+        let bp_upsert = worldpacks::upsert(
             &worldpacks::behavior_path(world),
             worldpacks::PackRef {
                 pack_id: pack::CONSTRUCT_BP_UUID.to_string(),
                 version: bp.to,
             },
-        )?;
-        worldpacks::upsert(
+        );
+        let rp_upsert = worldpacks::upsert(
             &worldpacks::resource_path(world),
             worldpacks::PackRef {
                 pack_id: pack::CONSTRUCT_RP_UUID.to_string(),
                 version: rp.to,
             },
-        )?;
-        out.line(format!("  enabled in {}", world.display_name));
+        );
+        match (&bp_upsert, &rp_upsert) {
+            (Ok(_), Ok(_)) => out.line(format!("  enabled in {}", world.display_name)),
+            _ => {
+                let mut reasons = Vec::new();
+                if let Err(e) = &bp_upsert {
+                    reasons.push(format!("behaviour pack: {e}"));
+                }
+                if let Err(e) = &rp_upsert {
+                    reasons.push(format!("resource pack: {e}"));
+                }
+                let reason = reasons.join("; ");
+                out.warn(format!(
+                    "could not enable Construct in {}: {reason}",
+                    world.display_name
+                ));
+                enable_error = Some(reason);
+            }
+        }
 
         let level = world.path.join("level.dat");
         // The packs are already in place; from here a failure is partial, not
@@ -137,13 +160,13 @@ pub fn run(
             }
         }
     }
-    // On the exit-5 branch below, reloading is not the next step — the flip
-    // is. Say so, rather than repeating advice that would tell the user the
-    // job is done when it is not.
-    if level_dat_error.is_none() {
+    // On the exit-5 branch below, reloading is not the next step — finishing
+    // the enable and/or the flip is. Say so, rather than repeating advice
+    // that would tell the user the job is done when it is not.
+    if level_dat_error.is_none() && enable_error.is_none() {
         out.line("Reload the world before Construct appears.");
     } else {
-        out.line("Reload the world once Beta APIs is turned on — see below.");
+        out.line("Reload the world once the steps below are finished.");
     }
 
     out.emit(Payload {
@@ -154,19 +177,32 @@ pub fn run(
         preserved: bp.preserved,
         world: world.map(|w| w.display_name.clone()),
         beta_apis,
+        enable_error: enable_error.clone(),
         level_dat_error: level_dat_error.clone(),
     });
 
-    // §11: a failed level.dat write exits 5 with the packs installed, naming
-    // the remaining manual step — not total failure. Exiting here rather than
-    // returning an error keeps the success payload above intact, the same
-    // way main.rs already handles the `-o` usage error.
-    if level_dat_error.is_some() {
-        eprintln!(
-            "\nThe packs are installed. Turn Beta APIs on yourself, in the world's settings \
-             under Experiments, or with:\n  construct experiment {} --beta-apis on",
-            world.map(|w| w.display_name.as_str()).unwrap_or("<world>")
-        );
+    // §11: the packs installed but a later step failing is partial, not
+    // total, success — exit 5 and name the remaining manual step(s). Exiting
+    // here rather than returning an error keeps the success payload above
+    // intact, the same way main.rs already handles the `-o` usage error.
+    if enable_error.is_some() || level_dat_error.is_some() {
+        let world_name = world.map(|w| w.display_name.as_str()).unwrap_or("<world>");
+        eprintln!("\nThe packs are installed.");
+        if enable_error.is_some() {
+            eprintln!(
+                "Re-run to finish enabling Construct in the world — install is safe to \
+                 repeat; already-placed packs are left alone:\n  construct install --world {world_name}{}",
+                version
+                    .map(|v| format!(" --version {v}"))
+                    .unwrap_or_default()
+            );
+        }
+        if level_dat_error.is_some() {
+            eprintln!(
+                "Turn Beta APIs on yourself, in the world's settings under Experiments, \
+                 or with:\n  construct experiment {world_name} --beta-apis on"
+            );
+        }
         std::process::exit(5);
     }
     Ok(())

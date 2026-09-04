@@ -1865,6 +1865,67 @@ fn install_exits_5_with_the_packs_already_placed_when_level_dat_cannot_be_flippe
 }
 
 #[test]
+fn install_exits_5_with_the_packs_already_placed_when_the_world_pack_list_is_malformed() {
+    // Mirrors the level.dat exit-5 case above, but for the other partial-
+    // success path: the packs land, but a malformed world_behavior_packs.json
+    // means Construct cannot be enabled in the world. That must not throw
+    // away the already-downloaded packs by propagating a bare `?` failure.
+    let root = tempfile::tempdir().unwrap();
+    let world = root.path().join("minecraftWorlds/Test");
+    std::fs::create_dir_all(world.join("db")).unwrap();
+    std::fs::write(world.join("levelname.txt"), "Test").unwrap();
+    write_level_dat(&world.join("level.dat"), 0); // gametest = 0, flips cleanly
+    std::fs::write(world.join("world_behavior_packs.json"), "{ not an array").unwrap();
+
+    let addon = build_mcaddon_bytes();
+    let (base, _server) = stub_github(addon);
+
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args([
+            "install",
+            "--world",
+            "Test",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(5),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The whole point of exit 5, not exit 1: the packs are really there.
+    assert!(
+        root.path()
+            .join("development_behavior_packs/Construct[BP]/manifest.json")
+            .is_file()
+    );
+    assert!(
+        root.path()
+            .join("development_resource_packs/Construct[RP]/manifest.json")
+            .is_file()
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        !v["enable_error"].is_null(),
+        "expected the enable failure represented in the payload, got {v}"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("construct install --world Test"),
+        "expected the manual recovery command in stderr: {stderr}"
+    );
+}
+
+#[test]
 fn status_reports_the_installed_version_and_which_worlds_have_it() {
     let root = world_with_construct(&[]);
     let world = root.path().join("minecraftWorlds/Test");
