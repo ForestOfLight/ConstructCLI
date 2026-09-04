@@ -179,11 +179,17 @@ fn a_subdirectory_supplies_the_namespace_lowercased() {
 }
 
 #[test]
-fn non_mcstructure_files_and_deeper_nesting_are_not_listed() {
+fn non_mcstructure_files_are_not_listed() {
+    // This test used to also assert that `structures/a/b/deep.mcstructure` was
+    // ignored as "too deep". Task 21's ruling: that half was retired, not edited
+    // around, because `docs/bedrock-mcstructure-files.md` documents that exact
+    // shape as `a:b/deep` -- listing it is the point of the task, not a
+    // regression to paper over. The flat and one-level rules this test also
+    // used to brush against are now covered by
+    // `depth_does_not_change_the_flat_or_one_level_rules`.
     let root = tempfile::tempdir().unwrap();
     let pack = root.path().join("P");
     touch(&pack.join("structures/readme.txt"), b"x");
-    touch(&pack.join("structures/a/b/deep.mcstructure"), b"x");
     touch(&pack.join("structures/ok.mcstructure"), b"x");
 
     let found = structures::list(&pack);
@@ -405,4 +411,59 @@ fn no_construct_anywhere_says_where_it_looked() {
         2,
         "both the world copy and the shared root: {searched:?}"
     );
+}
+
+#[test]
+fn a_structure_nested_below_the_namespace_folder_is_addressable() {
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    touch(
+        &pack.join("structures/stuff/towers/diamond.mcstructure"),
+        b"x",
+    );
+
+    let found = structures::list(&pack);
+    assert_eq!(found.len(), 1);
+    // First subfolder is the namespace; everything after it is part of the name.
+    assert_eq!(found[0].id, "stuff:towers/diamond");
+    assert_eq!(found[0].name, "stuff:towers/diamond");
+}
+
+#[test]
+fn depth_does_not_change_the_flat_or_one_level_rules() {
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    touch(&pack.join("structures/house.mcstructure"), b"x");
+    touch(
+        &pack.join("structures/Understudy/players.mcstructure"),
+        b"x",
+    );
+    touch(&pack.join("structures/a/b/c/d.mcstructure"), b"x");
+
+    let ids: Vec<String> = structures::list(&pack).into_iter().map(|s| s.id).collect();
+    assert!(ids.contains(&"mystructure:house".to_string()));
+    assert!(ids.contains(&"understudy:players".to_string()));
+    assert!(ids.contains(&"a:b/c/d".to_string()));
+}
+
+#[test]
+fn only_the_namespace_segment_is_lowercased() {
+    // Minecraft namespaces are lowercase, but the path after the namespace is
+    // part of the name and is left exactly as it sits on disk.
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    touch(
+        &pack.join("structures/Stuff/Towers/Diamond.mcstructure"),
+        b"x",
+    );
+    assert_eq!(structures::list(&pack)[0].id, "stuff:Towers/Diamond");
+}
+
+#[test]
+fn writing_still_refuses_a_separator_in_a_name() {
+    // Reading and writing stay asymmetric on purpose (§17): `list` reports whatever
+    // depth exists, but nothing this tool writes creates a nested path, because the
+    // character that would enable it is the one that makes traversal possible.
+    assert!(structures::path_for(Path::new("/p"), "stuff:towers/diamond").is_err());
+    assert!(structures::derive_name("towers/diamond").is_err());
 }

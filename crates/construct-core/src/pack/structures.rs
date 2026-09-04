@@ -2,9 +2,11 @@
 //!
 //! A file directly in `structures/` is `mystructure:<stem>` — confirmed by
 //! Construct's own source, which strips exactly that prefix from the ids the
-//! game hands it. A file in `structures/<dir>/` is `<dir>:<stem>`, inferred from
-//! the one shipped pack that uses the layout. Anything deeper is not addressable
-//! in-game under either reading, so it is not listed.
+//! game hands it. Below that, the first subfolder is the namespace and every
+//! folder after it is part of the name (`structures/stuff/towers/diamond` is
+//! `stuff:towers/diamond`) — documented in `docs/bedrock-mcstructure-files.md`.
+//! An earlier version of this file walked only one level deep, on the mistaken
+//! assumption that nothing deeper was addressable in-game.
 
 use crate::error::{CoreError, Result};
 use crate::store::key;
@@ -30,35 +32,53 @@ pub fn dir(pack_dir: &Path) -> PathBuf {
 pub fn list(pack_dir: &Path) -> Vec<PackStructure> {
     let root = dir(pack_dir);
     let mut out = Vec::new();
-    collect(&root, None, &mut out);
-    let Ok(entries) = std::fs::read_dir(&root) else {
-        return out;
-    };
-    for e in entries.flatten() {
-        if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            let ns = e.file_name().to_string_lossy().to_lowercase();
-            collect(&e.path(), Some(&ns), &mut out);
-        }
-    }
+    collect(&root, &root, &mut out);
     out.sort_by(|a, b| a.id.cmp(&b.id));
     out
 }
 
-fn collect(dir: &Path, namespace: Option<&str>, out: &mut Vec<PackStructure>) {
+/// Walks `dir` (a subtree of `root`, the pack's `structures/` folder) to full
+/// depth, deriving each `.mcstructure` file's id from its path relative to
+/// `root`: no directory component means the default namespace, otherwise the
+/// first component is the namespace and everything after it — including the
+/// file stem — is the name, joined with `/`.
+///
+/// `DirEntry::file_type` reports a symlink as a symlink rather than following
+/// it, so a directory symlink here is never recursed into; the walk cannot be
+/// led outside the pack by one.
+fn collect(root: &Path, dir: &Path, out: &mut Vec<PackStructure>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for e in entries.flatten() {
         let path = e.path();
+        if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            collect(root, &path, out);
+            continue;
+        }
         if path.extension().and_then(|x| x.to_str()) != Some(EXTENSION) {
             continue;
         }
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        let id = match namespace {
-            Some(ns) => format!("{ns}:{stem}"),
-            None => key::qualify(stem),
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
+        // Components joined with `/` regardless of platform separator: the
+        // result is a Minecraft identifier, not a filesystem path.
+        let mut components: Vec<&str> = rel
+            .components()
+            .filter_map(|c| c.as_os_str().to_str())
+            .collect();
+        if let Some(last) = components.last_mut() {
+            *last = stem;
+        }
+        let id = match components.split_first() {
+            Some((namespace, rest)) if !rest.is_empty() => {
+                format!("{}:{}", namespace.to_lowercase(), rest.join("/"))
+            }
+            _ => key::qualify(stem),
         };
         let size_bytes = e.metadata().map(|m| m.len()).unwrap_or(0);
         out.push(PackStructure {
