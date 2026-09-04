@@ -1427,6 +1427,48 @@ fn experiment_turns_beta_apis_on_and_backs_the_file_up_first() {
 }
 
 #[test]
+fn a_no_op_flip_takes_no_backup() {
+    // Regression: `backup::file` used to run before `apply_beta_apis`'s own
+    // "already in that state" short-circuit, so ten no-op `--beta-apis on`
+    // runs would evict every genuine pre-flip backup at the default `keep`.
+    // A no-op must take none at all.
+    let root = world_with_experiments(1); // beta apis already on
+    let backups = root.path().join("backups");
+    let config = root.path().join("config.toml");
+    std::fs::write(
+        &config,
+        format!("[backups]\ndir = {:?}\nkeep = 5\n", backups),
+    )
+    .unwrap();
+
+    let out = bin()
+        .env("CONSTRUCT_CONFIG", &config)
+        .args([
+            "experiment",
+            "Test",
+            "--beta-apis",
+            "on",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["changed"], false);
+    assert!(v["backup"].is_null());
+
+    let saved: Vec<_> = walk(&backups).into_iter().filter(|p| p.is_file()).collect();
+    assert!(saved.is_empty(), "expected no backup taken: {saved:?}");
+}
+
+#[test]
 fn experiment_on_a_world_with_no_level_dat_fails_cleanly() {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("minecraftWorlds/Test/db")).unwrap();

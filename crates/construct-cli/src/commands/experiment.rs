@@ -38,6 +38,26 @@ pub fn run(world: &World, state: Option<bool>, backups: &Backups, out: &mut Out)
         return Ok(());
     };
 
+    // Read first, without touching anything: a no-op flip (the requested
+    // state already holds) must not take a backup at all, or ten no-op runs
+    // would evict every genuine pre-flip backup at the default `keep`. This
+    // is the same read `apply_beta_apis` would do internally; doing it here
+    // first keeps the ordering guarantee below intact — a real flip is still
+    // always preceded by its backup — while a non-flip takes none.
+    if leveldat::read(&path)?.beta_apis() == Some(on) {
+        out.line(format!(
+            "Beta APIs already {}; nothing to do",
+            describe(Some(on))
+        ));
+        out.emit(Payload {
+            world: world.qualified(),
+            beta_apis: on,
+            changed: false,
+            backup: None,
+        });
+        return Ok(());
+    }
+
     // Back up before touching anything: a backup taken after a bad write
     // preserves the bad write.
     let backup = backup::file(&path, &world.qualified(), backups)?;
