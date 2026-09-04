@@ -137,7 +137,14 @@ pub fn run(
             }
         }
     }
-    out.line("Reload the world before Construct appears.");
+    // On the exit-5 branch below, reloading is not the next step — the flip
+    // is. Say so, rather than repeating advice that would tell the user the
+    // job is done when it is not.
+    if level_dat_error.is_none() {
+        out.line("Reload the world before Construct appears.");
+    } else {
+        out.line("Reload the world once Beta APIs is turned on — see below.");
+    }
 
     out.emit(Payload {
         version: manifest::version_string(bp.to),

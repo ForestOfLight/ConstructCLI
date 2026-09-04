@@ -1667,3 +1667,79 @@ fn install_verifies_the_addon_is_actually_construct_before_placing_anything() {
         "expected the found uuid to be named in the error: {stderr}"
     );
 }
+
+#[test]
+fn install_exits_5_with_the_packs_already_placed_when_level_dat_cannot_be_flipped() {
+    // §11's distinguishing behaviour: the packs land, but the world's
+    // level.dat cannot be read, so the Beta APIs flip never happens. That is
+    // a partial success (exit 5), not a total failure (exit 1) — the
+    // downloaded packs are real work already done and must not be thrown
+    // away just because the last step failed.
+    //
+    // A four-byte level.dat is shorter than the 8-byte header `leveldat::read`
+    // requires, so `apply_beta_apis` fails deterministically at its first
+    // read, on every platform — no permission games needed. `enumerate` only
+    // requires level.dat to *exist* to find the world at all (it falls back
+    // to directory mtime when the file can't be parsed for LastPlayed), so
+    // the world is still discovered and `--world Test` still resolves.
+    let root = tempfile::tempdir().unwrap();
+    let world = root.path().join("minecraftWorlds/Test");
+    std::fs::create_dir_all(world.join("db")).unwrap();
+    std::fs::write(world.join("levelname.txt"), "Test").unwrap();
+    std::fs::write(world.join("level.dat"), b"bad!").unwrap();
+
+    let addon = build_mcaddon_bytes();
+    let (base, _server) = stub_github(addon);
+
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args([
+            "install",
+            "--world",
+            "Test",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(5),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The whole point of exit 5, not exit 1: the packs are really there.
+    assert!(
+        root.path()
+            .join("development_behavior_packs/Construct[BP]/manifest.json")
+            .is_file()
+    );
+    assert!(
+        root.path()
+            .join("development_resource_packs/Construct[RP]/manifest.json")
+            .is_file()
+    );
+
+    // Still exactly one JSON document on stdout, carrying the failure.
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["schema"], 1);
+    assert!(
+        v["warnings"].as_array().is_some_and(|w| !w.is_empty()),
+        "expected a non-empty warnings array, got {v}"
+    );
+    assert!(
+        !v["level_dat_error"].is_null(),
+        "expected the level.dat failure represented in the payload, got {v}"
+    );
+    assert!(v["beta_apis"].is_null());
+
+    // stderr names the manual step.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("construct experiment Test --beta-apis on"),
+        "expected the manual recovery command in stderr: {stderr}"
+    );
+}
