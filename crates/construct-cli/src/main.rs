@@ -322,6 +322,17 @@ fn report(err: &CoreError) {
         CoreError::UnwritableLevelDat { written: false, .. } => {
             eprintln!("\nThe world was not modified.");
         }
+        CoreError::WorldInUse { .. } => {
+            eprintln!(
+                "\nMinecraft appears to have this world open — its database was written \
+                 in the last {} seconds.\n\
+                 The game keeps level.dat in memory and rewrites it whenever it saves, so \
+                 a change made now would be silently discarded.\n\n\
+                 Close the world in Minecraft (returning to the main menu is enough), then \
+                 run this again. The world was not modified.",
+                construct_core::inuse::ACTIVITY_WINDOW.as_secs()
+            );
+        }
         CoreError::RateLimited => {
             eprintln!(
                 "\nGitHub allows {} requests an hour unauthenticated.\n\

@@ -8,7 +8,7 @@ use crate::output::Out;
 use construct_core::Result;
 use construct_core::config::Backups;
 use construct_core::discovery::World;
-use construct_core::{backup, leveldat};
+use construct_core::{backup, inuse, leveldat};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -37,6 +37,16 @@ pub fn run(world: &World, state: Option<bool>, backups: &Backups, out: &mut Out)
         });
         return Ok(());
     };
+
+    // Refuse before reading, let alone writing: Minecraft holds level.dat in
+    // memory for the whole session and rewrites it from memory on every save,
+    // so a write under a live world is discarded and the read that would
+    // decide "already on; nothing to do" is answering about a file the game
+    // is about to overwrite anyway. Neither answer is trustworthy while the
+    // world is open, so the whole write path stops here rather than reporting
+    // a result that will not survive. The read-only branch above is
+    // deliberately not subject to this.
+    inuse::refuse_if_in_use(world)?;
 
     // Read first, without touching anything: a no-op flip (the requested
     // state already holds) must not take a backup at all, or ten no-op runs

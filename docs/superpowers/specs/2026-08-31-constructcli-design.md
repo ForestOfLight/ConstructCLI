@@ -571,6 +571,36 @@ unordered and the game rewrites the file on its own schedule, so this is cosmeti
 The write itself is a temporary file in the same directory followed by a rename, so the file is
 never left partially written, and §8's backup copy is taken before any of it.
 
+### Refusing a `level.dat` write while the world is open
+
+A correct, verified write to `level.dat` still achieves nothing if Minecraft has the world
+loaded. The game reads the file into memory when the world opens and rewrites it from memory on
+every save, so a write underneath it succeeds, reads back correct, and is gone at the next
+autosave. This was measured, not predicted: `install --world` reported "Beta APIs on" against a
+live world and the flag was absent from the file minutes later, with the backups taken before
+each attempt showing the `gametest` key missing both times.
+
+The obvious guard is unavailable. leveldb normally protects a database with an flock'd
+`db/LOCK`, but the Minecraft build shipped by mcpelauncher **creates no `LOCK` file at all**,
+even with a world open — measured against a live session, where the only `LOCK` on the machine
+was a leftover from an unclean exit a year earlier. The file's presence is evidence of neither
+state.
+
+What is observable is the autosave. With a world loaded, Bedrock rewrites `db/` metronomically:
+19 write events in 90 seconds, longest gap 5 seconds, measured against that live session. So
+**recent write activity in `db/` is the in-use signal, and the window is 10 seconds** — twice
+the longest measured gap.
+
+This is a heuristic and is deliberately one-sided. A false positive costs a refused command the
+user retries seconds later; a false negative costs a silent revert of a change the tool claimed
+to make. So the window errs long and the write path *refuses* rather than warning.
+
+The check binds the `level.dat` write path only — `experiment` with a state, and `install
+--world`. Reads never take it: they work from a snapshot copy and are safe at any time.
+`install --world` runs it before the network call, so a refused install downloads nothing and
+leaves nothing half-done. The pack-enable step (`world_behavior_packs.json`) is exposed to the
+same clobber and is **not** guarded today; see the risk register.
+
 **Upgrading must not delete `Construct[BP]/structures/`.** That folder holds the user's
 imported structures — the very data this tool exists to put there. A naive delete-and-unzip
 would destroy it. Install preserves it across upgrades and reports what it carried over.
@@ -609,6 +639,7 @@ Every message names the thing, says why, and gives the next action.
 | World in use, read command | Irrelevant — reads always work from a copy | 0 |
 | No room for the snapshot a read needs | The copy fails part-way with the OS error; there is no pre-flight check (§8) | 1 |
 | World in use, `delete --source world` | Stop hard; no `--force` | 4 |
+| World in use, `level.dat` write | Refuse before backup or write; name the world and say to close it | 4 |
 | Structure not found | Suggest near matches from the catalog already in hand | 3 |
 | Structure name in both sources | Name both qualified forms; point at `--source` | 2 |
 | Structure prefix | Bare `name` means `mystructure:name`; `prefix:name` accepted explicitly | — |
@@ -744,6 +775,8 @@ else, which is worth remembering if `bedrock_level`'s write path disappoints in 
 | `.mcstructure` format version changes | Low | Version checked on decode; explicit error |
 | `nbtx` corrupts a `level.dat` it rewrites | **Data loss** | **Measured** (§9). Fidelity gate refuses the write when re-serialization changes length (§10) |
 | `nbtx` cannot encode `.mcstructure` (empty lists) | High | **Measured** (§9). Decoding is unaffected; blocks stage 3 only, and the fix is a patch or a small encoder |
+| A `level.dat` write is silently reverted by a live world | High | **Realized.** Measured (§10): the game rewrites the file from memory on every save. The write path refuses when `db/` was written in the last 10 seconds |
+| The pack-enable step is silently reverted by a live world | Medium | Same mechanism, same file cadence, **not guarded**: `world_behavior_packs.json` is rewritten by the game on exit too. `install --world` refuses up front, so the gap is only reachable by a world opened mid-command |
 
 The two data-loss rows hold the release. Everything else degrades into a bad afternoon.
 
@@ -755,9 +788,12 @@ These cannot be settled by automated tests and must be confirmed in the game:
 2. Does Construct pick up an imported structure after a world reload?
 3. Does the `level.dat` Beta APIs flip register in-game? (`construct experiment <world>
    --beta-apis` confirms the file round-trips; only the game confirms it is honored.)
-4. Do dev packs in `Users\Shared` apply to a world owned by a specific account? *(Windows)*
-5. Do files written into the GDK folder by an ordinary process read back in-game? *(Windows)*
-6. Does a `.mcstructure` in `structures/<Namespace>/` load as `<namespace>:<name>`, and does a
+4. Does the in-use refusal fire on every platform's Minecraft? The 10-second window is derived
+   from one measured autosave cadence (§10, ~5s on mcpelauncher/macOS). A build that saves less
+   often would slip through and the revert would be silent again.
+5. Do dev packs in `Users\Shared` apply to a world owned by a specific account? *(Windows)*
+6. Do files written into the GDK folder by an ordinary process read back in-game? *(Windows)*
+7. Does a `.mcstructure` in `structures/<Namespace>/` load as `<namespace>:<name>`, and does a
    deeper `structures/<ns>/<a>/<b>.mcstructure` load as `<ns>:<a>/<b>`? Both forms are now
    documented (§17) rather than inferred; this confirms the documentation against the shipping
    game.

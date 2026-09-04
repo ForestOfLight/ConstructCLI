@@ -9,7 +9,7 @@ use construct_core::discovery::{Installation, World};
 use construct_core::install::releases::Releases;
 use construct_core::install::{self, mcaddon, releases};
 use construct_core::pack::{self, manifest};
-use construct_core::{CoreError, Result, backup, leveldat, worldpacks};
+use construct_core::{CoreError, Result, backup, inuse, leveldat, worldpacks};
 use serde::Serialize;
 use std::path::Path;
 
@@ -57,6 +57,17 @@ pub fn run(
     force: bool,
     out: &mut Out,
 ) -> Result<()> {
+    // Refuse up front, before the network call and before anything is placed.
+    // Two of the three things `--world` promises — enabling the packs in the
+    // world and flipping Beta APIs — write files Minecraft holds in memory
+    // and rewrites from memory on every save, so against a live world they
+    // are discarded silently. Checking here rather than at the level.dat
+    // write below means a refused `--world` install downloads nothing and
+    // leaves nothing half-done; the user closes the world and re-runs.
+    if let Some(world) = world {
+        inuse::refuse_if_in_use(world)?;
+    }
+
     let release = releases.release(version)?;
     let asset = releases::asset_for(&release)?;
     out.line(format!("Construct {} — {}", release.tag, asset.name));

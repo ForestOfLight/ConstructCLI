@@ -2244,3 +2244,155 @@ fn status_reports_an_update_is_available() {
         "expected the human output to point at construct install: {text}"
     );
 }
+
+/// Marks a world's database as freshly written, the way Minecraft's autosave
+/// leaves it while the world is loaded. Measured against a live session: with
+/// a world open, Bedrock rewrites `db/` roughly every five seconds.
+fn mark_db_active(root: &std::path::Path) {
+    std::fs::write(
+        root.join("minecraftWorlds/Test/db/000021.log"),
+        b"chunk data",
+    )
+    .unwrap();
+}
+
+#[test]
+fn experiment_refuses_with_exit_4_when_minecraft_has_the_world_open() {
+    // The bug this guards: Minecraft keeps level.dat in memory for the whole
+    // session and rewrites it from memory on every save, so a flip written
+    // under a live world verifies correctly and is then silently discarded.
+    // Refusing is the only honest answer, and a refusal must leave no trace.
+    let root = world_with_experiments(0);
+    let level = root.path().join("minecraftWorlds/Test/level.dat");
+    let before = std::fs::read(&level).unwrap();
+    let backups = root.path().join("backups");
+    let config = root.path().join("config.toml");
+    std::fs::write(
+        &config,
+        format!("[backups]\ndir = {:?}\nkeep = 5\n", backups),
+    )
+    .unwrap();
+    mark_db_active(root.path());
+
+    let out = bin()
+        .env("CONSTRUCT_CONFIG", &config)
+        .args([
+            "experiment",
+            "Test",
+            "--beta-apis",
+            "on",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(4),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read(&level).unwrap(),
+        before,
+        "a refused flip must not modify level.dat"
+    );
+    assert!(
+        !backups.exists(),
+        "a refused flip must not take a backup either"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Close the world"),
+        "the refusal must say what to do about it: {stderr}"
+    );
+}
+
+#[test]
+fn experiment_still_reads_a_world_that_is_in_use() {
+    // Reads are safe at any time and must stay that way: the read path never
+    // touches the file, so an open world is no reason to refuse it.
+    let root = world_with_experiments(1);
+    mark_db_active(root.path());
+
+    let out = bin()
+        .args([
+            "experiment",
+            "Test",
+            "--beta-apis",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["beta_apis"], true);
+}
+
+#[test]
+fn install_world_refuses_with_exit_4_before_it_downloads_anything() {
+    // `CONSTRUCT_GITHUB_API` points at a port nothing listens on, so any
+    // attempt to reach the network would fail as exit 1. Getting exit 4
+    // instead is what proves the in-use check runs before the download —
+    // a refused `--world` install must leave nothing half-done.
+    let root = world_with_experiments(0);
+    mark_db_active(root.path());
+
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", "http://127.0.0.1:1/")
+        .args([
+            "install",
+            "--world",
+            "Test",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(4),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !root.path().join("development_behavior_packs").exists(),
+        "a refused install must place no packs"
+    );
+}
+
+#[test]
+fn install_without_a_world_ignores_whether_any_world_is_in_use() {
+    // The in-use check is scoped to `--world`. Installing the packs alone
+    // touches no world at all, so a live world is none of its business.
+    let root = world_with_experiments(0);
+    mark_db_active(root.path());
+    let addon = build_mcaddon_bytes();
+    let (base, _server) = stub_github(addon);
+
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args(["install", "--com-mojang", root.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        root.path()
+            .join("development_behavior_packs/Construct[BP]/manifest.json")
+            .is_file()
+    );
+}
