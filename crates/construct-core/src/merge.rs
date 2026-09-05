@@ -165,6 +165,10 @@ pub fn merge(pieces: &[(String, Structure)], options: &MergeOptions) -> Result<M
     // Which piece last wrote each cell of each layer, so an overlap can name
     // both contenders and `block_position_data` can follow the winner.
     let mut owner: [Vec<Option<usize>>; 2] = [vec![None; cells], vec![None; cells]];
+    // Where each piece's block indices landed in the merged grid, so
+    // `block_position_data` can be moved to the same cell without recomputing
+    // the coordinate arithmetic a second time.
+    let mut placement: Vec<BTreeMap<usize, usize>> = vec![BTreeMap::new(); pieces.len()];
     let mut overlaps: BTreeMap<(usize, usize), u64> = BTreeMap::new();
     // Per-piece count of block_indices values that are neither VOID nor a
     // valid index into that piece's own palette. The decoder deliberately
@@ -211,6 +215,15 @@ pub fn merge(pieces: &[(String, Structure)], options: &MergeOptions) -> Result<M
                     bad_indices[p] += 1;
                     continue;
                 };
+
+                // Layer 0 only — `block_position_data` is layer-agnostic,
+                // since two block entities cannot share a block space. This
+                // is recorded only once the block index is known good: a
+                // position skipped by the guard above contributed no block,
+                // so it must not carry a `block_position_data` entry either.
+                if layer == 0 {
+                    placement[p].insert(i, out_i);
+                }
                 match owner[layer][out_i] {
                     None => {
                         layers[layer][out_i] = remapped;
@@ -262,6 +275,36 @@ pub fn merge(pieces: &[(String, Structure)], options: &MergeOptions) -> Result<M
         )));
     }
 
+    // `block_position_data` follows the block that won its cell. Walking the
+    // pieces in order and letting a later winner overwrite an earlier entry
+    // reproduces the same resolution the blit used, so a chest's contents can
+    // never end up attached to a block that lost (§9).
+    let mut block_position_data = BTreeMap::new();
+    for (p, (_, piece)) in pieces.iter().enumerate() {
+        for (&local_index, data) in &piece.block_position_data {
+            let Some(&out_i) = placement[p].get(&local_index) else {
+                continue;
+            };
+            // Insert only for the piece that owns the cell. There is exactly
+            // one owner per cell, so no stale entry can survive and nothing
+            // needs removing. An `else { remove }` arm here would be actively
+            // wrong under OnOverlap::First, where the winner writes first and
+            // the later loser would delete the winner's data.
+            if owner[0][out_i] == Some(p) {
+                block_position_data.insert(out_i, data.clone());
+            }
+        }
+    }
+
+    // Entities are carried verbatim. `Pos` is an absolute world position and
+    // placement computes `Pos - origin + load_position`; since the merged
+    // origin is the union's min corner, that arithmetic already lands every
+    // entity correctly. Rewriting `Pos` here would shift them twice.
+    let entities: Vec<nbtx::Value> = pieces
+        .iter()
+        .flat_map(|(_, s)| s.entities.iter().cloned())
+        .collect();
+
     Ok(MergeReport {
         structure: Structure {
             format_version: pieces[0].1.format_version,
@@ -269,8 +312,8 @@ pub fn merge(pieces: &[(String, Structure)], options: &MergeOptions) -> Result<M
             origin: union.min,
             layers,
             palette,
-            block_position_data: BTreeMap::new(),
-            entities: Vec::new(),
+            block_position_data,
+            entities,
         },
         overlaps,
         warnings,

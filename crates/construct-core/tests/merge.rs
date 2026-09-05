@@ -341,3 +341,198 @@ fn an_out_of_range_palette_index_is_treated_as_void_and_warned_about() {
         report.warnings
     );
 }
+
+// --- block_position_data and entities ---
+
+use support::compound;
+
+fn chest_at(b: &mut Build, index: &str, label: &str) {
+    b.block_position_data.push((
+        index.to_string(),
+        compound(vec![(
+            "block_entity_data",
+            compound(vec![
+                ("id", nbtx::Value::String("Chest".into())),
+                ("label", nbtx::Value::String(label.into())),
+            ]),
+        )]),
+    ));
+}
+
+fn label_at(s: &Structure, world: Coord) -> Option<String> {
+    let local = Coord {
+        x: world.x - s.origin.x,
+        y: world.y - s.origin.y,
+        z: world.z - s.origin.z,
+    };
+    let i = s.size.index_of(local)?;
+    let entry = s.block_position_data.get(&i)?;
+    let nbtx::Value::Compound(m) = entry else {
+        return None;
+    };
+    let nbtx::Value::Compound(bed) = m.get("block_entity_data")? else {
+        return None;
+    };
+    match bed.get("label")? {
+        nbtx::Value::String(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+#[test]
+fn block_position_data_keys_are_recomputed_for_the_merged_grid() {
+    // The index is relative to a grid whose dimensions changed, so carrying
+    // the key across unchanged would attach the data to the wrong block.
+    let mut a = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:chest");
+    chest_at(&mut a, "0", "from-a");
+    let b = Build::solid([1, 1, 1], [0, 0, 4], "minecraft:stone");
+
+    let out = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default())
+        .unwrap()
+        .structure;
+
+    assert_eq!(
+        label_at(&out, Coord { x: 0, y: 0, z: 0 }).as_deref(),
+        Some("from-a")
+    );
+    assert_eq!(out.block_position_data.len(), 1);
+}
+
+#[test]
+fn block_position_data_follows_the_block_that_won_the_overlap() {
+    // §9: "a chest's contents survive from a block that lost the overlap and
+    // end up attached to the wrong thing" is the failure this prevents. It is
+    // invisible in a block-only comparison, so it is asserted explicitly.
+    let mut a = Build::solid([2, 1, 1], [0, 0, 0], "minecraft:chest");
+    a.layer0 = vec![0, 0];
+    chest_at(&mut a, "1", "from-a");
+    let mut b = Build::solid([1, 1, 1], [1, 0, 0], "minecraft:chest");
+    chest_at(&mut b, "0", "from-b");
+
+    let out = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default())
+        .unwrap()
+        .structure;
+
+    // b is last, so b wins the contested cell — and its chest data must be the
+    // data that survives there.
+    assert_eq!(
+        label_at(&out, Coord { x: 1, y: 0, z: 0 }).as_deref(),
+        Some("from-b")
+    );
+}
+
+#[test]
+fn block_position_data_follows_the_winner_under_on_overlap_first() {
+    let mut a = Build::solid([2, 1, 1], [0, 0, 0], "minecraft:chest");
+    a.layer0 = vec![0, 0];
+    chest_at(&mut a, "1", "from-a");
+    let mut b = Build::solid([1, 1, 1], [1, 0, 0], "minecraft:chest");
+    chest_at(&mut b, "0", "from-b");
+
+    let options = MergeOptions {
+        on_overlap: OnOverlap::First,
+        ..MergeOptions::default()
+    };
+    let out = merge::merge(&[named("a", &a), named("b", &b)], &options)
+        .unwrap()
+        .structure;
+
+    assert_eq!(
+        label_at(&out, Coord { x: 1, y: 0, z: 0 }).as_deref(),
+        Some("from-a")
+    );
+}
+
+#[test]
+fn tick_queue_data_is_carried_along_with_block_entity_data() {
+    // The `<index>` compound may hold block_entity_data, tick_queue_data, or
+    // both. Merge carries the whole compound rather than picking fields out.
+    let mut a = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:water");
+    a.block_position_data.push((
+        "0".to_string(),
+        compound(vec![(
+            "tick_queue_data",
+            nbtx::Value::List(vec![compound(vec![("tick_delay", nbtx::Value::Int(5))])]),
+        )]),
+    ));
+    let b = Build::solid([1, 1, 1], [0, 0, 3], "minecraft:stone");
+
+    let out = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default())
+        .unwrap()
+        .structure;
+
+    let entry = out.block_position_data.values().next().unwrap();
+    let nbtx::Value::Compound(m) = entry else {
+        panic!()
+    };
+    assert!(m.contains_key("tick_queue_data"));
+}
+
+#[test]
+fn entities_are_carried_with_their_positions_untouched() {
+    // Entity Pos is an absolute world position, and placement subtracts the
+    // structure's origin. Because the merged origin is the union's min corner,
+    // that subtraction already puts every entity in the right place — so
+    // rewriting Pos here would move entities by the origin delta, twice.
+    let mut a = Build::solid([1, 1, 1], [10, 0, 0], "minecraft:air");
+    let pos = nbtx::Value::List(vec![
+        nbtx::Value::Float(10.5),
+        nbtx::Value::Float(64.0),
+        nbtx::Value::Float(0.5),
+    ]);
+    a.entities = vec![compound(vec![
+        ("identifier", nbtx::Value::String("minecraft:pig".into())),
+        ("Pos", pos.clone()),
+    ])];
+    let b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
+
+    let out = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default())
+        .unwrap()
+        .structure;
+
+    assert_eq!(out.entities.len(), 1);
+    let nbtx::Value::Compound(e) = &out.entities[0] else {
+        panic!()
+    };
+    assert_eq!(e.get("Pos"), Some(&pos), "entity Pos must not be rewritten");
+}
+
+#[test]
+fn entities_from_every_piece_are_collected_in_argument_order() {
+    let mut a = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:air");
+    a.entities = vec![compound(vec![(
+        "identifier",
+        nbtx::Value::String("a".into()),
+    )])];
+    let mut b = Build::solid([1, 1, 1], [5, 0, 0], "minecraft:air");
+    b.entities = vec![compound(vec![(
+        "identifier",
+        nbtx::Value::String("b".into()),
+    )])];
+
+    let out = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default())
+        .unwrap()
+        .structure;
+    assert_eq!(out.entities.len(), 2);
+}
+
+#[test]
+fn a_merged_structure_encodes_and_decodes_back_equal() {
+    let mut a = Build::solid([2, 1, 1], [0, 0, 0], "minecraft:chest");
+    a.layer0 = vec![0, 0];
+    chest_at(&mut a, "1", "from-a");
+    let b = Build::solid([1, 1, 1], [0, 0, 4], "minecraft:stone");
+
+    let merged = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default())
+        .unwrap()
+        .structure;
+    let bytes = mcstructure::encode(&merged, "merged").unwrap();
+    let again = mcstructure::decode(&bytes, "merged").unwrap();
+
+    assert_eq!(again.size, merged.size);
+    assert_eq!(again.origin, merged.origin);
+    assert_eq!(again.layers, merged.layers);
+    assert_eq!(again.palette, merged.palette);
+    assert_eq!(again.block_position_data, merged.block_position_data);
+    assert_eq!(again.entities, merged.entities);
+}
