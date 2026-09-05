@@ -246,8 +246,11 @@ fn a_mix_of_zero_and_real_origins_proceeds_with_a_warning() {
     let a = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
     let b = Build::solid([1, 1, 1], [40, 0, 0], "minecraft:dirt");
     let report = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default()).unwrap();
+    // A single-character `contains('a')` is satisfied by the word "may" in
+    // the template text alone, so this ties the fixed template text
+    // immediately preceding a piece name to the specific name "a".
     assert!(
-        report.warnings.iter().any(|w| w.contains('a')),
+        report.warnings.iter().any(|w| w.contains("unset on: a")),
         "expected a warning naming the piece at the origin: {:?}",
         report.warnings
     );
@@ -290,6 +293,21 @@ fn merging_nothing_is_refused() {
     );
 }
 
+// --- extreme but structurally valid input ---
+
+#[test]
+fn a_piece_at_an_extreme_origin_does_not_panic() {
+    // origin.x comes from a file this tool did not write and is not range
+    // checked. i32::MAX plus even a two-block size overflows plain i32
+    // addition in the blit's per-block coordinate math, well before the
+    // allocation guard ever sees it: BoundingBox::of saturates, so the
+    // union's reported volume looks tiny even though the per-block
+    // arithmetic underneath would overflow.
+    let a = Build::solid([2, 1, 1], [i32::MAX, 0, 0], "minecraft:stone");
+    let result = merge::merge(&[named("a", &a)], &MergeOptions::default());
+    assert!(result.is_ok(), "must not panic or refuse: {result:?}");
+}
+
 // --- malformed input: out-of-range palette index ---
 
 #[test]
@@ -297,19 +315,29 @@ fn an_out_of_range_palette_index_is_treated_as_void_and_warned_about() {
     // The decoder deliberately accepts a block_indices value outside the
     // palette (the game places air for it), so merge must tolerate it rather
     // than index its per-piece remap table out of bounds.
-    let a = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
-    let mut b = Build::solid([1, 1, 1], [1, 0, 0], "minecraft:dirt");
+    //
+    // Neither piece sits at [0,0,0]: the unrelated "origin may be unset on: a
+    // — these will be placed at world origin" warning that `a` would
+    // otherwise trigger contains the letter 'b' (in "be"), which previously
+    // let a bare `contains('b')` pass even with the palette-index warning
+    // deleted. Moving both origins off [0,0,0] removes that confound
+    // entirely, on top of asserting a distinctive substring below.
+    let a = Build::solid([1, 1, 1], [5, 0, 0], "minecraft:stone");
+    let mut b = Build::solid([1, 1, 1], [6, 0, 0], "minecraft:dirt");
     b.layer0 = vec![9999];
     let report = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default()).unwrap();
 
     assert_eq!(
-        block_at(&report.structure, 0, Coord { x: 1, y: 0, z: 0 }),
+        block_at(&report.structure, 0, Coord { x: 6, y: 0, z: 0 }),
         None,
         "an out-of-range index must contribute nothing, not panic or place a bogus block"
     );
     assert!(
-        report.warnings.iter().any(|w| w.contains('b')),
-        "expected a warning naming the piece with the bad index: {:?}",
+        report
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("b ") && w.contains("outside its palette")),
+        "expected a warning naming piece b for an out-of-range palette index: {:?}",
         report.warnings
     );
 }

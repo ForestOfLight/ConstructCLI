@@ -69,6 +69,32 @@ fn refused(reason: impl Into<String>) -> CoreError {
     }
 }
 
+/// `a + b`, or `None` on overflow.
+///
+/// `piece.origin` is read from a file this tool did not write and carries no
+/// range validation, so it can be any `i32` — including values a block's
+/// local offset would overflow when added to. Plain `+` would panic in debug
+/// builds and silently wrap in release ones (placing a block at the wrong
+/// position with no error at all), so overflow here is treated exactly like
+/// an out-of-range coordinate: the caller skips the block. This mirrors how
+/// `geometry.rs` already treats untrusted `origin`/`size` values throughout.
+fn checked_add(a: Coord, b: Coord) -> Option<Coord> {
+    Some(Coord {
+        x: a.x.checked_add(b.x)?,
+        y: a.y.checked_add(b.y)?,
+        z: a.z.checked_add(b.z)?,
+    })
+}
+
+/// `a - b`, or `None` on overflow. See [`checked_add`].
+fn checked_sub(a: Coord, b: Coord) -> Option<Coord> {
+    Some(Coord {
+        x: a.x.checked_sub(b.x)?,
+        y: a.y.checked_sub(b.y)?,
+        z: a.z.checked_sub(b.z)?,
+    })
+}
+
 /// Merges `pieces` into one structure positioned at the min corner of the
 /// union of their bounding boxes.
 pub fn merge(pieces: &[(String, Structure)], options: &MergeOptions) -> Result<MergeReport> {
@@ -158,15 +184,16 @@ pub fn merge(pieces: &[(String, Structure)], options: &MergeOptions) -> Result<M
                 let Some(local) = piece.size.coord_of(i) else {
                     continue;
                 };
-                let world = Coord {
-                    x: piece.origin.x + local.x,
-                    y: piece.origin.y + local.y,
-                    z: piece.origin.z + local.z,
+                // Overflow here means this block's world position cannot be
+                // represented as an `i32` at all, so it cannot possibly land
+                // inside `union` (which is built from every piece's own
+                // bounding box). No legitimate file hits this path; skip
+                // rather than panic or wrap on a malformed one.
+                let Some(world) = checked_add(piece.origin, local) else {
+                    continue;
                 };
-                let target = Coord {
-                    x: world.x - union.min.x,
-                    y: world.y - union.min.y,
-                    z: world.z - union.min.z,
+                let Some(target) = checked_sub(world, union.min) else {
+                    continue;
                 };
                 let Some(out_i) = size.index_of(target) else {
                     continue;
