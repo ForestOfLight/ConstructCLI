@@ -77,7 +77,7 @@ fn collect(root: &Path, dir: &Path, out: &mut Vec<PackStructure>) {
         }
         let id = match components.split_first() {
             Some((namespace, rest)) if !rest.is_empty() => {
-                format!("{}:{}", namespace.to_lowercase(), rest.join("/"))
+                format!("{}:{}", namespace, rest.join("/"))
             }
             _ => key::qualify(stem),
         };
@@ -96,6 +96,13 @@ fn collect(root: &Path, dir: &Path, out: &mut Vec<PackStructure>) {
 /// This is a security boundary, not a nicety: ids arrive from file stems and
 /// from `--name`, so a segment containing a separator or `..` would let a
 /// crafted name write outside the pack.
+///
+/// Capitals are allowed. They are not an edge case: structures the game
+/// itself saved carry them routinely, and refusing them meant `copy` and
+/// `import --name` could not address a structure `list` had just printed.
+/// Note that a case-insensitive filesystem — macOS's default — treats
+/// `House` and `house` as one file, so importing the second alongside the
+/// first refuses as a collision there and creates a separate file elsewhere.
 fn safe_segment(segment: &str, whole: &str) -> Result<()> {
     let bad = |reason: &str| CoreError::BadStructureName {
         name: whole.to_string(),
@@ -109,10 +116,10 @@ fn safe_segment(segment: &str, whole: &str) -> Result<()> {
     }
     if let Some(c) = segment
         .chars()
-        .find(|c| !matches!(c, 'a'..='z' | '0'..='9' | '_' | '.' | '-'))
+        .find(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '.' | '-'))
     {
         return Err(bad(&format!(
-            "{c:?} is not allowed; names may use a-z, 0-9, and _ . -"
+            "{c:?} is not allowed; names may use A-Z, a-z, 0-9, and _ . -"
         )));
     }
     Ok(())
@@ -164,12 +171,16 @@ pub fn remove(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// A structure name from a file stem: lowercased, spaces to `_`.
+/// A structure name from a file stem: trimmed, spaces to `_`, case kept.
 ///
-/// Anything outside `[a-z0-9_.-]` is rejected rather than mangled — a mangled
-/// name is one Construct will not list, so the user gets told to pass `--name`.
+/// Anything outside `[A-Za-z0-9_.-]` is rejected rather than mangled — a
+/// mangled name is one Construct will not list, so the user gets told to pass
+/// `--name`. Case is part of that: the names the game itself stores keep
+/// theirs (`10HzCounter`, `CanopyPlayers:players`, both measured in local
+/// worlds), so lowercasing a stem would hand back a name quietly different
+/// from the one asked for.
 pub fn derive_name(stem: &str) -> Result<String> {
-    let derived: String = stem.trim().to_lowercase().replace(' ', "_");
+    let derived: String = stem.trim().replace(' ', "_");
     safe_segment(&derived, stem)?;
     Ok(derived)
 }

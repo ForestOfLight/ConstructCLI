@@ -164,7 +164,12 @@ fn a_file_directly_in_structures_is_mystructure_namespaced() {
 }
 
 #[test]
-fn a_subdirectory_supplies_the_namespace_lowercased() {
+fn a_subdirectory_supplies_the_namespace_with_its_case_intact() {
+    // This folder name used to be lowercased on the way out, on the
+    // assumption that Minecraft namespaces are lowercase. Nothing measured
+    // supports that: the game stored `CanopyPlayers:players` in a local
+    // world's database unaltered. Reporting an id that differs from the one
+    // on disk would break `delete`, which addresses the file by that id.
     let root = tempfile::tempdir().unwrap();
     let pack = root.path().join("Understudy");
     touch(
@@ -173,9 +178,9 @@ fn a_subdirectory_supplies_the_namespace_lowercased() {
     );
 
     let found = structures::list(&pack);
-    assert_eq!(found[0].id, "understudy:players");
+    assert_eq!(found[0].id, "Understudy:players");
     // A non-default namespace stays visible in the display name.
-    assert_eq!(found[0].name, "understudy:players");
+    assert_eq!(found[0].name, "Understudy:players");
 }
 
 #[test]
@@ -275,8 +280,35 @@ fn write_creates_the_structures_folder_and_any_namespace_directory() {
 }
 
 #[test]
-fn derive_name_lowercases_and_maps_spaces() {
-    assert_eq!(structures::derive_name("My House").unwrap(), "my_house");
+fn a_name_with_capitals_is_accepted() {
+    // Capitals are ordinary in real structure names: `10HzCounter` and
+    // `CanopyPlayers:players` are both measured in local worlds. A pack write
+    // that refused them could not take a copy of either.
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    let at = structures::write(&pack, "10HzCounter", b"x", false).unwrap();
+    assert_eq!(at, pack.join("structures/10HzCounter.mcstructure"));
+    assert!(at.is_file());
+}
+
+#[test]
+fn a_namespace_with_capitals_survives_the_round_trip() {
+    // The namespace is a directory name on the way in and is read back off
+    // the filesystem on the way out, so anything normalising one side and not
+    // the other shows up here as an id that does not match what was written.
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    structures::write(&pack, "CanopyPlayers:players", b"x", false).unwrap();
+
+    let listed = structures::list(&pack);
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].id, "CanopyPlayers:players");
+    assert_eq!(listed[0].name, "CanopyPlayers:players");
+}
+
+#[test]
+fn derive_name_keeps_case_and_maps_spaces() {
+    assert_eq!(structures::derive_name("My House").unwrap(), "My_House");
     assert_eq!(
         structures::derive_name("tower-2.v1_a").unwrap(),
         "tower-2.v1_a"
@@ -443,21 +475,21 @@ fn depth_does_not_change_the_flat_or_one_level_rules() {
 
     let ids: Vec<String> = structures::list(&pack).into_iter().map(|s| s.id).collect();
     assert!(ids.contains(&"mystructure:house".to_string()));
-    assert!(ids.contains(&"understudy:players".to_string()));
+    assert!(ids.contains(&"Understudy:players".to_string()));
     assert!(ids.contains(&"a:b/c/d".to_string()));
 }
 
 #[test]
-fn only_the_namespace_segment_is_lowercased() {
-    // Minecraft namespaces are lowercase, but the path after the namespace is
-    // part of the name and is left exactly as it sits on disk.
+fn every_segment_is_left_exactly_as_it_sits_on_disk() {
+    // Namespace, intermediate folders, and stem alike: the id is what the
+    // filesystem says, so what `list` prints is what `delete` can address.
     let root = tempfile::tempdir().unwrap();
     let pack = root.path().join("P");
     touch(
         &pack.join("structures/Stuff/Towers/Diamond.mcstructure"),
         b"x",
     );
-    assert_eq!(structures::list(&pack)[0].id, "stuff:Towers/Diamond");
+    assert_eq!(structures::list(&pack)[0].id, "Stuff:Towers/Diamond");
 }
 
 #[test]

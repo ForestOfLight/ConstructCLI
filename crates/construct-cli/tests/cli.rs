@@ -1136,11 +1136,11 @@ fn import_derives_a_name_from_the_file_stem_and_reports_it() {
     );
 
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["name"], "my_house");
-    assert_eq!(v["id"], "mystructure:my_house");
+    assert_eq!(v["name"], "My_House");
+    assert_eq!(v["id"], "mystructure:My_House");
     let written = root
         .path()
-        .join("development_behavior_packs/Construct[BP]/structures/my_house.mcstructure");
+        .join("development_behavior_packs/Construct[BP]/structures/My_House.mcstructure");
     assert_eq!(std::fs::read(&written).unwrap(), b"structure-bytes");
 }
 
