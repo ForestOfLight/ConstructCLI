@@ -34,8 +34,13 @@ arrived.
 `patches/` holds the fixes. `scripts/setup-deps.sh` clones each upstream repo at its pinned
 commit and applies them into `checkouts/`, which is git-ignored.
 
-All three upstreams are Apache-2.0, which permits this. The fixes are intended to go
-upstream; when they land, or when the patched branches are published as forks, this
-directory is deleted and the workspace depends on a URL again.
+`bedrock-rs` and `nbtx` are Apache-2.0, which permits this. `leveldb-sys` declares no licence
+of its own — no top-level `LICENSE` file, no `license` field in its `Cargo.toml` — and the
+only licence text anywhere in its checkout is Google's BSD-3-Clause for the vendored C++
+leveldb under `ffi/leveldb/`, which is a statement about that vendored code, not about
+`leveldb-sys` itself. Its terms should be confirmed with its authors before this project is
+published. The fixes are intended to go upstream; when they land, or when the patched
+branches are published as forks, this directory is deleted and the workspace depends on a URL
+again.
 
 Run `scripts/setup-deps.sh` once after cloning.
