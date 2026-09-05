@@ -159,7 +159,7 @@ way the empty-list one just did.
 ## Merge holds the whole result in memory
 
 `merge` allocates two `i32` vectors covering the union bounding box, so a merge of pieces far
-apart costs 8 bytes per block of mostly-void space. `MergeOptions::max_volume` caps this at 64
+apart costs 8 bytes per block of mostly-empty space. `MergeOptions::max_volume` caps this at 64
 million blocks (~512 MB) and refuses beyond it. A sparse representation would lift the cap, but
 nothing observed needs it: the largest real structure measured is 81×81×81.
 
@@ -167,8 +167,12 @@ nothing observed needs it: the largest real structure measured is 81×81×81.
 
 Nothing verifies the structures are pieces of the same build rather than unrelated saves that
 happen to have distinct origins. The identical-origin refusal catches the common mistake; a
-merge of genuinely unrelated structures produces a mostly-void result the user did not want,
-with no warning beyond the size one.
+merge of genuinely unrelated structures produces a mostly-air result the user did not want,
+with no warning beyond the size one. Filling gaps with air raised the stakes here: the unwanted
+result no longer merely fails to place blocks between the pieces, it clears that space. The
+size warning fires for a union past 64x256x64, which is the case for any two structures far
+enough apart to matter, but it says "placing may be slow" rather than "this will clear a
+corridor".
 
 ## The `--on-overlap last` test does not discriminate
 

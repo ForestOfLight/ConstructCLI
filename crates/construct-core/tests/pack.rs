@@ -143,6 +143,166 @@ fn the_pack_roots_are_the_documented_folder_names() {
     );
 }
 
+// --- where a world's structures live ---
+
+/// A world directory under `com_mojang/minecraftWorlds/`, so that
+/// `world_behavior_root` and the shared root are the real two places.
+fn world_in(com_mojang: &Path, folder: &str) -> World {
+    let dir = com_mojang.join("minecraftWorlds").join(folder);
+    std::fs::create_dir_all(&dir).unwrap();
+    test_world(&dir)
+}
+
+#[test]
+fn a_world_with_no_pack_of_its_own_has_no_home_yet() {
+    // Not an error and not the shared pack: the shared copy serves every
+    // world, so it can never be where one world's structures are written.
+    let root = tempfile::tempdir().unwrap();
+    make_pack(
+        &root.path().join("development_behavior_packs"),
+        "Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        false,
+    );
+    let world = world_in(root.path(), "Test");
+    assert!(pack::home(&world).is_none());
+}
+
+#[test]
+fn the_structures_pack_is_the_home_when_there_is_one() {
+    let root = tempfile::tempdir().unwrap();
+    let world = world_in(root.path(), "Test");
+    let created = pack::shell::create(&world, None).unwrap();
+
+    let home = pack::home(&world).expect("the shell pack is a home");
+    assert_eq!(home.kind, pack::HomeKind::StructuresPack);
+    assert_eq!(home.dir, created.dir);
+    assert_eq!(home.kind.scope(), pack::Scope::WorldLocal);
+}
+
+#[test]
+fn a_worlds_own_construct_outranks_a_structures_pack() {
+    // A world whose Construct is its own already keeps structures per-world;
+    // writing into a second pack beside it would split them in two.
+    let root = tempfile::tempdir().unwrap();
+    let world = world_in(root.path(), "Test");
+    pack::shell::create(&world, None).unwrap();
+    let local = make_pack(
+        &pack::world_behavior_root(&world),
+        "Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        false,
+    );
+
+    let home = pack::home(&world).expect("home");
+    assert_eq!(home.kind, pack::HomeKind::ConstructInWorld);
+    assert_eq!(home.dir, local);
+}
+
+#[test]
+fn a_world_on_the_shared_construct_is_served_by_it_and_by_its_own_pack() {
+    let root = tempfile::tempdir().unwrap();
+    let shared = make_pack(
+        &root.path().join("development_behavior_packs"),
+        "Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        false,
+    );
+    let world = world_in(root.path(), "Test");
+    let shell = pack::shell::create(&world, None).unwrap();
+
+    let serving = pack::serving(&world, &test_installation(root.path()));
+    assert_eq!(
+        serving.iter().map(|h| h.kind).collect::<Vec<_>>(),
+        vec![
+            pack::HomeKind::SharedConstruct,
+            pack::HomeKind::StructuresPack
+        ]
+    );
+    assert_eq!(serving[0].dir, shared);
+    assert_eq!(serving[1].dir, shell.dir);
+}
+
+#[test]
+fn a_worlds_own_construct_hides_the_shared_one_from_that_world() {
+    // Both copies carry Construct's header UUID, so the game loads the
+    // world's and never the shared one. Listing the shared copy's structures
+    // for this world would name structures it cannot see.
+    let root = tempfile::tempdir().unwrap();
+    make_pack(
+        &root.path().join("development_behavior_packs"),
+        "Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        false,
+    );
+    let world = world_in(root.path(), "Test");
+    let local = make_pack(
+        &pack::world_behavior_root(&world),
+        "Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 1, 0],
+        false,
+    );
+
+    let serving = pack::serving(&world, &test_installation(root.path()));
+    assert_eq!(
+        serving.iter().map(|h| h.kind).collect::<Vec<_>>(),
+        vec![pack::HomeKind::ConstructInWorld]
+    );
+    assert_eq!(serving[0].dir, local);
+}
+
+#[test]
+fn the_structures_pack_is_a_readable_behaviour_pack_with_a_structures_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let world = world_in(root.path(), "Test");
+    let icon_src = root.path().join("Construct[BP]");
+    std::fs::create_dir_all(&icon_src).unwrap();
+    std::fs::write(icon_src.join("pack_icon.png"), b"PNG-BYTES").unwrap();
+
+    let created = pack::shell::create(&world, Some(&icon_src)).unwrap();
+    assert_eq!(created.manifest.uuid, pack::shell::UUID);
+    assert_eq!(created.manifest.name, pack::shell::NAME);
+    assert!(structures::dir(&created.dir).is_dir());
+    // The icon is copied from Construct so the two read as a pair in the
+    // game's pack list.
+    assert_eq!(
+        std::fs::read(created.dir.join("pack_icon.png")).unwrap(),
+        b"PNG-BYTES"
+    );
+    // And it is a *behaviour* pack: a resource pack here would be enabled in
+    // the wrong list and load nothing.
+    assert_eq!(
+        created.manifest.kind,
+        construct_core::pack::manifest::PackKind::Behavior
+    );
+}
+
+#[test]
+fn creating_a_structures_pack_twice_keeps_what_is_in_it() {
+    // An interrupted run leaves a half-made pack; the next command repairs it
+    // rather than needing a reinstall, and must not drop structures doing so.
+    let root = tempfile::tempdir().unwrap();
+    let world = world_in(root.path(), "Test");
+    let first = pack::shell::create(&world, None).unwrap();
+    std::fs::write(
+        structures::dir(&first.dir).join("house.mcstructure"),
+        b"bytes",
+    )
+    .unwrap();
+
+    let again = pack::shell::create(&world, None).unwrap();
+    assert_eq!(again.dir, first.dir);
+    assert_eq!(
+        std::fs::read(structures::dir(&first.dir).join("house.mcstructure")).unwrap(),
+        b"bytes"
+    );
+}
+
 use construct_core::pack::structures;
 
 fn touch(path: &Path, bytes: &[u8]) {
@@ -335,7 +495,7 @@ fn pack_entries_carry_their_file_path() {
     let pack = root.path().join("Construct[BP]");
     touch(&pack.join("structures/bomber.mcstructure"), b"12345");
 
-    let entries = catalog::from_pack(&pack);
+    let entries = catalog::from_pack(&pack, construct_core::pack::Scope::WorldLocal);
     assert_eq!(entries[0].source, Source::Pack);
     assert_eq!(entries[0].id, "mystructure:bomber");
     assert_eq!(
@@ -353,6 +513,7 @@ fn unify_interleaves_both_sources_by_name() {
             source: Source::World,
             size_bytes: 1,
             path: None,
+            scope: None,
         },
         catalog::Entry {
             name: "zebra".into(),
@@ -360,6 +521,7 @@ fn unify_interleaves_both_sources_by_name() {
             source: Source::World,
             size_bytes: 1,
             path: None,
+            scope: None,
         },
     ];
     let pack = vec![catalog::Entry {
@@ -368,6 +530,7 @@ fn unify_interleaves_both_sources_by_name() {
         source: Source::Pack,
         size_bytes: 1,
         path: Some(std::path::PathBuf::from("/p/structures/barn.mcstructure")),
+        scope: None,
     }];
     let all = catalog::unify(world, pack);
     assert_eq!(

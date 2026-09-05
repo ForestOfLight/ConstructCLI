@@ -24,6 +24,11 @@ pub struct Cli {
     #[arg(long, global = true, value_enum)]
     pub source: Option<SourceArg>,
 
+    /// Disambiguate a structure name present in both packs a world sees —
+    /// its own and the installation's shared Construct.
+    #[arg(long, global = true, value_enum)]
+    pub pack: Option<PackArg>,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -32,6 +37,26 @@ pub struct Cli {
 pub enum SourceArg {
     World,
     Pack,
+}
+
+/// Which pack, when a world sees one name in both of the ones serving it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum PackArg {
+    /// The world's own pack — its structures pack, or its own copy of
+    /// Construct when that is what it runs.
+    World,
+    /// The installation's shared copy of Construct, which every world using
+    /// it sees.
+    Shared,
+}
+
+impl From<PackArg> for construct_core::pack::Scope {
+    fn from(p: PackArg) -> Self {
+        match p {
+            PackArg::World => Self::WorldLocal,
+            PackArg::Shared => Self::Shared,
+        }
+    }
 }
 
 impl From<SourceArg> for construct_core::catalog::Source {
@@ -48,10 +73,11 @@ pub enum Command {
     /// List discovered worlds.
     Worlds,
 
-    /// List the structures in a world.
+    /// List the structures in a world, or in the shared pack with no world.
     List {
-        /// World name, qualified reference, or path.
-        world: String,
+        /// World name, qualified reference, or path. Without one, the
+        /// installation's shared Construct pack is listed on its own.
+        world: Option<String>,
     },
 
     /// Write structures out as .mcstructure files.

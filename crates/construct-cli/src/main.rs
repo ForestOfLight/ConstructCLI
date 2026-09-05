@@ -8,6 +8,7 @@ use construct_core::error::CoreError;
 use construct_core::install::releases;
 use construct_core::{config, discovery};
 use output::Out;
+use std::path::{Path, PathBuf};
 
 fn main() {
     let cli = Cli::parse();
@@ -105,9 +106,33 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
     match &cli.command {
         Command::Worlds if installations.is_empty() => Err(no_installations()),
         Command::Worlds => commands::worlds::run(&worlds, out),
-        Command::List { world } => {
+        Command::List { world: Some(world) } => {
             let w = resolve_world(world)?;
-            commands::list::run(&w, &installations, cli.source.map(Into::into), out)
+            commands::list::run(
+                &w,
+                &installations,
+                cli.source.map(Into::into),
+                cli.pack.map(Into::into),
+                out,
+            )
+        }
+        Command::List { world: None } => {
+            if cli.source == Some(cli::SourceArg::World) {
+                // Nothing to read: a world's structures live in a world's
+                // database, and no world was named. Usage error, not a
+                // failure — nothing was attempted.
+                eprintln!(
+                    "error: --source world needs a world to read from\n\n\
+                     construct list <world> --source world"
+                );
+                std::process::exit(2);
+            }
+            let installation = discovery::installation::choose(
+                &installations,
+                std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
+                loaded.config.default_installation.as_deref(),
+            )?;
+            commands::list::shared(installation, out)
         }
         Command::Export {
             world,
@@ -125,6 +150,27 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 );
                 std::process::exit(2);
             }
+            // `-o` names the file this writes, and the only file Minecraft
+            // loads is a `.mcstructure`. A missing extension is completed
+            // rather than refused — `-o castle` is unambiguous — but a
+            // different one is a mistake worth stopping: the bytes would be
+            // fine and the file would be one the game never offers to load.
+            let output = match output.as_deref().map(mcstructure_path) {
+                Some(Err(found)) => {
+                    eprintln!(
+                        "error: -o writes a .mcstructure file, but {found} was given\n\n\
+                         construct export <world> <structure> -o {}.mcstructure",
+                        output
+                            .as_deref()
+                            .and_then(|p| p.file_stem())
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "out".to_string())
+                    );
+                    std::process::exit(2);
+                }
+                other => other.map(|r| r.expect("Err handled above")),
+            };
+            let output = output.as_deref();
             if !*merge && structures.len() > 1 && output.is_some() {
                 // -o names a single file and cannot name several. Usage error,
                 // not a failure: nothing was attempted.
@@ -141,8 +187,9 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 &w,
                 &installations,
                 structures,
-                output.as_deref(),
+                output,
                 cli.source.map(Into::into),
+                cli.pack.map(Into::into),
                 cli.force,
                 *merge,
                 (*on_overlap).into(),
@@ -181,6 +228,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 &dst,
                 &installations,
                 cli.source.map(Into::into),
+                cli.pack.map(Into::into),
                 cli.force,
                 out,
             )
@@ -192,6 +240,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 structure,
                 &installations,
                 cli.source.map(Into::into),
+                cli.pack.map(Into::into),
                 out,
             )
         }
@@ -234,6 +283,24 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
             let client = github_client();
             commands::status::run(&client, installation, &worlds, out)
         }
+    }
+}
+
+/// `-o`'s path with the `.mcstructure` extension it must have, or the
+/// extension that was given instead.
+///
+/// Case-insensitive on the way in, because the filesystems this runs on are:
+/// refusing `-o CASTLE.MCSTRUCTURE` would refuse a name that already works.
+/// A path with no file name at all (`.`, `/`) is returned untouched — it is
+/// not a file this could correct, and the write below fails on its own terms
+/// with the real reason.
+fn mcstructure_path(path: &Path) -> std::result::Result<PathBuf, String> {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(e) if e.eq_ignore_ascii_case(construct_core::pack::structures::EXTENSION) => {
+            Ok(path.to_path_buf())
+        }
+        Some(other) => Err(format!(".{other}")),
+        None => Ok(path.with_extension(construct_core::pack::structures::EXTENSION)),
     }
 }
 
@@ -306,12 +373,23 @@ fn report(err: &CoreError) {
         }
         CoreError::AmbiguousStructure { name, sources } => {
             eprintln!("\n{name} exists in: {}", sources.join(", "));
-            eprintln!("\nDisambiguate with --source:");
-            eprintln!("  construct list <world> --source world   # or: --source pack");
+            // Two packs need `--pack`; `--source` cannot separate them, since
+            // both matches *are* pack entries. Saying "--source" there would
+            // send the user round a loop that never resolves.
+            if sources.iter().all(|s| s.starts_with("pack:")) {
+                eprintln!("\nBoth are packs this world sees. Pick one with --pack:");
+                eprintln!("  construct <command> ... --pack world   # or: --pack shared");
+            } else {
+                eprintln!("\nDisambiguate with --source:");
+                eprintln!("  construct list <world> --source world   # or: --source pack");
+            }
             // Construct's own list resolves this by letting the pack copy win
             // (§17). The CLI refuses instead — but the user is usually asking
             // which one the game shows, so answer it.
-            if sources.iter().any(|s| s == "pack") {
+            // `starts_with`, not equality: a pack entry is labelled by which
+            // pack it is in (`pack:world`, `pack:shared`), so matching the
+            // bare word would never fire.
+            if sources.iter().any(|s| s.starts_with("pack")) {
                 eprintln!("\nConstruct shows the pack copy in-game.");
             }
         }

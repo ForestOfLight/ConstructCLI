@@ -199,13 +199,92 @@ barn              world      4 KB
 imported_tower    pack      31 KB
 ```
 
+`list` with **no world** is the one listing that is about the installation rather than a
+world: it shows the shared pack's `structures/` alone, which is what every world using that
+pack gets. No world's own pack is in it and no database is opened, so it answers "what is in
+the shared pack?" without needing a world to ask through. `--source world` there is a usage
+error (exit 2) — a world's structures live in a world's database, and none was named.
+
 Every structure-taking command accepts a bare name and searches both sources. A name present
 in both is an error naming the qualified forms, with `--source world|pack` as the
 disambiguator — the same never-guess rule §6 applies to world references. `--source` also
 works as a plain filter on `list`.
 
+A world sees two *packs*, so one name can be in both — its own and the shared Construct's.
+`--source` cannot separate those: both matches are pack entries, and pointing at it would
+send the user round a loop that never resolves. **`--pack world|shared`** is the
+disambiguator for that case, in the same vocabulary `list` prints (`pack:world`,
+`pack:shared`) and the payloads carry (`scope`). It filters listings as well as resolving
+names. Naming a pack drops world-database entries: a pack filter is about packs, and a
+structure in a database is in none of them.
+
 This gives `delete` a useful asymmetry: `--source pack` is an `unlink` with none of §8's
 ceremony, while `--source world` is the only leveldb write in the tool.
+
+### Where a world's structures are managed
+
+A structure in a world's database belongs to that world and to nothing else. A structure in a
+pack belongs to the *pack*, and a pack can serve many worlds — which is what made "which
+worlds have which structures" hard to answer, and is the boundary this section draws.
+
+**Every world Construct is installed in has exactly one structures home**, and every write
+this tool makes for that world goes there:
+
+| Construct is installed | The structures home is |
+| --- | --- |
+| in the world (`<world>/behavior_packs/Construct[BP]`) | that pack's `structures/` |
+| in the shared root (`development_behavior_packs`) | a shell pack at `<world>/behavior_packs/ConstructStructures` |
+
+The shell pack holds a `manifest.json`, a `pack_icon.png` copied from the Construct pack it
+accompanies, and a `structures/` folder. Nothing else: no scripts, no dependencies, no
+resource-pack half. It exists because the game registers structures from **any** enabled
+behaviour pack — a file directly in `structures/` becomes `mystructure:<stem>`, which is
+exactly the namespace Construct's in-game list shows — so a pack that contains nothing but
+structures is enough, and needs no code to work.
+
+`install --world W` creates it and adds it to `world_behavior_packs.json` beside Construct.
+`import` and `copy` create it on demand when a world has none, so a world installed before
+this existed acquires one the first time something is written for it rather than failing with
+advice to reinstall. `delete` never creates one: it removes a file from whichever pack that
+file is actually in.
+
+**Reads are wider than writes.** `list W` reports everything the game will load for W, which
+is its database plus every pack serving it:
+
+- the world's own Construct copy, when it has one — the shared copy is then invisible to that
+  world, because both carry the same header UUID and the world's copy wins;
+- otherwise the shared Construct copy;
+- plus the shell pack, whenever one is present. Its UUID is its own, so it never contends
+  with either Construct copy.
+
+Each row says which, because that is the distinction that matters: a structure in the shell
+pack or in a world's own Construct belongs to that world, and one in the shared Construct
+appears in every world using it.
+
+```
+$ construct list release/Survival
+NAME              SOURCE        SIZE
+house             world        12 KB
+barn              world         4 KB
+imported_tower    pack:world   31 KB
+shared_prefab     pack:shared   8 KB
+```
+
+Structures already sitting in the shared pack are left there. They keep loading and keep
+being listed, marked `pack:shared`; nothing is moved automatically, because moving them would
+silently change what every other world sees.
+
+One consequence has no clean answer and is reported rather than resolved: a world can now see
+one name in two packs — `house` in the shared Construct and `house` in its own structures
+pack. The files do not collide, so §5's overwrite rule has nothing to refuse; the game loads
+both packs, logs a conflict, and picks a winner this tool cannot predict. `import` and `copy`
+therefore **warn** naming both packs, and `list` shows both rows with their scopes. Refusing
+instead would block the one path every existing user takes — giving a world copies of
+structures the shared pack already has.
+
+Commands that need *one* structure refuse such a name until `--pack` picks between them.
+Without that the name is unreachable: `delete` could neither remove the world's copy nor the
+shared one.
 
 ### Output
 
@@ -223,6 +302,12 @@ stream.
 
 ### Naming and collisions
 
+`-o` always names a `.mcstructure` file. A path with no extension gets one — `-o castle`
+writes `castle.mcstructure`, and the printed path is the one written — while a *different*
+extension is a usage error (exit 2), since the bytes would be right and the file would be one
+the game never offers to load. The check is case-insensitive: the filesystems this runs on
+are, so refusing `-o CASTLE.MCSTRUCTURE` would refuse a name that already works.
+
 A single `export` without `-o` writes `<structure-name>.mcstructure` into the current
 directory. Several structures without `--merge` write one file each under those same derived
 names, and `-o` is then a usage error, since it names a single file rather than several — the
@@ -230,9 +315,18 @@ collision rule below applies per file, so one existing target refuses the whole 
 before anything is written. `--merge` requires `-o`. World-source structure references are
 bare names, meaning the `mystructure` prefix, or explicit `prefix:name`.
 
-`import` derives the structure name from the file stem: lowercased, spaces to `_`, allowing
-`[a-z0-9_.-]`. Anything outside that set is **rejected rather than silently mangled**, since
-a mangled name is one Construct will not list. The derived name is always printed, and
+`import` derives the structure name from the file stem: trimmed, spaces to `_`, allowing
+`[A-Za-z0-9_.-]`. Anything outside that set is **rejected rather than silently mangled**, since
+a mangled name is one Construct will not list.
+
+**Case is preserved everywhere** — in a derived name, in `--name`, and in the namespace a
+subfolder supplies. The names the game itself stores keep their capitals: `10HzCounter` and
+`CanopyPlayers:players` are both real keys measured in local worlds, the second showing that
+Bedrock does not fold a namespace either. Lowercasing was the earlier rule and was mangling by
+the definition above: it made half the structures `list` prints unaddressable by `import
+--name`, `copy`, and `delete`. One consequence to know: on a case-insensitive filesystem —
+macOS's default — `House` and `house` are one file, so the second import refuses as a
+collision there while creating a separate file on Linux. The derived name is always printed, and
 `--name N` overrides it.
 
 **One collision rule everywhere:** `export -o`, `import`, and `copy` refuse when the target
@@ -240,10 +334,21 @@ already exists; `--force` overwrites. `--force` governs file collisions only —
 relaxes the LOCK refusal in §8. Construct's own pack files during an upgrade are a separate
 path and not governed by this rule, and `structures/` is never touched by an upgrade at all.
 
-`import` and `copy` write into Construct's `structures/` folder — never into a leveldb. With
-`--world W` they target `<world>/behavior_packs/Construct[BP]/structures/` when that world
-has a local copy of Construct, otherwise the installation's shared
-`development_behavior_packs` copy, saying which was chosen. Without `--world`, the
+`import` and `copy` write into a `structures/` folder — never into a leveldb. With `--world W`
+they target that world's structures home as defined above, creating the shell pack if it has
+none. Without `--world`, `import` targets the shared Construct pack deliberately: putting one
+structure into every world that uses it is a legitimate thing to ask for, and the output says
+so. Both commands name the destination in words, **saying in words which was chosen** — the shared pack
+("shared by every world") or that world's own ("that world only"). The written path names it
+too, but forty characters in, and this is the difference between a structure appearing in one
+world and in all of them. The warning about two copies existing is separate and still fires
+only when there are two; the destination line is printed on every write. `copy` reports the
+same choice as `scope` in its JSON payload, matching `import`.
+
+`delete` states the same thing in the other direction — "deleted X / from <which copy>" — for
+the same reason: removing a structure from the shared pack takes it away from every world
+using that pack, not only the world named on the command line. It carries `scope` in its
+payload too, `null` in the case where no pack was resolved at all. Without `--world`, the
 installation resolves by the same rule `install` and `status` use in §10 —
 `default_installation`, failing that the sole installation, failing that an error listing the
 candidates. Both state that the world must be reloaded before Construct sees the structure,
@@ -433,8 +538,23 @@ Merge:
    index a grid whose dimensions changed.
 6. Encode.
 
-Gaps between pieces are index **-1** (structure void), not air. Void leaves existing terrain
-untouched on placement; air would carve holes in whatever the structure is placed over.
+Gaps between pieces are filled with **air**, so placing the result clears the space between
+them rather than leaving whatever terrain the structure lands on. The cost is real and worth
+stating: the merged structure's footprint is the whole union bounding box, so placing a merge
+of two distant pieces clears everything between them. Two pieces 300 blocks apart clear a
+300-block corridor.
+
+A structure void a piece recorded *for itself* is not a gap. It is a builder saying "leave
+this alone", and it survives into the merged result as index **-1**. Only space no piece's
+bounding box covers is filled.
+
+The fill is layer 0 only. The second index layer is `-1` for most blocks in the files the game
+itself writes, and filling it would change the extra/liquid layer, which merging asks nothing
+about.
+
+Air a piece recorded is carried through as air, like any other block. The fill reuses an
+existing `minecraft:air` palette entry when a piece has one, and appends one — stamped with the
+highest block `version` in the merged palette — only when a gap actually exists.
 
 ### Overlap
 
@@ -509,11 +629,21 @@ format in practice. It remains reachable for `level.dat`, which is why the fidel
    existing install **by header UUID rather than folder name**.
 6. With `--world`, upsert both pack IDs into that world's `world_behavior_packs.json` and
    `world_resource_packs.json`.
-7. Attempt the Beta APIs flip in that world's `level.dat`, then re-read and verify.
+7. With `--world`, create that world's structures home if it has none — the shell pack of §5,
+   with the icon copied from the Construct pack just placed — and upsert its pack ID too. A
+   world whose Construct copy is its own already has a home and gets no shell pack.
+8. Attempt the Beta APIs flip in that world's `level.dat`, then re-read and verify.
 
 With no `--world`, `install` and `status` act on `default_installation` from config; failing
 that, the sole installation if only one exists; failing that, they error listing the
 candidates. Same never-guess rule as world references.
+
+`status` also reports **where this installation's worlds keep their structures**: a count for
+the shared pack, then one per world that has a home of its own. `list` answers that question
+one world at a time, and a structure in the shared pack is in every world using it — only the
+cross-world view shows both at a glance. A world with no home yet has no row: the shared line
+already says everything that world sees. It stays a cheap command — a directory listing per
+pack, no database opened.
 
 ### The world pack JSON files
 
@@ -531,6 +661,35 @@ installed pack's real header version over a stale one.
 
 `world_behavior_pack_history.json` sits beside them and is Minecraft's own record. It is
 never written.
+
+Unlike `level.dat`, these files are **assumed not to be rewritten from memory while the world
+is open**, so creating a structures home carries no in-use refusal. That assumption is
+untested — §16 carries the check — and if it turns out to be wrong, creating a home has to
+join the §8 write path that refuses with exit 4.
+
+### The structures shell pack
+
+Fixed identity, so it can be found by UUID the way Construct is, never by folder name:
+
+```json
+{
+  "format_version": 2,
+  "header": {
+    "name": "Construct Structures",
+    "uuid": "9f7d83af-309e-4997-840e-e9c350435e83",
+    "min_engine_version": [1, 21, 0],
+    "version": [1, 0, 0]
+  },
+  "modules": [
+    { "type": "data", "uuid": "bb8e1f57-5e69-42f6-b1e1-cd4a2a717c49", "version": [1, 0, 0] }
+  ]
+}
+```
+
+One UUID serves every world: two worlds each holding a copy is no more a conflict than two
+worlds each holding their own copy of Construct. `min_engine_version` is deliberately low —
+the pack has no scripts and no API surface to be incompatible with, and a floor above the
+running engine is the only value the game rejects.
 
 Files in the wild mix tab-indented entries with hand-edited ones, so they are parsed leniently
 and rewritten whole. Formatting is not preserved: the game parses JSON, not whitespace.
@@ -689,7 +848,8 @@ waterlogged block (second index layer), one with entities, and one with void gap
   the claim that most commands avoid the codec is false.
 - *Merge placement* — merging one structure yields it unchanged; and for any world coordinate
   and layer, the merged result holds the block from the **last** contributing piece in
-  argument order, or void where none contributed. Stated in terms of argument order rather
+  argument order; on layer 0, air where no piece's bounding box reaches, and void where the
+  covering piece recorded one. Stated in terms of argument order rather
   than "whichever source had a block," which was ambiguous under overlap.
 
 Overlap gets its own tests: two pieces disagreeing at a coordinate resolve per
@@ -700,7 +860,8 @@ comparison, so it is asserted explicitly.
 Reference resolution is its own table-driven suite: a name in only `world`, only `pack`, both
 (error naming both forms), neither (error suggesting near matches), plus `--source` filtering
 and the `prefix:name` form. Name derivation from file stems gets cases for spaces, capitals,
-and characters outside `[a-z0-9_.-]` — asserting rejection, not mangling. Collisions are
+and characters outside `[A-Za-z0-9_.-]` — asserting rejection for the last, and preservation,
+not mangling, for the first two. Collisions are
 asserted for `export -o`, `import`, and `copy`: refuse by default, overwrite under `--force`.
 
 Merge results are compared **semantically** on decoded structures. NBT key ordering is not

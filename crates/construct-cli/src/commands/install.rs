@@ -22,8 +22,10 @@ struct Payload {
     preserved: usize,
     world: Option<String>,
     beta_apis: Option<bool>,
+    structures_pack: Option<String>,
     enable_error: Option<String>,
     level_dat_error: Option<String>,
+    structures_error: Option<String>,
 }
 
 /// Confirms an extracted pack really is Construct's, by header UUID rather
@@ -115,6 +117,8 @@ pub fn run(
     // Everything below this line is the `--world` half.
     let mut level_dat_error = None;
     let mut enable_error = None;
+    let mut structures_error = None;
+    let mut structures_pack = None;
     let mut beta_apis = None;
     if let Some(world) = world {
         // Placement above always writes into the installation's shared
@@ -173,6 +177,28 @@ pub fn run(
             }
         }
 
+        // Give the world somewhere of its own to keep structures. A world
+        // whose Construct copy is its own already has a per-world
+        // `structures/` and needs no second pack; every other world would
+        // otherwise share the installation's, which is what made "which
+        // worlds have which structures" unanswerable.
+        match pack::home(world) {
+            Some(home) => {
+                out.line(format!("  structures in {}", home.dir.display()));
+                structures_pack = Some(home.dir.display().to_string());
+            }
+            None => match crate::commands::create_structures_pack(world, &bp.dir) {
+                Ok(created) => {
+                    out.line(format!("  structures pack at {}", created.dir.display()));
+                    structures_pack = Some(created.dir.display().to_string());
+                }
+                Err(e) => {
+                    out.warn(format!("could not create the structures pack: {e}"));
+                    structures_error = Some(e.to_string());
+                }
+            },
+        }
+
         let level = world.path.join("level.dat");
         // The packs are already in place; from here a failure is partial, not
         // total. Back up before touching anything: a backup taken after a
@@ -190,13 +216,14 @@ pub fn run(
             }
         }
     }
-    // On the exit-5 branch below, reloading is not the next step — finishing
-    // the enable and/or the flip is. Say so, rather than repeating advice
-    // that would tell the user the job is done when it is not.
-    if level_dat_error.is_none() && enable_error.is_none() {
+    // Only worth saying without `--world`. A `--world` install refuses to run
+    // at all while the world is open (the check at the top of this function),
+    // so by the time it succeeds there is no live session to reload — the user
+    // opens the world and Construct is already there. That also disposes of
+    // the exit-5 branch below, which only `--world` can reach: what is left
+    // there is finishing the enable and/or the flip, not reloading.
+    if world.is_none() {
         out.line("Reload the world before Construct appears.");
-    } else {
-        out.line("Reload the world once the steps below are finished.");
     }
 
     out.emit(Payload {
@@ -207,15 +234,17 @@ pub fn run(
         preserved: bp.preserved,
         world: world.map(|w| w.display_name.clone()),
         beta_apis,
+        structures_pack,
         enable_error: enable_error.clone(),
         level_dat_error: level_dat_error.clone(),
+        structures_error: structures_error.clone(),
     });
 
     // §11: the packs installed but a later step failing is partial, not
     // total, success — exit 5 and name the remaining manual step(s). Exiting
     // here rather than returning an error keeps the success payload above
     // intact, the same way main.rs already handles the `-o` usage error.
-    if enable_error.is_some() || level_dat_error.is_some() {
+    if enable_error.is_some() || level_dat_error.is_some() || structures_error.is_some() {
         let world_name = world.map(|w| w.display_name.as_str()).unwrap_or("<world>");
         eprintln!("\nThe packs are installed.");
         if enable_error.is_some() {
@@ -231,6 +260,13 @@ pub fn run(
             eprintln!(
                 "Turn Beta APIs on yourself, in the world's settings under Experiments, \
                  or with:\n  construct experiment {world_name} --beta-apis on"
+            );
+        }
+        if structures_error.is_some() {
+            eprintln!(
+                "The world has nowhere of its own to keep structures. Re-run to try again \
+                 — `import` and `copy` also create it when they need it:\n  \
+                 construct install --world {world_name}"
             );
         }
         std::process::exit(5);

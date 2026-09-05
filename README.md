@@ -59,7 +59,7 @@ construct worlds                          # every world this machine can see
 construct list <world>                    # structures in a world
 construct export <world> <structure>      # write <structure>.mcstructure
 construct export <world> <s1> <s2>        # one file each
-construct export <world> <s> -o out.mcstructure
+construct export <world> <s> -o out.mcstructure        # -o always writes a .mcstructure; a bare name gets the extension
 construct install                         # download and install the latest Construct
 construct install --version 1.2.0         # a specific release
 construct install --world <world>         # also enable it in a world and turn Beta APIs on
@@ -68,7 +68,9 @@ construct import house.mcstructure --world <world>    # into that world's own Co
 construct import house.mcstructure --name my_house    # override the derived name
 construct copy <src-world> house <dst-world>          # read from one world, write into another's Construct
 construct delete <world> house --source pack          # remove an imported structure
-construct status                          # installed version, latest available, and where it's enabled
+construct delete <world> house --pack world          # ...when both packs have that name
+construct list                            # just the shared pack: what every world using it gets
+construct status                          # installed version, latest available, where it's enabled, and where structures live
 construct experiment <world> --beta-apis         # show the current toggle
 construct experiment <world> --beta-apis on      # turn it on
 ```
@@ -82,19 +84,47 @@ warning: 1,204 blocks overlapped between "north_wing" and "tower"
 wrote castle.mcstructure (2.1 MB) — 48 x 31 x 52 from 2 structures
 ```
 
-Gaps between the pieces are structure void, so placing the result leaves the terrain
-between them untouched. Where two pieces both have a block, the one named later wins;
-`--on-overlap first` reverses that and `--on-overlap error` refuses instead.
+Gaps between the pieces are filled with air, so placing the result clears the space
+between them. The merged structure's footprint is the whole union of the pieces, so
+pieces saved far apart clear everything in between — a structure void a piece recorded
+for itself is kept, but empty space is not. Where two pieces both have a block, the one
+named later wins; `--on-overlap first` reverses that and `--on-overlap error` refuses
+instead.
 
-`import`, `copy`, and `delete` all write into Construct's `structures/`
-folder, never into a world's database — reload the world before Construct
-shows the change. `delete` currently only removes an imported structure
+`import`, `copy`, and `delete` all write into a `structures/` folder, never
+into a world's database — reload the world before Construct shows the change.
+
+**Structures belong to a world.** Every world Construct is installed in gets
+one structures home: its own copy of Construct when it has one, otherwise a
+small `ConstructStructures` pack — a manifest, an icon, and a `structures/`
+folder — created inside the world by `construct install --world`, or by the
+first `import` or `copy` that needs it. That is where per-world writes go, so
+a structure imported for one world does not turn up in every other.
+
+`list` reports everything a world actually sees, which is wider than where it
+writes: its database, its own pack, and the shared Construct's `structures/`
+when that is the copy it runs. Each row says which, because that is the
+difference between a structure being yours and being everyone's:
+
+```console
+$ construct list "My Survival"
+NAME                     SOURCE          SIZE
+house                    world         12.0 KB
+imported_tower           pack:world    31.0 KB
+shared_prefab            pack:shared    8.0 KB
+```
+
+Structures already in the shared pack stay there and keep working; nothing is
+moved for you. Importing a name a world already sees from the shared pack
+warns, because the game will load both and log a conflict. `delete` currently only removes an imported structure
 (`--source pack`); removing one from a world's *database* is stage 4, the
 only leveldb write this tool will ever make, and `--source world` refuses
 with a usage error until then.
 
 A name — from `--name`, or derived from the file stem when it's omitted —
-may use only `a-z0-9_.-`; a `/` is refused. `list` reports structures
+may use only `A-Za-z0-9_.-`; a `/` is refused. Capitals are kept, not folded:
+the game's own names carry them (`10HzCounter`, `CanopyPlayers:players`), so a
+derived name differs from the file stem only where a space became `_`. `list` reports structures
 Construct or a hand-edited pack nested at any depth, but nothing this tool
 *writes* creates a nested path: `/` is exactly the character that makes path
 traversal possible, the same class of bug `export`'s derived filenames

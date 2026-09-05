@@ -1,6 +1,7 @@
 //! Construct on disk: where its packs live and what is inside their `structures/`.
 
 pub mod manifest;
+pub mod shell;
 pub mod structures;
 
 use crate::discovery::{Installation, World};
@@ -109,6 +110,106 @@ pub fn for_world(world: &World, installation: &Installation) -> Result<Target> {
             searched: vec![local_root, shared_root],
         }),
     }
+}
+
+/// A pack whose `structures/` folder this tool reads or writes for one world.
+#[derive(Debug, Clone)]
+pub struct Home {
+    pub dir: PathBuf,
+    pub kind: HomeKind,
+}
+
+/// Which of the three places a world's structures can sit in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HomeKind {
+    /// The world's own copy of Construct.
+    ConstructInWorld,
+    /// The world's structures shell pack (`shell::DIR_NAME`).
+    StructuresPack,
+    /// The installation's shared copy of Construct, which serves every world
+    /// that has no copy of its own.
+    SharedConstruct,
+}
+
+impl HomeKind {
+    /// Whether structures here belong to one world or to every world the
+    /// shared installation serves. This is the distinction commands report.
+    pub fn scope(self) -> Scope {
+        match self {
+            HomeKind::ConstructInWorld | HomeKind::StructuresPack => Scope::WorldLocal,
+            HomeKind::SharedConstruct => Scope::Shared,
+        }
+    }
+}
+
+/// Where this tool writes structures for `world`, or `None` when the world has
+/// nowhere yet and a shell pack has to be created first.
+///
+/// A world's own copy of Construct already has a per-world `structures/`, so
+/// it is the home when present; splitting one world's structures across it and
+/// a shell pack beside it would divide them for no gain. The shared copy is
+/// never a home: writing there would put the structure in every world.
+pub fn home(world: &World) -> Option<Home> {
+    let local_root = world_behavior_root(world);
+    if let Some(pack) = find_by_uuid(&local_root, CONSTRUCT_BP_UUID) {
+        return Some(Home {
+            dir: pack.dir,
+            kind: HomeKind::ConstructInWorld,
+        });
+    }
+    find_by_uuid(&local_root, shell::UUID).map(|pack| Home {
+        dir: pack.dir,
+        kind: HomeKind::StructuresPack,
+    })
+}
+
+/// Every pack whose `structures/` the game loads for `world`, home first.
+///
+/// Wider than [`home`] on purpose: reads report what the world actually has,
+/// and a world running the shared Construct really does see that pack's
+/// structures. Empty only when Construct is installed nowhere this world can
+/// reach — the caller turns that into [`CoreError::ConstructNotInstalled`],
+/// since an empty list and "no Construct at all" are different answers.
+///
+/// The two Construct copies never both appear: they carry the same header
+/// UUID, so a world holding its own copy loads that one and never the shared
+/// one. The shell pack has a UUID of its own and so is always additive.
+pub fn serving(world: &World, installation: &Installation) -> Vec<Home> {
+    let local_root = world_behavior_root(world);
+    let mut out = Vec::new();
+
+    match find_by_uuid(&local_root, CONSTRUCT_BP_UUID) {
+        Some(pack) => out.push(Home {
+            dir: pack.dir,
+            kind: HomeKind::ConstructInWorld,
+        }),
+        None => {
+            if let Some(pack) = find_by_uuid(
+                &behavior_root(&installation.dev_pack_root),
+                CONSTRUCT_BP_UUID,
+            ) {
+                out.push(Home {
+                    dir: pack.dir,
+                    kind: HomeKind::SharedConstruct,
+                });
+            }
+        }
+    }
+    if let Some(pack) = find_by_uuid(&local_root, shell::UUID) {
+        out.push(Home {
+            dir: pack.dir,
+            kind: HomeKind::StructuresPack,
+        });
+    }
+    out
+}
+
+/// The roots [`serving`] looked in, for the error when it found nothing.
+pub fn searched_roots(world: &World, installation: &Installation) -> Vec<PathBuf> {
+    vec![
+        world_behavior_root(world),
+        behavior_root(&installation.dev_pack_root),
+    ]
 }
 
 /// The Construct copy in an installation's shared root.

@@ -5,6 +5,7 @@
 //! drives. Stage 1 populates only [`Source::World`]; stage 2 adds packs.
 
 use crate::error::{CoreError, Result};
+use crate::pack::Scope;
 use crate::store::{StructureStore, key};
 use std::path::Path;
 
@@ -34,6 +35,25 @@ pub struct Entry {
     /// Where the bytes live, for [`Source::Pack`]. `None` for world structures,
     /// which live in a database rather than a file.
     pub path: Option<std::path::PathBuf>,
+    /// For a pack entry, whether that pack serves this world alone or every
+    /// world the shared installation serves. `None` for world entries, which
+    /// are per-world by construction.
+    pub scope: Option<Scope>,
+}
+
+impl Entry {
+    /// How this entry is named in a listing and in an ambiguity error.
+    ///
+    /// `pack` alone was ambiguous once a world could see two packs at
+    /// once — an error reading "found in pack and pack" names nothing.
+    pub fn source_label(&self) -> &'static str {
+        match (self.source, self.scope) {
+            (Source::World, _) => "world",
+            (Source::Pack, Some(Scope::WorldLocal)) => "pack:world",
+            (Source::Pack, Some(Scope::Shared)) => "pack:shared",
+            (Source::Pack, None) => "pack",
+        }
+    }
 }
 
 /// The order `list` presents and every command resolves against.
@@ -55,14 +75,15 @@ pub fn from_world(store: &dyn StructureStore) -> Result<Vec<Entry>> {
             source: Source::World,
             size_bytes,
             path: None,
+            scope: None,
         })
         .collect();
     sort(&mut out);
     Ok(out)
 }
 
-/// Every structure file in a pack.
-pub fn from_pack(pack_dir: &Path) -> Vec<Entry> {
+/// Every structure file in a pack, tagged with how far that pack reaches.
+pub fn from_pack(pack_dir: &Path, scope: Scope) -> Vec<Entry> {
     crate::pack::structures::list(pack_dir)
         .into_iter()
         .map(|s| Entry {
@@ -71,6 +92,7 @@ pub fn from_pack(pack_dir: &Path) -> Vec<Entry> {
             source: Source::Pack,
             size_bytes: s.size_bytes,
             path: Some(s.path),
+            scope: Some(scope),
         })
         .collect()
 }
@@ -88,12 +110,26 @@ pub fn unify(world: Vec<Entry>, pack: Vec<Entry>) -> Vec<Entry> {
 }
 
 /// Finds exactly one structure by name, never guessing between sources.
-pub fn resolve(name: &str, entries: &[Entry], source: Option<Source>) -> Result<Entry> {
+///
+/// `pack_scope` narrows to one pack when a world sees the same name in two of
+/// them — its own and the shared installation's. Without it such a name has no
+/// single answer, and this refuses rather than picking: the two files are
+/// different structures that happen to share a name, and guessing which one a
+/// `delete` meant is the guess with the worst consequence.
+pub fn resolve(
+    name: &str,
+    entries: &[Entry],
+    source: Option<Source>,
+    pack_scope: Option<Scope>,
+) -> Result<Entry> {
     let qualified = key::qualify(name);
     let matches: Vec<&Entry> = entries
         .iter()
         .filter(|e| e.name == name || e.id == qualified)
         .filter(|e| source.is_none_or(|s| e.source == s))
+        // A pack filter is about packs: naming one implies pack entries, so a
+        // world-database entry (which has no pack scope) falls out here.
+        .filter(|e| pack_scope.is_none_or(|s| e.scope == Some(s)))
         .collect();
 
     match matches.as_slice() {
@@ -106,7 +142,7 @@ pub fn resolve(name: &str, entries: &[Entry], source: Option<Source>) -> Result<
             name: name.to_string(),
             sources: matches
                 .iter()
-                .map(|e| e.source.as_str().to_string())
+                .map(|e| e.source_label().to_string())
                 .collect(),
         }),
     }
@@ -158,6 +194,7 @@ mod tests {
                 source: Source::World,
                 size_bytes: 12,
                 path: None,
+                scope: None,
             },
             Entry {
                 name: "barn".into(),
@@ -165,6 +202,7 @@ mod tests {
                 source: Source::World,
                 size_bytes: 4,
                 path: None,
+                scope: None,
             },
             Entry {
                 name: "tower".into(),
@@ -172,6 +210,7 @@ mod tests {
                 source: Source::Pack,
                 size_bytes: 31,
                 path: None,
+                scope: None,
             },
         ]
     }
@@ -193,7 +232,7 @@ mod tests {
     #[test]
     fn resolves_a_unique_bare_name() {
         assert_eq!(
-            resolve("house", &entries(), None).unwrap().id,
+            resolve("house", &entries(), None, None).unwrap().id,
             "mystructure:house"
         );
     }
@@ -207,9 +246,10 @@ mod tests {
             source: Source::Pack,
             size_bytes: 9,
             path: None,
+            scope: None,
         });
         assert!(matches!(
-            resolve("house", &e, None),
+            resolve("house", &e, None, None),
             Err(CoreError::AmbiguousStructure { .. })
         ));
     }
@@ -223,13 +263,16 @@ mod tests {
             source: Source::Pack,
             size_bytes: 9,
             path: None,
+            scope: None,
         });
         assert_eq!(
-            resolve("house", &e, Some(Source::Pack)).unwrap().size_bytes,
+            resolve("house", &e, Some(Source::Pack), None)
+                .unwrap()
+                .size_bytes,
             9
         );
         assert_eq!(
-            resolve("house", &e, Some(Source::World))
+            resolve("house", &e, Some(Source::World), None)
                 .unwrap()
                 .size_bytes,
             12
@@ -239,7 +282,7 @@ mod tests {
     #[test]
     fn a_missing_structure_suggests_near_matches() {
         let CoreError::StructureNotFound { near, .. } =
-            resolve("hous", &entries(), None).unwrap_err()
+            resolve("hous", &entries(), None, None).unwrap_err()
         else {
             panic!("expected StructureNotFound");
         };
@@ -249,7 +292,9 @@ mod tests {
     #[test]
     fn a_qualified_name_resolves() {
         assert_eq!(
-            resolve("mystructure:house", &entries(), None).unwrap().name,
+            resolve("mystructure:house", &entries(), None, None)
+                .unwrap()
+                .name,
             "house"
         );
     }
@@ -257,7 +302,7 @@ mod tests {
     #[test]
     fn filtering_by_a_source_with_no_matches_is_not_found() {
         assert!(matches!(
-            resolve("barn", &entries(), Some(Source::Pack)),
+            resolve("barn", &entries(), Some(Source::Pack), None),
             Err(CoreError::StructureNotFound { .. })
         ));
     }
@@ -273,6 +318,7 @@ mod tests {
                 source: Source::Pack,
                 size_bytes: 1,
                 path: None,
+                scope: None,
             },
             Entry {
                 name: "a".into(),
@@ -280,6 +326,7 @@ mod tests {
                 source: Source::World,
                 size_bytes: 1,
                 path: None,
+                scope: None,
             },
         ];
         let mut sorted = entries.clone();
@@ -299,6 +346,7 @@ mod tests {
             source: Source::Pack,
             size_bytes: 10,
             path: Some(path),
+            scope: None,
         };
         assert_eq!(read_entry(&entry, None).unwrap(), b"pack-bytes");
     }
@@ -312,6 +360,7 @@ mod tests {
             source: Source::World,
             size_bytes: 11,
             path: None,
+            scope: None,
         };
         assert_eq!(read_entry(&entry, Some(&store)).unwrap(), b"world-bytes");
     }
@@ -324,9 +373,68 @@ mod tests {
             source: Source::World,
             size_bytes: 11,
             path: None,
+            scope: None,
         };
         assert!(matches!(
             read_entry(&entry, None),
+            Err(CoreError::StructureNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn a_pack_filter_picks_between_two_packs() {
+        // The case the filter exists for: one name, two packs serving one
+        // world. Without it this name resolves to nothing usable.
+        let e = vec![
+            Entry {
+                name: "house".into(),
+                id: "mystructure:house".into(),
+                source: Source::Pack,
+                size_bytes: 1,
+                path: None,
+                scope: Some(Scope::Shared),
+            },
+            Entry {
+                name: "house".into(),
+                id: "mystructure:house".into(),
+                source: Source::Pack,
+                size_bytes: 2,
+                path: None,
+                scope: Some(Scope::WorldLocal),
+            },
+        ];
+        assert!(resolve("house", &e, None, None).is_err(), "ambiguous");
+        assert_eq!(
+            resolve("house", &e, None, Some(Scope::Shared))
+                .unwrap()
+                .size_bytes,
+            1
+        );
+        assert_eq!(
+            resolve("house", &e, None, Some(Scope::WorldLocal))
+                .unwrap()
+                .size_bytes,
+            2
+        );
+    }
+
+    #[test]
+    fn a_pack_filter_excludes_world_database_entries() {
+        // A pack filter is about packs. A world's database structure has no
+        // pack to be in, so naming one drops it — otherwise `--pack world`
+        // would still resolve to a database entry and delete would refuse a
+        // world delete it never meant to attempt.
+        let e = vec![Entry {
+            name: "house".into(),
+            id: "mystructure:house".into(),
+            source: Source::World,
+            size_bytes: 1,
+            path: None,
+            scope: None,
+        }];
+        assert!(resolve("house", &e, None, None).is_ok());
+        assert!(matches!(
+            resolve("house", &e, None, Some(Scope::WorldLocal)),
             Err(CoreError::StructureNotFound { .. })
         ));
     }
@@ -340,8 +448,10 @@ mod tests {
             source: Source::Pack,
             size_bytes: 9,
             path: None,
+            scope: None,
         });
-        let CoreError::AmbiguousStructure { sources, .. } = resolve("house", &e, None).unwrap_err()
+        let CoreError::AmbiguousStructure { sources, .. } =
+            resolve("house", &e, None, None).unwrap_err()
         else {
             panic!("expected AmbiguousStructure");
         };

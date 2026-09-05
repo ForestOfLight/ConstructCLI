@@ -47,17 +47,19 @@ pub fn run(
         }
     };
 
-    let target = match world {
-        Some(w) => pack::for_world(w, installation)?,
-        None => pack::for_installation(installation)?,
+    // With a world, the write belongs in that world's structures home — its
+    // own copy of Construct if it has one, else its structures pack, created
+    // here if it has none. Without a world there is no per-world home to
+    // choose, and the shared Construct is the deliberate answer: "put this in
+    // every world that uses it" is a thing to want, and the line below says
+    // that is what happened.
+    let home = match world {
+        Some(w) => crate::commands::home_for_write(w, installation, out)?,
+        None => pack::Home {
+            dir: pack::for_installation(installation)?.pack.dir,
+            kind: pack::HomeKind::SharedConstruct,
+        },
     };
-    if let Some(other) = &target.also_at {
-        out.warn(format!(
-            "two copies of Construct; writing into {} (the world's own), not {}",
-            target.pack.dir.display(),
-            other.display()
-        ));
-    }
     // Construct's in-game list only shows `mystructure:` structures (§17), so a
     // namespaced name lands somewhere the addon will not display.
     if !id.starts_with(&format!("{}:", key::DEFAULT_NAMESPACE)) {
@@ -66,12 +68,19 @@ pub fn run(
         ));
     }
 
-    let path = structures::write(&target.pack.dir, &id, &bytes, force)?;
+    if let Some(w) = world {
+        crate::commands::warn_if_another_pack_has_it(w, installation, &home.dir, &id, out);
+    }
+    let path = structures::write(&home.dir, &id, &bytes, force)?;
 
     out.line(format!(
         "imported {} as {}",
         file.display(),
         key::display_name(&id)
+    ));
+    out.line(format!(
+        "  into {}",
+        crate::commands::pack_phrase(home.kind, world.map(|w| w.display_name.as_str()))
     ));
     out.line(format!("  {}", path.display()));
     out.line("Reload the world before Construct sees it.");
@@ -81,11 +90,8 @@ pub fn run(
         id: id.clone(),
         path: path.display().to_string(),
         bytes: bytes.len() as u64,
-        pack: target.pack.dir.display().to_string(),
-        scope: match target.scope {
-            pack::Scope::WorldLocal => "world",
-            pack::Scope::Shared => "shared",
-        },
+        pack: home.dir.display().to_string(),
+        scope: crate::commands::scope_field(home.kind),
     });
     Ok(())
 }

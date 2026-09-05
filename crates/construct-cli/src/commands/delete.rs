@@ -20,6 +20,9 @@ struct Payload {
     name: String,
     id: String,
     path: String,
+    /// Which copy of Construct lost the file, in the same vocabulary
+    /// `import` and `copy` use for the copy that gained one.
+    scope: Option<&'static str>,
 }
 
 /// Stage 4 owns the leveldb write path. Refusing here is deliberate.
@@ -34,6 +37,7 @@ pub fn run(
     structure: &str,
     installations: &[Installation],
     source: Option<Source>,
+    pack_scope: Option<construct_core::pack::Scope>,
     out: &mut Out,
 ) -> Result<()> {
     // Refuse before doing any work at all: this is the one command whose
@@ -46,7 +50,7 @@ pub fn run(
     // the loader on its --source pack short-circuit, so a world's database
     // is never opened for a delete.
     let loaded = loader::for_world(world, installations, Some(Source::Pack), out)?;
-    let entry = catalog::resolve(structure, &loaded.entries, Some(Source::Pack))?;
+    let entry = catalog::resolve(structure, &loaded.entries, Some(Source::Pack), pack_scope)?;
 
     // Resolving with Some(Source::Pack) always yields a pack entry, which
     // always carries a path — but the invariant lives in another module, so
@@ -56,12 +60,27 @@ pub fn run(
     };
     structures::remove(&path)?;
 
-    out.line(format!("deleted {} from {}", entry.name, path.display()));
+    out.line(format!("deleted {}", entry.name));
+    // Which pack lost the file matters as much here as it does on the way in:
+    // removing a structure from the shared Construct takes it away from every
+    // world using that pack, not just the one named on the command line. The
+    // pack is found by the path the entry came from rather than by asking for
+    // the world's home — a world can see more than one pack, and the file
+    // being deleted is not always in the one a write would go to.
+    let from = loaded.packs.iter().find(|h| path.starts_with(&h.dir));
+    if let Some(home) = from {
+        out.line(format!(
+            "  from {}",
+            crate::commands::pack_phrase(home.kind, Some(world.display_name.as_str()))
+        ));
+    }
+    out.line(format!("  {}", path.display()));
     out.line("Reload the world before Construct stops showing it.");
     out.emit(Payload {
         name: entry.name,
         id: entry.id,
         path: path.display().to_string(),
+        scope: from.map(|h| crate::commands::scope_field(h.kind)),
     });
     Ok(())
 }
