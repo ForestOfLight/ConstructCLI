@@ -200,21 +200,30 @@ fn on_overlap_error_refuses_and_names_the_pieces() {
     };
     let err = merge::merge(&[named("a", &a), named("b", &b)], &options).unwrap_err();
     let text = format!("{err}");
+    // A single-character `contains('a') && contains('b')` is satisfied by the
+    // fixed template words alone ("**a**nd", "**b**locks"), so it would still
+    // pass with the piece names redacted from the message. Pin the actual
+    // phrase the error builds around the two names instead.
     assert!(
-        text.contains('a') && text.contains('b'),
-        "must name both: {text}"
+        text.contains("between a and b"),
+        "must name both pieces: {text}"
     );
 }
 
 #[test]
 fn a_void_cell_is_not_an_overlap() {
-    // Two pieces occupying the same space, but only one has a block there.
-    // Reporting that as an overlap would cry wolf on every merge.
+    // Two pieces whose bounding boxes genuinely overlap in one world cell,
+    // but only one of them has a block there. Reporting that as an overlap
+    // would cry wolf on every merge.
+    //
+    // a spans world x=0..2 at y=0,z=0; b spans world x=1..3 at y=0,z=0. The
+    // only shared cell is world (1,0,0): a's local index 1, b's local index
+    // 0. a is void there; b has a block. No cell is doubly non-void, so
+    // there must be no overlap.
     let mut a = Build::solid([2, 1, 1], [0, 0, 0], "minecraft:stone");
     a.layer0 = vec![0, VOID];
-    let mut b = Build::solid([2, 1, 1], [0, 0, 0], "minecraft:dirt");
-    b.layer0 = vec![VOID, 0];
-    b.origin = [0, 1, 0];
+    let mut b = Build::solid([2, 1, 1], [1, 0, 0], "minecraft:dirt");
+    b.layer0 = vec![0, 0];
 
     let report = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default()).unwrap();
     assert!(report.overlaps.is_empty(), "{:?}", report.overlaps);

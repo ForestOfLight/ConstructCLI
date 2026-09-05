@@ -2540,8 +2540,13 @@ fn merge_reports_overlap_on_stderr_and_in_the_payload() {
         "expected an overlap warning: {stderr}"
     );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    // `a`'s origin [0,0,0] also triggers the unrelated "origin may be unset"
+    // warning, so asserting the array is merely non-empty is satisfied by
+    // that alone. Pin the overlap warning itself.
     assert!(
-        v["warnings"].as_array().is_some_and(|w| !w.is_empty()),
+        v["warnings"].as_array().is_some_and(|w| w.iter().any(|w| w
+            .as_str()
+            .is_some_and(|s| s.to_lowercase().contains("overlap")))),
         "overlap must appear in the payload too: {v}"
     );
 }

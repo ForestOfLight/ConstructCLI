@@ -204,3 +204,49 @@ rejecting a `block_position_data` key whose index is at or past the volume. Fixe
 comment as part of this task — a one-line honesty correction, not a behaviour change — and
 recorded here because the two checks themselves remain deliberate additional strictness beyond
 what the reference documentation specifies.
+
+## §11's codec error contract is two-thirds delivered
+
+§11 asks codec failures to "report file, field, and byte offset." `mcstructure/nbt.rs`'s
+errors name the file and the field but never a byte offset, because `nbtx` does not surface
+one anywhere in its error type — there is nothing to plumb through. Fixing this properly means
+either patching `nbtx` to track and report a position (a nontrivial addition next to the
+empty-list and array-tag patches already carried) or abandoning `nbtx`'s own error type for a
+lower-level parse that tracks offsets itself. Left as documentation debt rather than fixed,
+since no failure observed so far has been ambiguous enough to need the offset to diagnose.
+
+## `format_version` is read but never validated
+
+`decode.rs` reads `format_version` off every structure but never checks it against anything,
+and `merge` silently adopts the first piece's value for the merged output with no comparison
+to the others. §15's risk register claims the mitigation for a format mismatch is "Version
+checked on decode; explicit error" — that mitigation does not exist; the register overstates
+what ships. Adding a real check needs a decision this branch never made: which versions are
+compatible with which, and what to do when a merge mixes them (refuse, warn, or silently take
+the max) — that belongs to whichever future work first needs to distinguish structure format
+versions.
+
+## `scripts/setup-deps.sh` is not idempotent across patch-set changes
+
+`clone_and_patch` skips cloning and patching entirely when the checkout directory under
+`third_party/checkouts/` already exists. Anyone who ran the script before this branch added
+patch `0004` (the deeply-nested-NBT stack guard, from `a4f699f`) keeps an `nbtx` checkout
+patched only with `0003`. The build still succeeds — nothing about the missing patch is a
+compile error — but
+`deeply_nested_nbt_is_refused_rather_than_overflowing_the_stack` then hits the real stack
+overflow the patch was meant to prevent and aborts the test binary instead of failing it
+normally. The script's own skip message does say "delete it to re-create," so this is a
+documented trap rather than a silent break, but nothing detects the drift automatically. The
+real fix is patch-set drift detection — hashing the applied patch set and re-applying when it
+changes — which is its own task, not a one-line fix here.
+
+## §12's fixture deviation was never recorded
+
+§12 asks for five committed fixture files, one per documented shape. The branch instead builds
+four of the five programmatically in `tests/support/mod.rs` (`Build`, described in its own
+module doc) and commits one real file, `tests/fixtures/construct.mcstructure`. This was a
+deliberate choice, and the better one: a builder call states its fixture's shape in the test
+that uses it, where a committed binary blob cannot be read at all without a hex dump, and the
+one real file still proves the codec agrees with what the game itself writes — the thing a
+builder can never prove. It is nonetheless a deviation from what §12 literally asks for, and
+it was never written down until now.

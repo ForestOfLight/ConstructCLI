@@ -27,17 +27,28 @@ pub enum OnOverlap {
 pub struct MergeOptions {
     pub on_overlap: OnOverlap,
     /// Refuse a union bounding box with more blocks than this. An allocation
-    /// guard, not a game limit: each block costs 8 bytes across the two `i32`
-    /// layers, so the default is roughly half a gigabyte of index data.
+    /// guard, not a game limit. Per cell the blit allocates: the two `i32`
+    /// layers (8 bytes), plus `owner` tracking which piece last wrote each
+    /// layer cell (a `u32` per layer, 8 bytes) — 16 bytes so far. On top of
+    /// that, `placement` adds one `BTreeMap` entry per non-void layer-0
+    /// block, which for a dense merge is the largest of the three terms and
+    /// is not a fixed per-cell cost, so it is not counted in this cap.
     pub max_volume: i64,
 }
 
-/// 64 million blocks — about 512 MB across both index layers.
+/// 64 million blocks — about 1 GB of layer and owner data at the cap, before
+/// `placement`'s per-block `BTreeMap` entries (see `max_volume`'s doc).
 pub const DEFAULT_MAX_VOLUME: i64 = 64_000_000;
 
 /// Beyond this the result still loads, but placing it is slow. The vanilla
 /// structure-block save limit, from the reference documentation.
 const PERFORMANCE_WARN_VOLUME: i64 = 64 * 256 * 64;
+
+/// Sentinel `owner` value meaning "no piece has written this cell yet".
+/// `owner` holds a piece's index into the `pieces` slice; piece counts are
+/// tiny (a handful at most), so `u32::MAX` can never collide with a real
+/// index.
+const NO_OWNER: u32 = u32::MAX;
 
 impl Default for MergeOptions {
     fn default() -> Self {
@@ -163,8 +174,12 @@ pub fn merge(pieces: &[(String, Structure)], options: &MergeOptions) -> Result<M
         usize::try_from(volume).map_err(|_| refused("merged size is too large to address"))?;
     let mut layers = [vec![VOID; cells], vec![VOID; cells]];
     // Which piece last wrote each cell of each layer, so an overlap can name
-    // both contenders and `block_position_data` can follow the winner.
-    let mut owner: [Vec<Option<usize>>; 2] = [vec![None; cells], vec![None; cells]];
+    // both contenders and `block_position_data` can follow the winner. A
+    // `u32` with a sentinel rather than `Option<usize>`: the latter is 16
+    // bytes (measured), which would make this array cost 4x what the two
+    // index layers cost combined for no benefit — piece counts never
+    // approach `u32::MAX`.
+    let mut owner: [Vec<u32>; 2] = [vec![NO_OWNER; cells], vec![NO_OWNER; cells]];
     // Where each piece's block indices landed in the merged grid, so
     // `block_position_data` can be moved to the same cell without recomputing
     // the coordinate arithmetic a second time.
@@ -224,16 +239,19 @@ pub fn merge(pieces: &[(String, Structure)], options: &MergeOptions) -> Result<M
                 if layer == 0 {
                     placement[p].insert(i, out_i);
                 }
+                // `p` is an index into `pieces`, which is tiny, so this cast
+                // never truncates (see `NO_OWNER`'s doc).
+                let p_owner = p as u32;
                 match owner[layer][out_i] {
-                    None => {
+                    NO_OWNER => {
                         layers[layer][out_i] = remapped;
-                        owner[layer][out_i] = Some(p);
+                        owner[layer][out_i] = p_owner;
                     }
-                    Some(previous) => {
-                        *overlaps.entry((previous, p)).or_default() += 1;
+                    previous => {
+                        *overlaps.entry((previous as usize, p)).or_default() += 1;
                         if options.on_overlap == OnOverlap::Last {
                             layers[layer][out_i] = remapped;
-                            owner[layer][out_i] = Some(p);
+                            owner[layer][out_i] = p_owner;
                         }
                     }
                 }
@@ -290,7 +308,7 @@ pub fn merge(pieces: &[(String, Structure)], options: &MergeOptions) -> Result<M
             // needs removing. An `else { remove }` arm here would be actively
             // wrong under OnOverlap::First, where the winner writes first and
             // the later loser would delete the winner's data.
-            if owner[0][out_i] == Some(p) {
+            if owner[0][out_i] == p as u32 {
                 block_position_data.insert(out_i, data.clone());
             }
         }

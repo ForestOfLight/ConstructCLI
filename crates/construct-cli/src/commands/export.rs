@@ -281,7 +281,6 @@ fn run_merge(
         s.size.z,
         pieces.len()
     ));
-    out.line("Reload the world before Construct sees it.");
 
     out.emit(MergedPayload {
         world: world.qualified(),

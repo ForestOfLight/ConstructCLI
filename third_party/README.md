@@ -24,10 +24,10 @@ These do not compile as published:
 
 `nbtx` 3.0.1 cannot serialize an empty list: it writes a sequence's element type and length
 lazily, on the first element, so an empty one omits both — five bytes short — producing NBT
-that `nbtx` itself cannot parse back. Every real `.mcstructure` contains at least one empty
-list, so this blocked encoding entirely rather than being an edge case. The patch arms a flag
-when a sequence opens and writes `TAG_End` with length 0 from `end()` if no element ever
-arrived.
+that `nbtx` itself cannot parse back. Of 13 real `.mcstructure` files measured, 12 contained at
+least one empty list (one, `creaking.mcstructure`, has none), so this blocked encoding for the
+overwhelming majority of files rather than being a rare edge case. The patch arms a flag when a
+sequence opens and writes `TAG_End` with length 0 from `end()` if no element ever arrived.
 
 ## Applying the patches
 
