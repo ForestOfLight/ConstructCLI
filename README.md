@@ -73,6 +73,19 @@ construct experiment <world> --beta-apis         # show the current toggle
 construct experiment <world> --beta-apis on      # turn it on
 ```
 
+Merge several saves of one build back into a single structure, reassembled at the
+positions they were saved at:
+
+```console
+$ construct export "My World" north_wing tower --merge -o castle.mcstructure
+warning: 1,204 blocks overlapped between "north_wing" and "tower"
+wrote castle.mcstructure (2.1 MB) — 48 x 31 x 52 from 2 structures
+```
+
+Gaps between the pieces are structure void, so placing the result leaves the terrain
+between them untouched. Where two pieces both have a block, the one named later wins;
+`--on-overlap first` reverses that and `--on-overlap error` refuses instead.
+
 `import`, `copy`, and `delete` all write into Construct's `structures/`
 folder, never into a world's database — reload the world before Construct
 shows the change. `delete` currently only removes an imported structure

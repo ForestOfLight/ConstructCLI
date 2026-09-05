@@ -1,11 +1,14 @@
 //! Decoding `.mcstructure` bytes into [`Structure`].
 //!
-//! The validation here mirrors the load-time rules the game itself enforces,
-//! documented in `docs/bedrock-mcstructure-files.md`: exactly two index
-//! layers, both the same length, that length equal to the product of `size`,
-//! and a `default` palette present. Refusing here turns a structure that
-//! would fail to load — or load wrong, silently — into an error naming the
-//! field.
+//! Most of the validation here mirrors the load-time rules the game itself
+//! enforces, documented in `docs/bedrock-mcstructure-files.md`: exactly two
+//! index layers, both the same length, that length equal to the product of
+//! `size`, and a `default` palette present. Two checks go beyond that
+//! documentation and are this tool's own added strictness rather than a
+//! documented game rule: a negative `size` dimension is rejected outright,
+//! and a `block_position_data` key at or past the volume is rejected too.
+//! Refusing here turns a structure that would fail to load — or load wrong,
+//! silently — into an error naming the field.
 
 use super::geometry::{Coord, Size};
 use super::nbt::{as_compound, as_int, as_int_vec, as_list, as_triple, bad, field};

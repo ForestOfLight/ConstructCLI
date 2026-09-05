@@ -142,3 +142,65 @@ mcpelauncher build creates no LOCK file even with a world open, and the only
 LOCK on the test machine was a stale leftover from an unclean exit. If a
 platform is found where the game does hold an flock'd LOCK, adding that as a
 definitive positive alongside the heuristic would be a strict improvement.
+
+## The array-tag defect in `nbtx` is patched around, not fixed
+
+Task 1 fixed only the empty-list bug. `nbtx` still turns `ByteArray`, `IntArray`, and
+`LongArray` into `List` on parse, so those tags cannot survive a round trip. This was left
+alone deliberately: no array tag appears in any of the 13 real `.mcstructure` files measured,
+and fixing it properly is not a small patch — `Value`'s `Serialize` impl routes all three
+through `serialize_seq`, and serde's data model has no way to tell them apart on the way out.
+
+The exposure is `level.dat`, not `.mcstructure`. The fidelity gate in `leveldat.rs` catches it
+there by comparing re-serialized length, and one test now depends on an array tag being
+unfaithful — if `nbtx` ever gains real array support, that test's premise disappears the same
+way the empty-list one just did.
+
+## Merge holds the whole result in memory
+
+`merge` allocates two `i32` vectors covering the union bounding box, so a merge of pieces far
+apart costs 8 bytes per block of mostly-void space. `MergeOptions::max_volume` caps this at 64
+million blocks (~512 MB) and refuses beyond it. A sparse representation would lift the cap, but
+nothing observed needs it: the largest real structure measured is 81×81×81.
+
+## `--merge` does not check that the pieces came from one build
+
+Nothing verifies the structures are pieces of the same build rather than unrelated saves that
+happen to have distinct origins. The identical-origin refusal catches the common mistake; a
+merge of genuinely unrelated structures produces a mostly-void result the user did not want,
+with no warning beyond the size one.
+
+## The `--on-overlap last` test does not discriminate
+
+In `crates/construct-core/tests/merge.rs`,
+`block_position_data_follows_the_block_that_won_the_overlap` still passes if
+`block_position_data` is inserted unconditionally instead of only for the cell's owner,
+because pieces are walked in argument order and `Last`'s winner is the last piece anyway. The
+property is pinned solely by the `OnOverlap::First` variant of that test. Not a code defect —
+the property is covered — but the `Last` test looks stronger than it is.
+
+## One merge test is still vacuous for entities
+
+`a_merged_structure_encodes_and_decodes_back_equal` is a real round-trip check for
+`block_position_data`, but neither of its pieces sets `entities`, so that half asserts
+nothing. Entity round-tripping is covered non-vacuously in
+`crates/construct-core/tests/mcstructure.rs`, so there is no coverage gap overall.
+
+## The blit's overflow guard is not proof against wrapping arithmetic
+
+`crates/construct-core/src/merge.rs` uses `checked_add`/`checked_sub` helpers so an untrusted
+origin cannot overflow. The test asserts only that merging does not panic, so replacing those
+helpers' internals with `wrapping_add`/`wrapping_sub` breaks no test. Judged acceptable: the
+plausible accidental regression is raw `+`, which IS caught, and a reviewer could not
+construct a realistic input where wrapping produces a silently misplaced block rather than a
+dropped one.
+
+## `decode`'s module doc overclaims
+
+`crates/construct-core/src/mcstructure/decode.rs` said its validation "mirrors the load-time
+rules the game itself enforces, documented in `docs/bedrock-mcstructure-files.md`", but two of
+its checks are ours rather than the documentation's: rejecting negative `size` dimensions, and
+rejecting a `block_position_data` key whose index is at or past the volume. Fixed in the code
+comment as part of this task — a one-line honesty correction, not a behaviour change — and
+recorded here because the two checks themselves remain deliberate additional strictness beyond
+what the reference documentation specifies.

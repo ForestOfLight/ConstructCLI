@@ -1,7 +1,13 @@
-# Patched database dependencies
+# Patched dependencies
 
-`bedrock_level` (from `bedrock-rs`) and its `leveldb-sys` backend do not compile as
-published:
+Three upstreams are patched and vendored here: `bedrock_level` (from `bedrock-rs`) and its
+`leveldb-sys` backend, the database dependencies, plus `nbtx`, which is not a database
+dependency at all — it is the NBT codec `.mcstructure` and `level.dat` are read and written
+through.
+
+## `bedrock_level` and `leveldb-sys`
+
+These do not compile as published:
 
 - `leveldb-sys/build.rs` links `stdc++` unconditionally on unix. Apple ships `libc++`,
   so every macOS target fails at the link step.
@@ -14,11 +20,22 @@ published:
 - The vendored zlib's `zutil.h` treats `TARGET_OS_MAC` as classic Mac OS and redefines
   `fdopen()` to `NULL`, clobbering the modern SDK's declaration.
 
-`patches/` holds the fixes. `scripts/setup-deps.sh` clones each upstream repo at its
-pinned commit and applies them into `checkouts/`, which is git-ignored.
+## `nbtx`
 
-Both upstreams are Apache-2.0, which permits this. The fixes are intended to go upstream;
-when they land, or when the patched branches are published as forks, this directory is
-deleted and the workspace depends on a URL again.
+`nbtx` 3.0.1 cannot serialize an empty list: it writes a sequence's element type and length
+lazily, on the first element, so an empty one omits both — five bytes short — producing NBT
+that `nbtx` itself cannot parse back. Every real `.mcstructure` contains at least one empty
+list, so this blocked encoding entirely rather than being an edge case. The patch arms a flag
+when a sequence opens and writes `TAG_End` with length 0 from `end()` if no element ever
+arrived.
+
+## Applying the patches
+
+`patches/` holds the fixes. `scripts/setup-deps.sh` clones each upstream repo at its pinned
+commit and applies them into `checkouts/`, which is git-ignored.
+
+All three upstreams are Apache-2.0, which permits this. The fixes are intended to go
+upstream; when they land, or when the patched branches are published as forks, this
+directory is deleted and the workspace depends on a URL again.
 
 Run `scripts/setup-deps.sh` once after cloning.
