@@ -9,6 +9,11 @@
 //! and a `block_position_data` key at or past the volume is rejected too.
 //! Refusing here turns a structure that would fail to load — or load wrong,
 //! silently — into an error naming the field.
+//!
+//! Nesting depth is bounded by the patched `nbtx` (see
+//! `third_party/patches/0004-*`): NBT is parsed by recursive descent, so an
+//! unbounded file of nested compounds would exhaust the stack — an abort, not
+//! an error this function could return.
 
 use super::geometry::{Coord, Size};
 use super::nbt::{as_compound, as_int, as_int_vec, as_list, as_triple, bad, field};

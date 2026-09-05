@@ -1,0 +1,157 @@
+diff --git a/src/nbt/de.rs b/src/nbt/de.rs
+index 13c4234..a8903af 100644
+--- a/src/nbt/de.rs
++++ b/src/nbt/de.rs
+@@ -63,8 +63,22 @@ where
+     #[cfg(feature = "error-context")]
+     curr_key: Option<String>,
+     _marker: PhantomData<&'de F>,
++    /// How many container levels deep this deserializer currently is. NBT
++    /// nesting is parsed by recursive descent, so an attacker-supplied file of
++    /// deeply nested compounds exhausts the stack — an abort, not a catchable
++    /// panic. `SeqDeserializer` and `MapDeserializer` both borrow this
++    /// `Deserializer` mutably, so one counter covers the whole nesting.
++    depth: usize,
+ }
+ 
++/// Deepest container nesting accepted before a file is refused.
++///
++/// Real `.mcstructure` files nest about 7 levels to reach a block state, and
++/// perhaps 15 through a chest's item tags; a `level.dat` is comparable. 512 is
++/// far beyond any legitimate file and far below the ~5,000-plus levels that
++/// begin to threaten the stack.
++pub const MAX_DEPTH: usize = 512;
++
+ impl<'re, 'de, F, R> Deserializer<'re, 'de, F, R>
+ where
+     R: ReadBytesExt,
+@@ -97,6 +111,7 @@ where
+             #[cfg(feature = "error-context")]
+             curr_key: None,
+             _marker: PhantomData,
++            depth: 0,
+         };
+ 
+         // Ignore name of root component
+@@ -526,6 +541,9 @@ where
+     where
+         V: Visitor<'de>,
+     {
++        // `deserialize_tuple` is where `SeqDeserializer` is actually
++        // constructed and the depth counter is enforced, so this delegation
++        // is covered without duplicating the check here.
+         self.deserialize_tuple(0, visitor)
+     }
+ 
+@@ -533,21 +551,34 @@ where
+     where
+         V: Visitor<'de>,
+     {
+-        let ty = match self.next_ty {
+-            FieldType::ByteArray => FieldType::Byte,
+-            FieldType::IntArray => FieldType::Int,
+-            FieldType::LongArray => FieldType::Long,
+-            _ => FieldType::try_from(
+-                self.input.read_u8()?,
+-                #[cfg(feature = "error-context")]
+-                &mut self.curr_key,
+-                #[cfg(feature = "error-context")]
+-                None,
+-            )?,
+-        };
++        self.depth += 1;
++        if self.depth > MAX_DEPTH {
++            self.depth -= 1;
++            return Err(Error::Other(format!(
++                "NBT nesting exceeds the maximum depth of {MAX_DEPTH}"
++            )));
++        }
+ 
+-        let de = SeqDeserializer::new(self, ty, len as u32)?;
+-        visitor.visit_seq(de)
++        let result = (|| {
++            let ty = match self.next_ty {
++                FieldType::ByteArray => FieldType::Byte,
++                FieldType::IntArray => FieldType::Int,
++                FieldType::LongArray => FieldType::Long,
++                _ => FieldType::try_from(
++                    self.input.read_u8()?,
++                    #[cfg(feature = "error-context")]
++                    &mut self.curr_key,
++                    #[cfg(feature = "error-context")]
++                    None,
++                )?,
++            };
++
++            let de = SeqDeserializer::new(&mut *self, ty, len as u32)?;
++            visitor.visit_seq(de)
++        })();
++
++        self.depth -= 1;
++        result
+     }
+ 
+     fn deserialize_tuple_struct<V>(
+@@ -577,8 +608,18 @@ where
+     {
+         is_ty!(Compound, self.curr_key, self.next_ty);
+ 
+-        let de = MapDeserializer::from(self);
+-        visitor.visit_map(de)
++        self.depth += 1;
++        if self.depth > MAX_DEPTH {
++            self.depth -= 1;
++            return Err(Error::Other(format!(
++                "NBT nesting exceeds the maximum depth of {MAX_DEPTH}"
++            )));
++        }
++
++        let de = MapDeserializer::from(&mut *self);
++        let result = visitor.visit_map(de);
++        self.depth -= 1;
++        result
+     }
+ 
+     fn deserialize_struct<V>(
+diff --git a/src/test.rs b/src/test.rs
+index aaad6ec..7daab5d 100644
+--- a/src/test.rs
++++ b/src/test.rs
+@@ -221,3 +221,37 @@ fn an_empty_list_round_trips() {
+         crate::from_le_bytes(&mut bytes.as_slice()).expect("output must parse back");
+     assert_eq!(parsed, value);
+ }
++
++#[test]
++fn nesting_past_the_depth_limit_is_refused_not_aborted() {
++    // Without a limit this overflows the stack, which is an abort rather than
++    // a catchable panic — no Result-based handling can intercept it.
++    let depth = crate::nbt::de::MAX_DEPTH + 10;
++    let mut bytes = Vec::new();
++    for _ in 0..depth {
++        bytes.extend_from_slice(&[0x0a, 0x01, 0x00, b'a']);
++    }
++    for _ in 0..depth {
++        bytes.push(0x00);
++    }
++    let parsed: Result<crate::Value, _> = crate::from_le_bytes(&mut bytes.as_slice());
++    assert!(
++        parsed.is_err(),
++        "deeply nested NBT must be refused, not accepted"
++    );
++}
++
++#[test]
++fn ordinary_nesting_is_still_accepted() {
++    // A guard set too low would refuse real files. This is deeper than any
++    // real .mcstructure or level.dat and must still parse.
++    let mut value = crate::Value::Compound(Default::default());
++    for _ in 0..64 {
++        let mut m = std::collections::HashMap::new();
++        m.insert("inner".to_string(), value);
++        value = crate::Value::Compound(m);
++    }
++    let bytes = crate::to_le_bytes(&value).unwrap();
++    let parsed: crate::Value = crate::from_le_bytes(&mut bytes.as_slice()).unwrap();
++    assert_eq!(parsed, value);
++}

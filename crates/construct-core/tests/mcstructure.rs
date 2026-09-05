@@ -395,3 +395,21 @@ fn encoding_refuses_a_negative_size_dimension() {
         "error must name the negative value: {err}"
     );
 }
+
+#[test]
+fn deeply_nested_nbt_is_refused_rather_than_overflowing_the_stack() {
+    // A 250 KB file of 50,000 nested compounds used to abort the process with
+    // a stack overflow — exit 134, not a catchable panic. The depth limit in
+    // the patched nbtx turns it into an ordinary refusal.
+    let depth = 50_000;
+    let mut bytes = Vec::new();
+    for _ in 0..depth {
+        bytes.extend_from_slice(&[0x0a, 0x01, 0x00, b'a']);
+    }
+    bytes.resize(bytes.len() + depth, 0x00);
+    let err = mcstructure::decode(&bytes, "deep.mcstructure").unwrap_err();
+    assert!(
+        format!("{err}").contains("deep.mcstructure"),
+        "the refusal must name the file: {err}"
+    );
+}
