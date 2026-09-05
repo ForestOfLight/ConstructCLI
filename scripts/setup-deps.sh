@@ -14,7 +14,11 @@ OUT="$ROOT/third_party/checkouts"
 mkdir -p "$OUT"
 
 clone_and_patch() {
-  local name="$1" url="$2" rev="$3" patch="$4"
+  # Takes one or more patches, applied in the order given, so a dependency
+  # patched more than once (e.g. nbtx: 0003 then 0004) gets all of them from a
+  # fresh clone.
+  local name="$1" url="$2" rev="$3"
+  shift 3
   if [ -d "$OUT/$name" ]; then
     echo "$name: already present, skipping (delete it to re-create)"
     return
@@ -22,8 +26,10 @@ clone_and_patch() {
   echo "$name: cloning $url @ $rev"
   git clone --quiet "$url" "$OUT/$name"
   git -C "$OUT/$name" checkout --quiet "$rev"
-  git -C "$OUT/$name" apply "$ROOT/third_party/patches/$patch"
-  echo "$name: patched with $patch"
+  for patch in "$@"; do
+    git -C "$OUT/$name" apply "$ROOT/third_party/patches/$patch"
+    echo "$name: patched with $patch"
+  done
 }
 
 clone_and_patch leveldb-sys \
@@ -35,5 +41,11 @@ clone_and_patch bedrock-rs \
   https://github.com/bedrock-crustaceans/bedrock-rs \
   2d9e4087a207bdcbad6e4cdc83de46e94712b2f4 \
   0002-bedrock-rs-non-x86_64-compilation.patch
+
+clone_and_patch nbtx \
+  https://github.com/bedrock-crustaceans/bedrockrs-nbt \
+  bd28e77 \
+  0003-nbtx-empty-list-serialization.patch \
+  0004-nbtx-recursion-depth-limit.patch
 
 echo "done — dependencies ready in third_party/checkouts/"

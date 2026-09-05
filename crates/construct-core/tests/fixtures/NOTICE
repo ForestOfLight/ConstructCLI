@@ -4,3 +4,9 @@ https://github.com/bedrock-crustaceans/bedrock-rs/blob/main/LICENSE
 
 Three structuretemplate_ keys were added for ConstructCLI's tests. The world
 is otherwise unmodified.
+
+construct.mcstructure ships inside Construct's own behaviour pack
+(Construct[BP]/structures/), from https://github.com/ForestOfLight/Construct.
+It is committed here as the one real-world codec fixture: a builder can prove
+the codec self-consistent, but only a file the game wrote can prove it agrees
+with the game.

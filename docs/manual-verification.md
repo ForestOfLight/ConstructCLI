@@ -54,3 +54,12 @@ spec holds the full list.
       would slip through the window and revert the change silently again —
       which is exactly the bug this replaced, so it is worth re-measuring per
       platform rather than assuming.
+- [ ] **Does a merged structure load and place correctly in-game?** Save two pieces of one
+      build with structure blocks, `construct export <world> <a> <b> --merge -o merged.mcstructure`,
+      import it, and place it. Check that the pieces land in their original relative positions,
+      that the gaps between them leave existing terrain untouched rather than carving air, and
+      that block entities (a labelled chest in each piece) kept their contents. Spec §12 asserts
+      all three semantically, but only the game proves the file is one it accepts.
+- [ ] **Does a merged structure beyond structure-block dimensions load?** The reference
+      documentation says sizes past 64×256×64 load "just as expected"; merge only warns. Confirm
+      with a merge whose union exceeds that.

@@ -408,9 +408,15 @@ overwritten by the game on its own schedule.
 
 ## 9. The `.mcstructure` codec and merge
 
-`Structure` models the format: `format_version`, `size`, `structure_world_origin`, two
-`block_indices` layers, `block_palette`, `block_position_data`, and entities. Encoding is
-little-endian NBT.
+`Structure` models the format: `format_version`, `size`, `structure_world_origin`, and a
+`structure` compound holding two `block_indices` layers, `entities`, and a `palette`.
+**`block_palette` and `block_position_data` sit under `palette.default`**, not directly under
+`structure` — `palette` is a compound of named palettes, of which only `default` is ever
+written or loaded. Encoding is little-endian NBT.
+
+`block_position_data` is keyed by the block's **flattened index as a decimal string**, and
+its values may carry `block_entity_data`, `tick_queue_data`, or both. The index order is
+**ZYX**: `index = SZ*SY*X + SZ*Y + Z`.
 
 Merge:
 
@@ -419,7 +425,12 @@ Merge:
    merged output's own `structure_world_origin` is the **min corner of that union**.
 3. Unify palettes by deduplicating `(name, states, version)`, building a per-source remap.
 4. Blit each piece's two index layers into the output grid.
-5. Translate `block_position_data` keys and entity positions into the new frame.
+5. Translate `block_position_data` keys into the new frame. **Entity positions are left
+   alone**: `Pos` is an absolute world position, and placement computes
+   `Pos - structure_world_origin + load_position`. Because the merged origin is the min corner
+   of the union, that arithmetic already lands every entity correctly — rewriting `Pos` would
+   shift them twice. `block_position_data` keys genuinely do need recomputing, because they
+   index a grid whose dimensions changed.
 6. Encode.
 
 Gaps between pieces are index **-1** (structure void), not air. Void leaves existing terrain
@@ -453,9 +464,9 @@ allocation guard, not a game limit — Minecraft loads structures beyond structu
 dimensions without trouble, so oversized results produce a **performance warning**, not a
 refusal.
 
-### The encoder is not yet usable
+### The empty-list encoder bug, fixed in stage 3
 
-Measured against three real `.mcstructure` files and a synthetic case: **`nbtx` 3.0.1 cannot
+Measured against three real `.mcstructure` files and a synthetic case: **`nbtx` 3.0.1 could not
 serialize an empty list.** It writes the `TAG_List` id and the name, then omits both the
 element-type byte and the four-byte length — five bytes short — and the result is NBT that
 `nbtx` itself refuses to parse.
@@ -466,19 +477,27 @@ Compound { "empty": List([]) }
                         ^ the element type and length are simply missing
 ```
 
-Every `.mcstructure` examined carries at least one empty list, so this is not an edge case:
-`bomber` has five, `construct` and `bubble_column` one each, and each file re-serializes
-exactly five bytes shorter per empty list.
+Of the three files first examined, every one carried at least one empty list, so this was not
+an edge case: `bomber` had five, `construct` and `bubble_column` one each, and each file
+re-serialized exactly five bytes shorter per empty list. Of the thirteen files measured later
+(below), twelve did; one, `creaking.mcstructure`, has none.
 
 The same crate also converts `ByteArray`, `IntArray`, and `LongArray` into `List` on parse,
 so those tags cannot survive a round-trip either.
 
 Decoding is unaffected — every file above parses correctly — so `list`, `export`, `import`,
-and `copy` are untouched. **Stage 3 cannot encode with `nbtx` as it stands.** The options,
-in the order they should be tried: patch the fork (the project already carries patched
-dependencies, and this is a few lines in one serializer), or write the encoder directly,
-which is a bounded amount of code given the format is already modelled. Whichever is chosen,
-the round-trip property in §12 is the test that proves it.
+and `copy` were never blocked. **Resolved in stage 3** by patching the fork, the first option
+listed here: `nbtx` writes a sequence's element type and length lazily, on the first element,
+so an empty one emits neither. The patch arms a flag when a sequence opens and writes
+`TAG_End` with length 0 from `end()` if no element ever arrived. Pinned at
+`bedrock-crustaceans/bedrockrs-nbt@bd28e77` in `third_party/patches/`.
+
+Measured after the patch, against 13 real `.mcstructure` files from 289 B to 4.25 MB: every
+one decodes and re-encodes to a payload of identical length that reparses and compares
+semantically equal. **No `ByteArray`, `IntArray`, or `LongArray` tag occurs in any of them**,
+so the array-to-list defect — which the patch does not address — is unreachable for this
+format in practice. It remains reachable for `level.dat`, which is why the fidelity gate in
+§10 stays.
 
 ## 10. Install
 
@@ -774,7 +793,7 @@ else, which is worth remembering if `bedrock_level`'s write path disappoints in 
 | GitHub rate limit | Low | Named in the error; optional token |
 | `.mcstructure` format version changes | Low | Version checked on decode; explicit error |
 | `nbtx` corrupts a `level.dat` it rewrites | **Data loss** | **Measured** (§9). Fidelity gate refuses the write when re-serialization changes length (§10) |
-| `nbtx` cannot encode `.mcstructure` (empty lists) | High | **Measured** (§9). Decoding is unaffected; blocks stage 3 only, and the fix is a patch or a small encoder |
+| `nbtx` cannot encode `.mcstructure` (empty lists) | High | **Measured (§9), then resolved in stage 3** by patching the fork. 13 real files round-trip semantically; upstream's own tests still pass |
 | A `level.dat` write is silently reverted by a live world | High | **Realized.** Measured (§10): the game rewrites the file from memory on every save. The write path refuses when `db/` was written in the last 10 seconds |
 | The pack-enable step is silently reverted by a live world | Medium | Same mechanism, same file cadence, **not guarded**: `world_behavior_packs.json` is rewritten by the game on exit too. `install --world` refuses up front, so the gap is only reachable by a world opened mid-command |
 

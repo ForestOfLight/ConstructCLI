@@ -34,3 +34,10 @@ zip = { version = "8.6", default-features = false, features = ["deflate-flate2-z
 # it to the patched local checkout too.
 [patch."https://github.com/bedrock-crustaceans/leveldb-sys"]
 leveldb-sys = { path = "third_party/checkouts/leveldb-sys" }
+
+# nbtx 3.0.1 cannot serialize an empty list — it omits the element type and
+# length, five bytes short, producing NBT it cannot parse back. Most real
+# .mcstructure files carry at least one empty list (12 of 13 measured; see
+# spec §9), so encoding is impossible for them without this.
+[patch.crates-io]
+nbtx = { path = "third_party/checkouts/nbtx" }

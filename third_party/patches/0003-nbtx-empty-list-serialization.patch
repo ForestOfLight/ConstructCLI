@@ -1,0 +1,115 @@
+diff --git a/src/nbt/ser.rs b/src/nbt/ser.rs
+index cde0ca2..1a3f7fb 100644
+--- a/src/nbt/ser.rs
++++ b/src/nbt/ser.rs
+@@ -303,6 +303,10 @@ where
+     is_initial: bool,
+     /// Stores the length of the list that is currently being serialised.
+     len: usize,
++    /// Whether a sequence has been opened whose header (element type and
++    /// length) has not been written yet. `len` cannot answer this: it reads 0
++    /// both for an empty sequence and for one whose header is already out.
++    seq_header_pending: bool,
+     #[cfg(feature = "error-context")]
+     /// The current key that is being serialised.
+     curr_key: Option<String>,
+@@ -321,6 +325,7 @@ where
+             writer: w,
+             is_initial: true,
+             len: 0,
++            seq_header_pending: false,
+             #[cfg(feature = "error-context")]
+             curr_key: None,
+             _marker: PhantomData,
+@@ -485,6 +490,7 @@ where
+     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
+         if let Some(len) = len {
+             self.len = len;
++            self.seq_header_pending = true;
+             Ok(self)
+         } else {
+             unsupported!(
+@@ -496,6 +502,7 @@ where
+ 
+     fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple, Self::Error> {
+         self.len = len;
++        self.seq_header_pending = true;
+         Ok(self)
+     }
+ 
+@@ -579,12 +586,27 @@ where
+                 Variant::NetworkEndian => self.writer.write_i32_varint(self.len as i32),
+             }?;
+             self.len = 0;
++            self.seq_header_pending = false;
+         }
+ 
+         element.serialize(&mut **self)
+     }
+ 
+     fn end(self) -> Result<(), Error> {
++        // An empty sequence never reaches `serialize_element`, so without this
++        // its header is never written at all: five bytes short (one element
++        // type, four length) and unparseable. NBT writes `TAG_End` with a
++        // length of zero for an empty list, which is what every empty list in
++        // a real `.mcstructure` carries.
++        if self.seq_header_pending {
++            self.writer.write_u8(FieldType::End as u8)?;
++            match F::AS_ENUM {
++                Variant::BigEndian => self.writer.write_i32::<BigEndian>(0),
++                Variant::LittleEndian => self.writer.write_i32::<LittleEndian>(0),
++                Variant::NetworkEndian => self.writer.write_i32_varint(0),
++            }?;
++            self.seq_header_pending = false;
++        }
+         Ok(())
+     }
+ }
+@@ -611,12 +633,27 @@ where
+                 Variant::NetworkEndian => self.writer.write_i32_varint(self.len as i32),
+             }?;
+             self.len = 0;
++            self.seq_header_pending = false;
+         }
+ 
+         element.serialize(&mut **self)
+     }
+ 
+     fn end(self) -> Result<(), Error> {
++        // An empty sequence never reaches `serialize_element`, so without this
++        // its header is never written at all: five bytes short (one element
++        // type, four length) and unparseable. NBT writes `TAG_End` with a
++        // length of zero for an empty list, which is what every empty list in
++        // a real `.mcstructure` carries.
++        if self.seq_header_pending {
++            self.writer.write_u8(FieldType::End as u8)?;
++            match M::AS_ENUM {
++                Variant::BigEndian => self.writer.write_i32::<BigEndian>(0),
++                Variant::LittleEndian => self.writer.write_i32::<LittleEndian>(0),
++                Variant::NetworkEndian => self.writer.write_i32_varint(0),
++            }?;
++            self.seq_header_pending = false;
++        }
+         Ok(())
+     }
+ }
+diff --git a/src/test.rs b/src/test.rs
+index acf5052..aaad6ec 100644
+--- a/src/test.rs
++++ b/src/test.rs
+@@ -209,3 +209,15 @@ fn read_write_player() {
+     let value_encoded = to_be_bytes(&decoded2).unwrap();
+     let _value_decoded: Value = from_be_bytes(&mut value_encoded.as_slice()).unwrap();
+ }
++
++#[test]
++fn an_empty_list_round_trips() {
++    let mut map = std::collections::HashMap::new();
++    map.insert("empty".to_string(), crate::Value::List(vec![]));
++    let value = crate::Value::Compound(map);
++
++    let bytes = crate::to_le_bytes(&value).expect("empty list must serialize");
++    let parsed: crate::Value =
++        crate::from_le_bytes(&mut bytes.as_slice()).expect("output must parse back");
++    assert_eq!(parsed, value);
++}

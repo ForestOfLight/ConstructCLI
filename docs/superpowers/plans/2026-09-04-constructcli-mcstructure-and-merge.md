@@ -572,7 +572,7 @@ git commit -m "Add .mcstructure geometry: sizes, origins, and the ZYX index"
 - Consumes: `Size`, `Coord` from Task 2.
 - Produces:
   - `pub struct Structure { pub format_version: i32, pub size: Size, pub origin: Coord, pub layers: [Vec<i32>; 2], pub palette: Vec<BlockState>, pub block_position_data: BTreeMap<usize, nbtx::Value>, pub entities: Vec<nbtx::Value> }`
-  - `pub struct BlockState { pub name: String, pub states: nbtx::Value, pub version: i32 }` — `Eq + Hash + Clone`
+  - `pub struct BlockState { pub name: String, pub states: nbtx::Value, pub version: i32 }` — `Clone + PartialEq + Hash`, but **not `Eq`**: `nbtx::Value` has no `Eq` impl and cannot have one (it holds floats)
   - `pub const VOID: i32 = -1;`
   - `pub fn decode(bytes: &[u8], what: &str) -> Result<Structure>`
   - `CoreError::BadStructureFile { what: String, reason: String }`
@@ -964,7 +964,12 @@ use std::collections::BTreeMap;
 pub const VOID: i32 = -1;
 
 /// One entry of `block_palette`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// Deliberately not `Eq`: `nbtx::Value` implements `PartialEq` and `Hash` but
+/// has no `Eq` impl and cannot have one, because it holds `Float(f32)` and
+/// `Double(f64)`. Palette deduplication therefore uses a linear scan rather
+/// than a `HashMap` — see `merge::unify_palettes`.
+#[derive(Debug, Clone, PartialEq, Hash)]
 pub struct BlockState {
     pub name: String,
     /// Kept as raw NBT: state values are strings, ints, or bytes depending on
@@ -1544,7 +1549,6 @@ Prepend to `crates/construct-core/src/merge.rs`:
 //! the plan's "Entity positions need no translation" note and §9.
 
 use crate::mcstructure::{BlockState, Structure};
-use std::collections::HashMap;
 
 /// Builds one palette covering every piece, plus a per-piece remap from that
 /// piece's own indices to the merged palette's.
@@ -1554,19 +1558,21 @@ use std::collections::HashMap;
 /// and a stair facing north onto one facing south.
 pub(crate) fn unify_palettes(pieces: &[Structure]) -> (Vec<BlockState>, Vec<Vec<i32>>) {
     let mut palette: Vec<BlockState> = Vec::new();
-    let mut seen: HashMap<BlockState, i32> = HashMap::new();
     let mut remaps = Vec::with_capacity(pieces.len());
 
     for piece in pieces {
         let mut remap = Vec::with_capacity(piece.palette.len());
         for entry in &piece.palette {
-            let index = match seen.get(entry) {
-                Some(i) => *i,
+            // A linear scan, not a HashMap: `BlockState` cannot be `Eq`
+            // (`nbtx::Value` holds floats), and a hand-written `impl Eq` would
+            // be a reflexivity claim a HashMap silently relies on. Palettes are
+            // small — the largest across 13 real files is 31 entries — so the
+            // quadratic term is not a real cost.
+            let index = match palette.iter().position(|e| e == entry) {
+                Some(i) => i as i32,
                 None => {
-                    let i = palette.len() as i32;
                     palette.push(entry.clone());
-                    seen.insert(entry.clone(), i);
-                    i
+                    (palette.len() - 1) as i32
                 }
             };
             remap.push(index);
@@ -1578,7 +1584,10 @@ pub(crate) fn unify_palettes(pieces: &[Structure]) -> (Vec<BlockState>, Vec<Vec<
 }
 ```
 
-`BlockState` must be `Eq + Hash`, which Task 3 already derives. `nbtx::Value` implements both.
+`BlockState` is `PartialEq + Hash` but **not** `Eq`, which is why this deduplicates by linear
+scan rather than with a `HashMap`. Do not "fix" that by adding `impl Eq for BlockState {}`:
+`nbtx::Value` holds `Float(f32)`/`Double(f64)`, so reflexivity is not guaranteed, and a
+`HashMap` would silently rely on it.
 
 In `crates/construct-core/src/lib.rs`, add `pub mod merge;` after `pub mod mcstructure;`.
 
@@ -1845,7 +1854,9 @@ fn a_mix_of_zero_and_real_origins_proceeds_with_a_warning() {
 #[test]
 fn a_union_too_large_to_allocate_is_refused() {
     let a = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
-    let b = Build::solid([1, 1, 1], [100_000, 0, 0], "minecraft:dirt");
+    // Two axes, not one: [100_000, 0, 0] alone is a union of only 100_001
+    // blocks, far below DEFAULT_MAX_VOLUME, and would not refuse at all.
+    let b = Build::solid([1, 1, 1], [100_000, 0, 100_000], "minecraft:dirt");
     let err = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default()).unwrap_err();
     assert!(format!("{err}").contains("large"), "{err}");
 }
@@ -1855,7 +1866,10 @@ fn an_oversized_but_allocatable_union_warns_rather_than_refusing() {
     // Minecraft loads structures past 64*256*64 without trouble, so this is a
     // performance warning, not a limit (§9).
     let a = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
-    let b = Build::solid([1, 1, 1], [200, 0, 200], "minecraft:dirt");
+    // 2001 x 1 x 2001 = 4,004,001 blocks: above PERFORMANCE_WARN_VOLUME
+    // (64*256*64 = 1,048,576) and below DEFAULT_MAX_VOLUME (64,000,000), which
+    // is precisely the band this test is about.
+    let b = Build::solid([1, 1, 1], [2000, 0, 2000], "minecraft:dirt");
     let report = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default()).unwrap();
     assert!(
         report.warnings.iter().any(|w| w.contains("large")),
@@ -2342,10 +2356,13 @@ Then replace the `MergeReport { structure: Structure { … } }` construction's `
             let Some(&out_i) = placement[p].get(&local_index) else {
                 continue;
             };
+            // Insert only for the piece that owns the cell. There is exactly
+            // one owner per cell, so no stale entry can survive and nothing
+            // needs removing. An `else { remove }` arm here would be actively
+            // wrong under OnOverlap::First, where the winner writes first and
+            // the later loser would delete the winner's data.
             if owner[0][out_i] == Some(p) {
                 block_position_data.insert(out_i, data.clone());
-            } else {
-                block_position_data.remove(&out_i);
             }
         }
     }
@@ -2362,7 +2379,7 @@ Then replace the `MergeReport { structure: Structure { … } }` construction's `
 
 and use `block_position_data` and `entities` in the returned `Structure`.
 
-The `else { block_position_data.remove(&out_i); }` arm matters: a losing piece processed *after* the winner must not leave stale data behind, and under `OnOverlap::First` the winner is the earlier piece.
+Note there is no `else` arm removing anything. Each cell has exactly one owner, so inserting only for the owner cannot leave stale data — and a remove arm would break `OnOverlap::First`, where the winner writes first and the later loser would delete it again.
 
 - [ ] **Step 4: Verify**
 
@@ -2991,6 +3008,189 @@ git commit -m "Record what stage 3 measured, corrected, and left behind"
 ```
 
 ---
+
+---
+
+### Task 10: Refuse deeply nested NBT instead of aborting the process
+
+Added during execution, after Task 3's review found it and the controller reproduced it.
+
+**The defect.** `nbtx`'s deserializer is recursive descent with no depth limit, so a small
+file of deeply nested compounds exhausts the stack. Measured against this workspace: 100 and
+5,000 levels of nesting refuse cleanly, but **50,000 levels — a 250 KB file — produces
+`fatal runtime error: stack overflow, aborting` and exit 134.** That is a `SIGABRT`, not a
+catchable panic, so no `Result`-based handling in `decode` can intercept it, and it violates
+the global constraint that `construct-core` never panics.
+
+The exposure is not limited to stage 3. `leveldat.rs` has fed `nbtx::from_le_bytes` a
+world's `level.dat` since stage 1 with the same weakness; `mcstructure::decode` is simply the
+first call site taking fully untrusted, potentially adversarial bytes.
+
+**Why in the dependency rather than in `construct-core`.** The alternative — pre-scanning the
+byte stream for depth before handing it to `nbtx` — means writing a second, complete NBT
+structural parser and keeping it in sync with the real one. Fixing it once inside the
+deserializer covers `.mcstructure`, `level.dat`, and every future caller.
+
+**Files:**
+- Create: `third_party/patches/0004-nbtx-recursion-depth-limit.patch`
+- Modify: `scripts/setup-deps.sh`, `crates/construct-core/src/mcstructure/decode.rs` (module
+  doc only), `crates/construct-core/tests/mcstructure.rs`
+
+**Interfaces:**
+- Consumes: the patched `nbtx` checkout from Task 1.
+- Produces: no new public names in `construct-core`. `decode` gains a new refusal path.
+
+- [ ] **Step 1: Confirm the defect first-hand**
+
+Write a throwaway program under `/tmp` that builds `depth` nested `TAG_Compound`s and feeds
+them to `construct_core::mcstructure::decode`. The byte pattern for one level is
+`0x0a 0x01 0x00 b'a'` (TAG_Compound, name length 1, name `a`), followed by one `0x00`
+(TAG_End) per level at the end. Run it at 100, 5000, and 50000 and record what each does.
+Expected: the first two refuse with a `BadStructureFile` error, the third aborts with a stack
+overflow and exit code 134.
+
+- [ ] **Step 2: Add the depth counter to the deserializer**
+
+In `third_party/checkouts/nbtx/src/nbt/de.rs`, add a field to `pub struct Deserializer`
+alongside `next_ty` and `is_key`:
+
+```rust
+    /// How many container levels deep this deserializer currently is. NBT
+    /// nesting is parsed by recursive descent, so an attacker-supplied file of
+    /// deeply nested compounds exhausts the stack — an abort, not a catchable
+    /// panic. `SeqDeserializer` and `MapDeserializer` both borrow this
+    /// `Deserializer` mutably, so one counter covers the whole nesting.
+    depth: usize,
+```
+
+Initialise it to `0` wherever the struct is constructed.
+
+The limit itself:
+
+```rust
+/// Deepest container nesting accepted before a file is refused.
+///
+/// Real `.mcstructure` files nest about 7 levels to reach a block state, and
+/// perhaps 15 through a chest's item tags; a `level.dat` is comparable. 512 is
+/// far beyond any legitimate file and far below the ~5,000-plus levels that
+/// begin to threaten the stack.
+pub const MAX_DEPTH: usize = 512;
+```
+
+- [ ] **Step 3: Enforce it on both container entry points**
+
+`deserialize_map` and `deserialize_seq` are the only two paths that recurse. In each, before
+constructing the `MapDeserializer`/`SeqDeserializer`, increment and check; decrement after the
+visitor returns. Return the crate's existing error type — do not panic, and do not `unwrap`.
+Both functions must decrement on the error path as well as the success path, or a file with a
+recoverable error deep inside one branch would poison the count for later branches.
+
+- [ ] **Step 4: Add the upstream regression test**
+
+In `third_party/checkouts/nbtx/src/test.rs`:
+
+```rust
+#[test]
+fn nesting_past_the_depth_limit_is_refused_not_aborted() {
+    // Without a limit this overflows the stack, which is an abort rather than
+    // a catchable panic — no Result-based handling can intercept it.
+    let depth = crate::nbt::de::MAX_DEPTH + 10;
+    let mut bytes = Vec::new();
+    for _ in 0..depth {
+        bytes.extend_from_slice(&[0x0a, 0x01, 0x00, b'a']);
+    }
+    for _ in 0..depth {
+        bytes.push(0x00);
+    }
+    let parsed: Result<crate::Value, _> = crate::from_le_bytes(&mut bytes.as_slice());
+    assert!(parsed.is_err(), "deeply nested NBT must be refused, not accepted");
+}
+
+#[test]
+fn ordinary_nesting_is_still_accepted() {
+    // A guard set too low would refuse real files. This is deeper than any
+    // real .mcstructure or level.dat and must still parse.
+    let mut value = crate::Value::Compound(Default::default());
+    for _ in 0..64 {
+        let mut m = std::collections::HashMap::new();
+        m.insert("inner".to_string(), value);
+        value = crate::Value::Compound(m);
+    }
+    let bytes = crate::to_le_bytes(&value).unwrap();
+    let parsed: crate::Value = crate::from_le_bytes(&mut bytes.as_slice()).unwrap();
+    assert_eq!(parsed, value);
+}
+```
+
+Run `cd third_party/checkouts/nbtx && cargo test`. All previously passing tests must still
+pass — Task 1 left 17 there.
+
+- [ ] **Step 5: Capture the patch and wire it in**
+
+```bash
+cd third_party/checkouts/nbtx
+git diff > ../../patches/0004-nbtx-recursion-depth-limit.patch
+```
+
+The checkout already carries Task 1's changes, so `git diff` against the pinned revision
+produces a patch containing **both** fixes. That is wrong — each patch must apply
+independently. Instead, capture only this task's changes: commit Task 1's patch state locally
+first (`git -C third_party/checkouts/nbtx add -A && git -C third_party/checkouts/nbtx commit -m wip`)
+before making this task's edits, then `git diff` yields only the new work. Verify by applying
+`0003` and then `0004` in that order to a pristine clone at `bd28e77` and confirming both apply
+and the suite passes.
+
+Then add to `scripts/setup-deps.sh`'s `nbtx` entry, which currently passes a single patch. Give
+`clone_and_patch` the ability to apply several patches in order, or add a second call — whichever
+keeps the script readable — so a fresh clone gets `0003` then `0004`.
+
+- [ ] **Step 6: Add the decoder-level test**
+
+In `crates/construct-core/tests/mcstructure.rs`:
+
+```rust
+#[test]
+fn deeply_nested_nbt_is_refused_rather_than_overflowing_the_stack() {
+    // A 250 KB file of 50,000 nested compounds used to abort the process with
+    // a stack overflow — exit 134, not a catchable panic. The depth limit in
+    // the patched nbtx turns it into an ordinary refusal.
+    let depth = 50_000;
+    let mut bytes = Vec::new();
+    for _ in 0..depth {
+        bytes.extend_from_slice(&[0x0a, 0x01, 0x00, b'a']);
+    }
+    for _ in 0..depth {
+        bytes.push(0x00);
+    }
+    let err = mcstructure::decode(&bytes, "deep.mcstructure").unwrap_err();
+    assert!(
+        format!("{err}").contains("deep.mcstructure"),
+        "the refusal must name the file: {err}"
+    );
+}
+```
+
+- [ ] **Step 7: Record it in the decoder's module doc**
+
+Add to `crates/construct-core/src/mcstructure/decode.rs`'s module comment:
+
+```rust
+//! Nesting depth is bounded by the patched `nbtx` (see
+//! `third_party/patches/0004-*`): NBT is parsed by recursive descent, so an
+//! unbounded file of nested compounds would exhaust the stack — an abort, not
+//! an error this function could return.
+```
+
+- [ ] **Step 8: Verify and commit**
+
+```bash
+cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --all --check
+git add third_party/patches/0004-nbtx-recursion-depth-limit.patch scripts/setup-deps.sh         crates/construct-core/src/mcstructure/decode.rs crates/construct-core/tests/mcstructure.rs
+git commit -m "Refuse deeply nested NBT instead of overflowing the stack"
+```
+
+Re-run the Step 1 probe afterwards: 50,000 levels must now refuse cleanly with exit 0 rather
+than aborting with 134.
 
 ## Self-Review
 
