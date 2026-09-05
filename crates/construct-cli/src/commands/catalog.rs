@@ -5,6 +5,7 @@ use crate::output::Out;
 use construct_core::Result;
 use construct_core::catalog::{self, Entry, Source};
 use construct_core::discovery::{Installation, World, installation};
+use construct_core::error::CoreError;
 use construct_core::pack;
 use construct_core::store::{self, OpenedStore};
 
@@ -12,6 +13,11 @@ pub struct Loaded {
     pub entries: Vec<Entry>,
     /// Held open so `catalog::read_entry` can fetch world-source bytes.
     pub store: Option<OpenedStore>,
+    /// Every pack whose structures this world sees, in the order
+    /// `pack::serving` returns them. Commands that write need the first one
+    /// (the world's home); `delete` needs to know which pack a file it is
+    /// about to unlink came from.
+    pub packs: Vec<pack::Home>,
 }
 
 /// Builds the unified catalog `list`, `copy`, and `export` all resolve names
@@ -37,20 +43,31 @@ pub fn for_world(
         (entries, Some(store))
     };
 
+    let mut packs = Vec::new();
     let pack_entries = if source == Some(Source::World) {
         Vec::new()
     } else {
-        match installation::for_world(installations, world).and_then(|i| pack::for_world(world, i))
-        {
-            Ok(target) => {
-                if let Some(other) = &target.also_at {
-                    out.warn(format!(
-                        "two copies of Construct; using {} (the world's own), not {}",
-                        target.pack.dir.display(),
-                        other.display()
-                    ));
+        // Every pack serving this world, not just one: a world running the
+        // shared Construct sees that pack's structures *and* its own
+        // structures pack, and reporting one of the two would misstate what
+        // the world has.
+        match installation::for_world(installations, world).and_then(|i| {
+            let serving = pack::serving(world, i);
+            if serving.is_empty() {
+                Err(CoreError::ConstructNotInstalled {
+                    searched: pack::searched_roots(world, i),
+                })
+            } else {
+                Ok(serving)
+            }
+        }) {
+            Ok(serving) => {
+                let mut entries = Vec::new();
+                for home in &serving {
+                    entries.extend(catalog::from_pack(&home.dir, home.kind.scope()));
                 }
-                catalog::from_pack(&target.pack.dir)
+                packs = serving;
+                entries
             }
             // Asking for pack structures on a machine with no Construct is an
             // error; a plain `list` just says so and shows the world.
@@ -67,5 +84,9 @@ pub fn for_world(
     };
 
     let entries = catalog::unify(world_entries, pack_entries);
-    Ok(Loaded { entries, store })
+    Ok(Loaded {
+        entries,
+        store,
+        packs,
+    })
 }

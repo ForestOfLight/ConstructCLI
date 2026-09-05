@@ -527,6 +527,126 @@ fn a_traversal_structure_name_is_refused_and_writes_nothing() {
 }
 
 #[test]
+fn o_without_an_extension_gets_mcstructure() {
+    // `-o castle` is unambiguous, and the only file Minecraft loads is a
+    // `.mcstructure`, so the extension is completed rather than demanded.
+    let (_tmp, world) = fixture_world();
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .args([
+            "export",
+            world.to_str().unwrap(),
+            "house",
+            "-o",
+            dir.path().join("castle").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(dir.path().join("castle.mcstructure").is_file());
+    assert!(!dir.path().join("castle").exists());
+    // The path printed is the one written, not the one asked for.
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("castle.mcstructure"), "stdout:\n{text}");
+}
+
+#[test]
+fn o_with_another_extension_is_refused() {
+    // The bytes would be right and the file would be one the game never
+    // offers to load. Usage error: nothing is written.
+    let (_tmp, world) = fixture_world();
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .args([
+            "export",
+            world.to_str().unwrap(),
+            "house",
+            "-o",
+            dir.path().join("castle.txt").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(".txt"),
+        "the error names what was given: {stderr}"
+    );
+    assert!(
+        stderr.contains("castle.mcstructure"),
+        "and what to write instead: {stderr}"
+    );
+    assert!(
+        std::fs::read_dir(dir.path()).unwrap().next().is_none(),
+        "a usage error writes nothing"
+    );
+}
+
+#[test]
+fn o_with_an_uppercase_extension_is_accepted_as_given() {
+    // The filesystems this runs on are case-insensitive; refusing
+    // `CASTLE.MCSTRUCTURE` would refuse a name that already works.
+    let (_tmp, world) = fixture_world();
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .args([
+            "export",
+            world.to_str().unwrap(),
+            "house",
+            "-o",
+            dir.path().join("CASTLE.MCSTRUCTURE").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(dir.path().join("CASTLE.MCSTRUCTURE").is_file());
+}
+
+#[test]
+fn a_merge_target_without_an_extension_gets_mcstructure_too() {
+    // `--merge` writes its target through a different branch of the command,
+    // so it gets its own check that the extension rule reached it.
+    let a = merge_fixture([1, 1, 1], [0, 0, 0], "minecraft:stone");
+    let b = merge_fixture([1, 1, 1], [3, 0, 0], "minecraft:dirt");
+    let root = world_with_construct(&[("north", &a), ("tower", &b)]);
+    let dir = tempfile::tempdir().unwrap();
+
+    let out = bin()
+        .args([
+            "export",
+            "Test",
+            "north",
+            "tower",
+            "--merge",
+            "-o",
+            dir.path().join("both").to_str().unwrap(),
+            // This fixture's `db/` is a stub directory, not a real LevelDB.
+            "--source",
+            "pack",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(dir.path().join("both.mcstructure").is_file());
+}
+
+#[test]
 fn other_traversal_shapes_are_also_refused() {
     let (_tmp, world) = fixture_world_with_extra_structures(&[
         ("mystructure:a/../../b", b"AAAAAAAA"),
@@ -998,9 +1118,77 @@ fn copy_writes_bytes_into_the_destination_worlds_own_construct() {
     // is what disambiguates that case, so the payload must carry it.
     assert_eq!(v["from"], "flag1/Test");
     assert_eq!(v["to"], "flag1/Other");
+    // Which copy took the write, in the payload as well as in the printed
+    // line — `import` has reported this since stage 2 and `copy` writes into
+    // the same two places.
+    assert_eq!(v["scope"], "world");
 
     let written = bp.join("structures/barn.mcstructure");
     assert_eq!(std::fs::read(&written).unwrap(), b"barn-bytes");
+}
+
+#[test]
+fn copy_creates_the_destination_worlds_structures_pack() {
+    // `copy` always names a destination world, so it always writes somewhere
+    // that world owns: with no structures pack yet it creates one, rather
+    // than falling back to the shared Construct and putting the structure in
+    // every world.
+    //
+    // The source keeps `barn` in its own copy of Construct so the two ends of
+    // the copy are genuinely different packs.
+    let root = world_with_construct(&[]);
+    let source_local = root
+        .path()
+        .join("minecraftWorlds/Test/behavior_packs/Construct[BP]");
+    std::fs::create_dir_all(source_local.join("structures")).unwrap();
+    std::fs::copy(
+        root.path()
+            .join("development_behavior_packs/Construct[BP]/manifest.json"),
+        source_local.join("manifest.json"),
+    )
+    .unwrap();
+    std::fs::write(
+        source_local.join("structures/barn.mcstructure"),
+        b"barn-bytes",
+    )
+    .unwrap();
+
+    let other = root.path().join("minecraftWorlds/Other");
+    std::fs::create_dir_all(other.join("db")).unwrap();
+    std::fs::write(other.join("levelname.txt"), "Other").unwrap();
+    std::fs::write(other.join("level.dat"), b"x").unwrap();
+
+    // `--source pack` for the same reason as the test above: this fixture's
+    // `db/` is a stub directory, not a real LevelDB.
+    let out = bin()
+        .args([
+            "copy",
+            "Test",
+            "barn",
+            "Other",
+            "--source",
+            "pack",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("Other's structures pack") && text.contains("that world only"),
+        "stdout:\n{text}"
+    );
+    assert_eq!(
+        std::fs::read(other.join("behavior_packs/ConstructStructures/structures/barn.mcstructure"))
+            .unwrap(),
+        b"barn-bytes"
+    );
 }
 
 #[test]
@@ -1136,11 +1324,52 @@ fn import_derives_a_name_from_the_file_stem_and_reports_it() {
     );
 
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["name"], "my_house");
-    assert_eq!(v["id"], "mystructure:my_house");
+    // The space becomes `_`; the capitals are the user's and are kept.
+    assert_eq!(v["name"], "My_House");
+    assert_eq!(v["id"], "mystructure:My_House");
+    // Into the world's own structures pack, which this import created: the
+    // world's Construct is the shared copy, so writing there would have put
+    // the structure in every world using it.
+    let written = root.path().join(
+        "minecraftWorlds/Test/behavior_packs/ConstructStructures/structures/My_House.mcstructure",
+    );
+    assert_eq!(std::fs::read(&written).unwrap(), b"structure-bytes");
+}
+
+#[test]
+fn import_accepts_a_name_with_capitals() {
+    // `--name` used to refuse any capital, which made half the structures a
+    // world holds unaddressable: `construct list` prints `10HzCounter`, and
+    // nothing could then import or copy under that name.
+    let root = world_with_construct(&[]);
+    let src = root.path().join("counter.mcstructure");
+    std::fs::write(&src, b"structure-bytes").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            src.to_str().unwrap(),
+            "--name",
+            "10HzCounter",
+            "--world",
+            "Test",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["name"], "10HzCounter");
     let written = root
         .path()
-        .join("development_behavior_packs/Construct[BP]/structures/my_house.mcstructure");
+        .join("minecraftWorlds/Test/behavior_packs/ConstructStructures/structures/10HzCounter.mcstructure");
     assert_eq!(std::fs::read(&written).unwrap(), b"structure-bytes");
 }
 
@@ -1171,7 +1400,31 @@ fn import_refuses_an_unusable_name_instead_of_mangling_it() {
 
 #[test]
 fn import_refuses_to_overwrite_without_force() {
-    let root = world_with_construct(&[("house", b"original")]);
+    // The collision that matters is one inside the destination pack, so the
+    // first import establishes it: it creates the world's structures pack and
+    // puts `house` there. A `house` in the *shared* pack would not collide at
+    // all now — different pack, different file — and only warns.
+    let root = world_with_construct(&[]);
+    let original = root.path().join("original.mcstructure");
+    std::fs::write(&original, b"original").unwrap();
+    assert!(
+        bin()
+            .args([
+                "import",
+                original.to_str().unwrap(),
+                "--name",
+                "house",
+                "--world",
+                "Test",
+                "--com-mojang",
+                root.path().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
     let src = root.path().join("house.mcstructure");
     std::fs::write(&src, b"replacement").unwrap();
     let args = [
@@ -1186,14 +1439,85 @@ fn import_refuses_to_overwrite_without_force() {
     let out = bin().args(args).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("--force"));
-    let target = root
-        .path()
-        .join("development_behavior_packs/Construct[BP]/structures/house.mcstructure");
+    let target = root.path().join(
+        "minecraftWorlds/Test/behavior_packs/ConstructStructures/structures/house.mcstructure",
+    );
     assert_eq!(std::fs::read(&target).unwrap(), b"original");
 
     let out = bin().args(args).arg("--force").output().unwrap();
     assert!(out.status.success());
     assert_eq!(std::fs::read(&target).unwrap(), b"replacement");
+}
+
+#[test]
+fn import_says_when_it_wrote_into_the_shared_construct() {
+    // Without `--world` there is no per-world home to choose, so the shared
+    // Construct is the deliberate destination — and the one case where a
+    // single import reaches every world, which is why it is said out loud.
+    let root = world_with_construct(&[]);
+    let src = root.path().join("tower.mcstructure");
+    std::fs::write(&src, b"x").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            src.to_str().unwrap(),
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("development_behavior_packs") && text.contains("shared by every world"),
+        "stdout:\n{text}"
+    );
+    assert!(
+        !text.contains("own copy"),
+        "this world has no copy of its own: {text}"
+    );
+}
+
+#[test]
+fn import_says_when_it_wrote_into_a_worlds_own_construct() {
+    // The same world, plus its own copy of Construct — which takes precedence
+    // over the shared one, and confines the structure to that world.
+    let root = world_with_construct(&[]);
+    let local = root
+        .path()
+        .join("minecraftWorlds/Test/behavior_packs/Construct[BP]");
+    std::fs::create_dir_all(local.join("structures")).unwrap();
+    std::fs::copy(
+        root.path()
+            .join("development_behavior_packs/Construct[BP]/manifest.json"),
+        local.join("manifest.json"),
+    )
+    .unwrap();
+    let src = root.path().join("tower.mcstructure");
+    std::fs::write(&src, b"x").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            src.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("Test's own copy of Construct") && text.contains("that world only"),
+        "stdout:\n{text}"
+    );
+    assert!(
+        !text.contains("shared by every world"),
+        "the world's own copy won, so the shared wording must not appear: {text}"
+    );
 }
 
 #[test]
@@ -1267,6 +1591,572 @@ fn delete_unlinks_a_pack_structure() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(!file.exists());
+}
+
+#[test]
+fn delete_says_when_it_removed_from_the_shared_construct() {
+    // Removing from the shared pack takes the structure away from every world
+    // using it, not just the one named on the command line — the same
+    // distinction `import` and `copy` state on the way in.
+    let root = world_with_construct(&[("bomber", b"x")]);
+
+    let out = bin()
+        .args([
+            "delete",
+            "Test",
+            "bomber",
+            "--source",
+            "pack",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["scope"], "shared");
+
+    // And in the printed output, which is where a person reads it.
+    let root = world_with_construct(&[("bomber", b"x")]);
+    let out = bin()
+        .args([
+            "delete",
+            "Test",
+            "bomber",
+            "--source",
+            "pack",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("development_behavior_packs") && text.contains("shared by every world"),
+        "stdout:\n{text}"
+    );
+}
+
+#[test]
+fn delete_says_when_it_removed_from_a_worlds_own_construct() {
+    // The world's own copy shadows the shared one, so this delete affects
+    // that world alone — and the shared copy still holds its own `bomber`,
+    // which this command must neither touch nor claim to have touched.
+    let root = world_with_construct(&[("bomber", b"shared-copy")]);
+    let local = root
+        .path()
+        .join("minecraftWorlds/Test/behavior_packs/Construct[BP]");
+    std::fs::create_dir_all(local.join("structures")).unwrap();
+    std::fs::copy(
+        root.path()
+            .join("development_behavior_packs/Construct[BP]/manifest.json"),
+        local.join("manifest.json"),
+    )
+    .unwrap();
+    std::fs::write(local.join("structures/bomber.mcstructure"), b"local-copy").unwrap();
+
+    let out = bin()
+        .args([
+            "delete",
+            "Test",
+            "bomber",
+            "--source",
+            "pack",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("Test's own copy of Construct") && text.contains("that world only"),
+        "stdout:\n{text}"
+    );
+    assert!(
+        !text.contains("shared by every world"),
+        "the shared copy was not touched: {text}"
+    );
+    assert!(
+        !local.join("structures/bomber.mcstructure").exists(),
+        "the world's own copy should be gone"
+    );
+    assert_eq!(
+        std::fs::read(
+            root.path()
+                .join("development_behavior_packs/Construct[BP]/structures/bomber.mcstructure")
+        )
+        .unwrap(),
+        b"shared-copy",
+        "the shared copy must survive untouched"
+    );
+}
+
+#[test]
+fn list_with_no_world_shows_only_the_shared_pack() {
+    // The installation's own view: what every world using this pack gets.
+    // A world's own structures are not part of that answer, and no database
+    // is opened to produce it.
+    let root = world_with_construct(&[("shared_prefab", b"x")]);
+    let src = root.path().join("mine.mcstructure");
+    std::fs::write(&src, b"y").unwrap();
+    assert!(
+        bin()
+            .args([
+                "import",
+                src.to_str().unwrap(),
+                "--world",
+                "Test",
+                "--com-mojang",
+                root.path().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    let out = bin()
+        .args([
+            "list",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["world"], serde_json::Value::Null, "no world was named");
+    let names: Vec<&str> = v["structures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["shared_prefab"], "{v}");
+    assert_eq!(v["structures"][0]["scope"], "shared");
+}
+
+#[test]
+fn list_with_no_world_refuses_source_world() {
+    // A world's structures live in a world's database, and none was named.
+    let root = world_with_construct(&[]);
+    let out = bin()
+        .args([
+            "list",
+            "--source",
+            "world",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--source world"), "stderr:\n{stderr}");
+}
+
+#[test]
+fn list_with_no_world_and_no_construct_points_at_install() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
+    let out = bin()
+        .args(["list", "--com-mojang", root.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("construct install"));
+}
+
+#[test]
+fn list_says_which_pack_each_structure_is_in() {
+    // The question this whole split exists to answer: is this structure mine
+    // alone, or does every world using the shared install have it? Both packs
+    // serve this world, so both appear, distinguished.
+    let root = world_with_construct(&[("shared_prefab", b"x")]);
+    let src = root.path().join("mine.mcstructure");
+    std::fs::write(&src, b"y").unwrap();
+    assert!(
+        bin()
+            .args([
+                "import",
+                src.to_str().unwrap(),
+                "--world",
+                "Test",
+                "--com-mojang",
+                root.path().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    let out = bin()
+        .args([
+            "list",
+            "Test",
+            "--source",
+            "pack",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("mine") && l.contains("pack:world")),
+        "stdout:\n{text}"
+    );
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("shared_prefab") && l.contains("pack:shared")),
+        "stdout:\n{text}"
+    );
+}
+
+#[test]
+fn a_second_import_uses_the_structures_pack_the_first_one_created() {
+    // The first import creates the home; the second has to find it and say
+    // what it is, rather than creating a second one or falling back to the
+    // shared Construct.
+    let root = world_with_construct(&[]);
+    let src = root.path().join("tower.mcstructure");
+    std::fs::write(&src, b"x").unwrap();
+    let import = |name: &str| {
+        bin()
+            .args([
+                "import",
+                src.to_str().unwrap(),
+                "--name",
+                name,
+                "--world",
+                "Test",
+                "--com-mojang",
+                root.path().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap()
+    };
+    assert!(import("first").status.success());
+
+    let out = import("second");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("Test's structures pack") && text.contains("that world only"),
+        "stdout:\n{text}"
+    );
+    assert!(
+        !text.contains("created"),
+        "the pack already existed: {text}"
+    );
+    let structures = root
+        .path()
+        .join("minecraftWorlds/Test/behavior_packs/ConstructStructures/structures");
+    assert!(structures.join("first.mcstructure").is_file());
+    assert!(structures.join("second.mcstructure").is_file());
+}
+
+#[test]
+fn a_name_in_two_packs_serving_one_world_warns() {
+    // Different packs, different files — so the file-level collision rule has
+    // nothing to refuse. The game loads both and logs a conflict, which is
+    // not something the tool can resolve, only report.
+    let root = world_with_construct(&[("house", b"shared")]);
+    let src = root.path().join("house.mcstructure");
+    std::fs::write(&src, b"mine").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            src.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("conflict") && stderr.contains("house"),
+        "stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn install_world_gives_the_world_its_own_structures_pack() {
+    let root = tempfile::tempdir().unwrap();
+    let world = root.path().join("minecraftWorlds/Test");
+    std::fs::create_dir_all(world.join("db")).unwrap();
+    std::fs::write(world.join("levelname.txt"), "Test").unwrap();
+    write_level_dat(&world.join("level.dat"), 0);
+    let addon = build_mcaddon_bytes();
+    let (base, _server) = stub_github(addon);
+
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args([
+            "install",
+            "--world",
+            "Test",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let shell = world.join("behavior_packs/ConstructStructures");
+    assert!(shell.join("manifest.json").is_file(), "no manifest");
+    assert!(shell.join("structures").is_dir(), "no structures folder");
+    // Enabled, or the game would never load what is put in it.
+    let enabled = std::fs::read_to_string(world.join("world_behavior_packs.json")).unwrap();
+    assert!(
+        enabled.contains("9f7d83af-309e-4997-840e-e9c350435e83"),
+        "structures pack not enabled: {enabled}"
+    );
+}
+
+#[test]
+fn install_world_gives_no_structures_pack_to_a_world_that_has_its_own_construct() {
+    // That world's Construct copy already holds a per-world `structures/`;
+    // a second pack beside it would split one world's structures in two.
+    let root = tempfile::tempdir().unwrap();
+    let world = root.path().join("minecraftWorlds/Test");
+    std::fs::create_dir_all(world.join("db")).unwrap();
+    std::fs::write(world.join("levelname.txt"), "Test").unwrap();
+    write_level_dat(&world.join("level.dat"), 0);
+    let local = world.join("behavior_packs/Construct[BP]");
+    std::fs::create_dir_all(local.join("structures")).unwrap();
+    std::fs::write(
+        local.join("manifest.json"),
+        r#"{"format_version":2,
+            "header":{"name":"Construct [BP] v1.2.0","uuid":"8c0c0153-d8b9-482a-889f-aef922b8fe58","version":[1,2,0]},
+            "modules":[{"type":"data","uuid":"f4d52ae1-2c26-4938-b8c2-7e455d495620","version":[1,0,0]}]}"#,
+    )
+    .unwrap();
+    let addon = build_mcaddon_bytes();
+    let (base, _server) = stub_github(addon);
+
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args([
+            "install",
+            "--world",
+            "Test",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !world.join("behavior_packs/ConstructStructures").exists(),
+        "a world with its own Construct needs no shell pack"
+    );
+}
+
+/// A world that sees `house` twice: once in the shared Construct, once in its
+/// own structures pack. The state every user reaches by giving a world its own
+/// copy of something the shared pack already had.
+fn world_seeing_one_name_in_both_packs() -> tempfile::TempDir {
+    let root = world_with_construct(&[("house", b"shared-copy")]);
+    let src = root.path().join("house.mcstructure");
+    std::fs::write(&src, b"world-copy").unwrap();
+    assert!(
+        bin()
+            .args([
+                "import",
+                src.to_str().unwrap(),
+                "--world",
+                "Test",
+                "--com-mojang",
+                root.path().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    root
+}
+
+fn shared_house(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("development_behavior_packs/Construct[BP]/structures/house.mcstructure")
+}
+
+fn world_house(root: &std::path::Path) -> std::path::PathBuf {
+    root.join(
+        "minecraftWorlds/Test/behavior_packs/ConstructStructures/structures/house.mcstructure",
+    )
+}
+
+#[test]
+fn a_name_in_both_packs_is_refused_and_points_at_pack_not_source() {
+    // `--source pack` cannot separate two packs — both matches *are* pack
+    // entries — so pointing at it would send the user round a loop that never
+    // resolves. Before `--pack` existed, this name could not be deleted at
+    // all.
+    let root = world_seeing_one_name_in_both_packs();
+    let out = bin()
+        .args([
+            "delete",
+            "Test",
+            "house",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--pack world"), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("pack:shared") && stderr.contains("pack:world"),
+        "both packs must be named: {stderr}"
+    );
+    // Refused means nothing was touched.
+    assert!(shared_house(root.path()).is_file());
+    assert!(world_house(root.path()).is_file());
+}
+
+#[test]
+fn delete_pack_world_removes_the_worlds_copy_and_leaves_the_shared_one() {
+    let root = world_seeing_one_name_in_both_packs();
+    let out = bin()
+        .args([
+            "delete",
+            "Test",
+            "house",
+            "--pack",
+            "world",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(
+        !world_house(root.path()).exists(),
+        "the world's copy is gone"
+    );
+    assert_eq!(
+        std::fs::read(shared_house(root.path())).unwrap(),
+        b"shared-copy",
+        "the shared copy is untouched"
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Test's structures pack"), "stdout:\n{text}");
+}
+
+#[test]
+fn delete_pack_shared_removes_the_shared_copy_and_leaves_the_worlds() {
+    let root = world_seeing_one_name_in_both_packs();
+    let out = bin()
+        .args([
+            "delete",
+            "Test",
+            "house",
+            "--pack",
+            "shared",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(
+        !shared_house(root.path()).exists(),
+        "the shared copy is gone"
+    );
+    assert_eq!(
+        std::fs::read(world_house(root.path())).unwrap(),
+        b"world-copy",
+        "the world's copy is untouched"
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("shared by every world"), "stdout:\n{text}");
+}
+
+#[test]
+fn pack_filters_a_listing_to_one_pack() {
+    // The same flag reads as well as it deletes: it is a filter on which pack
+    // is being talked about, not a delete-only escape hatch.
+    let root = world_seeing_one_name_in_both_packs();
+    let out = bin()
+        .args([
+            "list",
+            "Test",
+            "--pack",
+            "shared",
+            // This fixture's `db/` is a stub directory, not a real LevelDB —
+            // see the note on `world_with_construct`.
+            "--source",
+            "pack",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = v["structures"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{v}");
+    assert_eq!(rows[0]["name"], "house");
+    assert_eq!(rows[0]["scope"], "shared");
 }
 
 #[test]
@@ -2136,6 +3026,73 @@ fn status_reports_the_installed_version_and_which_worlds_have_it() {
 }
 
 #[test]
+fn status_counts_the_structures_in_every_pack_it_can_see() {
+    // The cross-world view: `list` answers one world at a time, and a
+    // structure in the shared pack is in every world using it. Only this
+    // shows both at once.
+    let root = world_with_construct(&[("shared_prefab", b"x")]);
+    let src = root.path().join("mine.mcstructure");
+    std::fs::write(&src, b"y").unwrap();
+    for name in ["mine", "also_mine"] {
+        assert!(
+            bin()
+                .args([
+                    "import",
+                    src.to_str().unwrap(),
+                    "--name",
+                    name,
+                    "--world",
+                    "Test",
+                    "--com-mojang",
+                    root.path().to_str().unwrap(),
+                ])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", "http://127.0.0.1:1")
+        .args([
+            "status",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let shared = &v["structures"][0];
+    assert_eq!(shared["world"], serde_json::Value::Null);
+    assert_eq!(shared["scope"], "shared");
+    assert_eq!(shared["count"], 1);
+    let world = &v["structures"][1];
+    assert_eq!(world["world"], "Test");
+    assert_eq!(world["scope"], "world");
+    assert_eq!(world["count"], 2);
+
+    // And in the printed form, which is where a person reads it.
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", "http://127.0.0.1:1")
+        .args(["status", "--com-mojang", root.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("1 in the shared pack") && text.contains("2 in Test's structures pack"),
+        "stdout:\n{text}"
+    );
+}
+
+#[test]
 fn status_without_construct_points_at_install() {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
@@ -2395,6 +3352,105 @@ fn install_without_a_world_ignores_whether_any_world_is_in_use() {
             .join("development_behavior_packs/Construct[BP]/manifest.json")
             .is_file()
     );
+}
+
+#[test]
+fn a_flip_that_required_a_closed_world_does_not_ask_for_a_reload() {
+    // `experiment --beta-apis on` refuses outright while the world is open,
+    // so a flip that succeeded happened with the world closed. Telling the
+    // user to reload a world they are not in is noise.
+    let root = world_with_experiments(0);
+    let backups = root.path().join("backups");
+    let config = root.path().join("config.toml");
+    std::fs::write(
+        &config,
+        format!("[backups]\ndir = {:?}\nkeep = 5\n", backups),
+    )
+    .unwrap();
+
+    let out = bin()
+        .env("CONSTRUCT_CONFIG", &config)
+        .args([
+            "experiment",
+            "Test",
+            "--beta-apis",
+            "on",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("Beta APIs: off \u{2192} on"),
+        "the flip itself must still be reported: {text}"
+    );
+    assert!(!text.to_lowercase().contains("reload"), "stdout:\n{text}");
+}
+
+#[test]
+fn a_world_install_does_not_ask_for_a_reload() {
+    // Same reasoning: `--world` refuses while the world is open, so by the
+    // time it succeeds there is no live session to reload.
+    let root = world_with_experiments(0);
+    let backups = root.path().join("backups");
+    let config = root.path().join("config.toml");
+    std::fs::write(
+        &config,
+        format!("[backups]\ndir = {:?}\nkeep = 5\n", backups),
+    )
+    .unwrap();
+    let addon = build_mcaddon_bytes();
+    let (base, _server) = stub_github(addon);
+
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .env("CONSTRUCT_CONFIG", &config)
+        .args([
+            "install",
+            "--world",
+            "Test",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("Beta APIs on"),
+        "the --world half must have run: {text}"
+    );
+    assert!(!text.to_lowercase().contains("reload"), "stdout:\n{text}");
+}
+
+#[test]
+fn an_install_without_a_world_still_asks_for_a_reload() {
+    // Nothing on this path checks whether a world is open, and a world
+    // already running Construct keeps the old version until it is reloaded.
+    let root = world_with_experiments(0);
+    let addon = build_mcaddon_bytes();
+    let (base, _server) = stub_github(addon);
+
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args(["install", "--com-mojang", root.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.to_lowercase().contains("reload"), "stdout:\n{text}");
 }
 
 #[test]

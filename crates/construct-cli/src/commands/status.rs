@@ -5,8 +5,14 @@
 //! from the shared pack's own manifest, the latest release GitHub has (when
 //! reachable), and which worlds have Construct's behaviour pack enabled.
 //!
-//! Reading "which worlds" is a few small `world_behavior_packs.json` files —
-//! nothing here opens a world's `db/`.
+//! It also reports where this installation's worlds keep their structures.
+//! `list` answers that one world at a time; a structure in the shared pack is
+//! in every world using it, and only a cross-world view shows that at a
+//! glance.
+//!
+//! Reading "which worlds" is a few small `world_behavior_packs.json` files,
+//! and counting structures is a directory listing per pack — nothing here
+//! opens a world's `db/`.
 
 use crate::output::Out;
 use construct_core::discovery::{Installation, World};
@@ -22,6 +28,19 @@ struct Payload {
     pack: String,
     latest: Option<String>,
     enabled_worlds: Vec<String>,
+    structures: Vec<PackRow>,
+}
+
+/// One pack that holds structures, and how many it holds.
+#[derive(Serialize)]
+struct PackRow {
+    /// The world this pack belongs to, or null for the installation's shared
+    /// copy, which belongs to every world using it.
+    world: Option<String>,
+    /// `shared`, or `world` for a pack only one world sees.
+    scope: &'static str,
+    path: String,
+    count: usize,
 }
 
 pub fn run(
@@ -57,6 +76,40 @@ pub fn run(
         .map(|w| w.display_name.clone())
         .collect();
 
+    // Where structures live, shared copy first. A world with no home yet has
+    // no structures of its own and no row: the shared line above it already
+    // says what that world sees.
+    let mut structures = vec![PackRow {
+        world: None,
+        scope: "shared",
+        path: installed.dir.display().to_string(),
+        count: pack::structures::list(&installed.dir).len(),
+    }];
+    let mut structure_lines = vec![format!(
+        "{} in the shared pack, which every world using it sees",
+        structures[0].count
+    )];
+    for world in worlds
+        .iter()
+        .filter(|w| w.installation == installation.name)
+    {
+        let Some(home) = pack::home(world) else {
+            continue;
+        };
+        structures.push(PackRow {
+            world: Some(world.display_name.clone()),
+            scope: "world",
+            path: home.dir.display().to_string(),
+            count: pack::structures::list(&home.dir).len(),
+        });
+        let last = structures.last().expect("just pushed");
+        structure_lines.push(format!(
+            "{} in {}",
+            last.count,
+            crate::commands::pack_short(home.kind, &world.display_name)
+        ));
+    }
+
     out.line(format!(
         "Construct {version} at {}",
         installed.dir.display()
@@ -71,6 +124,10 @@ pub fn run(
     } else {
         out.line(format!("  enabled in: {}", enabled.join(", ")));
     }
+    out.line("structures:");
+    for line in &structure_lines {
+        out.line(format!("  {line}"));
+    }
 
     out.emit(Payload {
         installation: installation.name.clone(),
@@ -78,6 +135,7 @@ pub fn run(
         pack: installed.dir.display().to_string(),
         latest,
         enabled_worlds: enabled,
+        structures,
     });
     Ok(())
 }

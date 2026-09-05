@@ -87,7 +87,6 @@ pub fn run(world: &World, state: Option<bool>, backups: &Backups, out: &mut Out)
             describe(Some(change.after))
         ));
         out.line(format!("  backup: {}", backup.display()));
-        out.line("Reload the world for the change to take effect.");
     } else {
         out.line(format!(
             "Beta APIs already {}; nothing to do",

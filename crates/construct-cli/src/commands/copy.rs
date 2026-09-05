@@ -11,7 +11,7 @@ use crate::output::Out;
 use construct_core::Result;
 use construct_core::catalog::{self, Source};
 use construct_core::discovery::{Installation, World, installation};
-use construct_core::pack::{self, structures};
+use construct_core::pack::structures;
 use construct_core::store::StructureStore;
 use serde::Serialize;
 
@@ -23,39 +23,42 @@ struct Payload {
     to: String,
     path: String,
     bytes: u64,
+    /// Which copy of Construct took the write: the destination world's own,
+    /// or the installation's shared one. `import` has reported this since
+    /// stage 2; `copy` writes into exactly the same two places.
+    scope: &'static str,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     src: &World,
     structure: &str,
     dst: &World,
     installations: &[Installation],
     source: Option<Source>,
+    pack_scope: Option<construct_core::pack::Scope>,
     force: bool,
     out: &mut Out,
 ) -> Result<()> {
     let loaded = loader::for_world(src, installations, source, out)?;
-    let entry = catalog::resolve(structure, &loaded.entries, source)?;
+    let entry = catalog::resolve(structure, &loaded.entries, source, pack_scope)?;
     let bytes = catalog::read_entry(
         &entry,
         loaded.store.as_ref().map(|s| s as &dyn StructureStore),
     )?;
 
     let dst_installation = installation::for_world(installations, dst)?;
-    let target = pack::for_world(dst, dst_installation)?;
-    if let Some(other) = &target.also_at {
-        out.warn(format!(
-            "two copies of Construct on {}; writing into {}, not {}",
-            dst.display_name,
-            target.pack.dir.display(),
-            other.display()
-        ));
-    }
-    let path = structures::write(&target.pack.dir, &entry.id, &bytes, force)?;
+    let home = crate::commands::home_for_write(dst, dst_installation, out)?;
+    crate::commands::warn_if_another_pack_has_it(dst, dst_installation, &home.dir, &entry.id, out);
+    let path = structures::write(&home.dir, &entry.id, &bytes, force)?;
 
     out.line(format!(
         "copied {} from {} to {}",
         entry.name, src.display_name, dst.display_name
+    ));
+    out.line(format!(
+        "  into {}",
+        crate::commands::pack_phrase(home.kind, Some(dst.display_name.as_str()))
     ));
     out.line(format!("  {}", path.display()));
     out.line("Reload the destination world before Construct sees it.");
@@ -74,6 +77,7 @@ pub fn run(
         to: dst.qualified(),
         path: path.display().to_string(),
         bytes: bytes.len() as u64,
+        scope: crate::commands::scope_field(home.kind),
     });
     Ok(())
 }

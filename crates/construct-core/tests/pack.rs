@@ -143,6 +143,166 @@ fn the_pack_roots_are_the_documented_folder_names() {
     );
 }
 
+// --- where a world's structures live ---
+
+/// A world directory under `com_mojang/minecraftWorlds/`, so that
+/// `world_behavior_root` and the shared root are the real two places.
+fn world_in(com_mojang: &Path, folder: &str) -> World {
+    let dir = com_mojang.join("minecraftWorlds").join(folder);
+    std::fs::create_dir_all(&dir).unwrap();
+    test_world(&dir)
+}
+
+#[test]
+fn a_world_with_no_pack_of_its_own_has_no_home_yet() {
+    // Not an error and not the shared pack: the shared copy serves every
+    // world, so it can never be where one world's structures are written.
+    let root = tempfile::tempdir().unwrap();
+    make_pack(
+        &root.path().join("development_behavior_packs"),
+        "Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        false,
+    );
+    let world = world_in(root.path(), "Test");
+    assert!(pack::home(&world).is_none());
+}
+
+#[test]
+fn the_structures_pack_is_the_home_when_there_is_one() {
+    let root = tempfile::tempdir().unwrap();
+    let world = world_in(root.path(), "Test");
+    let created = pack::shell::create(&world, None).unwrap();
+
+    let home = pack::home(&world).expect("the shell pack is a home");
+    assert_eq!(home.kind, pack::HomeKind::StructuresPack);
+    assert_eq!(home.dir, created.dir);
+    assert_eq!(home.kind.scope(), pack::Scope::WorldLocal);
+}
+
+#[test]
+fn a_worlds_own_construct_outranks_a_structures_pack() {
+    // A world whose Construct is its own already keeps structures per-world;
+    // writing into a second pack beside it would split them in two.
+    let root = tempfile::tempdir().unwrap();
+    let world = world_in(root.path(), "Test");
+    pack::shell::create(&world, None).unwrap();
+    let local = make_pack(
+        &pack::world_behavior_root(&world),
+        "Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        false,
+    );
+
+    let home = pack::home(&world).expect("home");
+    assert_eq!(home.kind, pack::HomeKind::ConstructInWorld);
+    assert_eq!(home.dir, local);
+}
+
+#[test]
+fn a_world_on_the_shared_construct_is_served_by_it_and_by_its_own_pack() {
+    let root = tempfile::tempdir().unwrap();
+    let shared = make_pack(
+        &root.path().join("development_behavior_packs"),
+        "Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        false,
+    );
+    let world = world_in(root.path(), "Test");
+    let shell = pack::shell::create(&world, None).unwrap();
+
+    let serving = pack::serving(&world, &test_installation(root.path()));
+    assert_eq!(
+        serving.iter().map(|h| h.kind).collect::<Vec<_>>(),
+        vec![
+            pack::HomeKind::SharedConstruct,
+            pack::HomeKind::StructuresPack
+        ]
+    );
+    assert_eq!(serving[0].dir, shared);
+    assert_eq!(serving[1].dir, shell.dir);
+}
+
+#[test]
+fn a_worlds_own_construct_hides_the_shared_one_from_that_world() {
+    // Both copies carry Construct's header UUID, so the game loads the
+    // world's and never the shared one. Listing the shared copy's structures
+    // for this world would name structures it cannot see.
+    let root = tempfile::tempdir().unwrap();
+    make_pack(
+        &root.path().join("development_behavior_packs"),
+        "Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 2, 0],
+        false,
+    );
+    let world = world_in(root.path(), "Test");
+    let local = make_pack(
+        &pack::world_behavior_root(&world),
+        "Construct[BP]",
+        pack::CONSTRUCT_BP_UUID,
+        [1, 1, 0],
+        false,
+    );
+
+    let serving = pack::serving(&world, &test_installation(root.path()));
+    assert_eq!(
+        serving.iter().map(|h| h.kind).collect::<Vec<_>>(),
+        vec![pack::HomeKind::ConstructInWorld]
+    );
+    assert_eq!(serving[0].dir, local);
+}
+
+#[test]
+fn the_structures_pack_is_a_readable_behaviour_pack_with_a_structures_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let world = world_in(root.path(), "Test");
+    let icon_src = root.path().join("Construct[BP]");
+    std::fs::create_dir_all(&icon_src).unwrap();
+    std::fs::write(icon_src.join("pack_icon.png"), b"PNG-BYTES").unwrap();
+
+    let created = pack::shell::create(&world, Some(&icon_src)).unwrap();
+    assert_eq!(created.manifest.uuid, pack::shell::UUID);
+    assert_eq!(created.manifest.name, pack::shell::NAME);
+    assert!(structures::dir(&created.dir).is_dir());
+    // The icon is copied from Construct so the two read as a pair in the
+    // game's pack list.
+    assert_eq!(
+        std::fs::read(created.dir.join("pack_icon.png")).unwrap(),
+        b"PNG-BYTES"
+    );
+    // And it is a *behaviour* pack: a resource pack here would be enabled in
+    // the wrong list and load nothing.
+    assert_eq!(
+        created.manifest.kind,
+        construct_core::pack::manifest::PackKind::Behavior
+    );
+}
+
+#[test]
+fn creating_a_structures_pack_twice_keeps_what_is_in_it() {
+    // An interrupted run leaves a half-made pack; the next command repairs it
+    // rather than needing a reinstall, and must not drop structures doing so.
+    let root = tempfile::tempdir().unwrap();
+    let world = world_in(root.path(), "Test");
+    let first = pack::shell::create(&world, None).unwrap();
+    std::fs::write(
+        structures::dir(&first.dir).join("house.mcstructure"),
+        b"bytes",
+    )
+    .unwrap();
+
+    let again = pack::shell::create(&world, None).unwrap();
+    assert_eq!(again.dir, first.dir);
+    assert_eq!(
+        std::fs::read(structures::dir(&first.dir).join("house.mcstructure")).unwrap(),
+        b"bytes"
+    );
+}
+
 use construct_core::pack::structures;
 
 fn touch(path: &Path, bytes: &[u8]) {
@@ -164,7 +324,12 @@ fn a_file_directly_in_structures_is_mystructure_namespaced() {
 }
 
 #[test]
-fn a_subdirectory_supplies_the_namespace_lowercased() {
+fn a_subdirectory_supplies_the_namespace_with_its_case_intact() {
+    // This folder name used to be lowercased on the way out, on the
+    // assumption that Minecraft namespaces are lowercase. Nothing measured
+    // supports that: the game stored `CanopyPlayers:players` in a local
+    // world's database unaltered. Reporting an id that differs from the one
+    // on disk would break `delete`, which addresses the file by that id.
     let root = tempfile::tempdir().unwrap();
     let pack = root.path().join("Understudy");
     touch(
@@ -173,9 +338,9 @@ fn a_subdirectory_supplies_the_namespace_lowercased() {
     );
 
     let found = structures::list(&pack);
-    assert_eq!(found[0].id, "understudy:players");
+    assert_eq!(found[0].id, "Understudy:players");
     // A non-default namespace stays visible in the display name.
-    assert_eq!(found[0].name, "understudy:players");
+    assert_eq!(found[0].name, "Understudy:players");
 }
 
 #[test]
@@ -275,8 +440,35 @@ fn write_creates_the_structures_folder_and_any_namespace_directory() {
 }
 
 #[test]
-fn derive_name_lowercases_and_maps_spaces() {
-    assert_eq!(structures::derive_name("My House").unwrap(), "my_house");
+fn a_name_with_capitals_is_accepted() {
+    // Capitals are ordinary in real structure names: `10HzCounter` and
+    // `CanopyPlayers:players` are both measured in local worlds. A pack write
+    // that refused them could not take a copy of either.
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    let at = structures::write(&pack, "10HzCounter", b"x", false).unwrap();
+    assert_eq!(at, pack.join("structures/10HzCounter.mcstructure"));
+    assert!(at.is_file());
+}
+
+#[test]
+fn a_namespace_with_capitals_survives_the_round_trip() {
+    // The namespace is a directory name on the way in and is read back off
+    // the filesystem on the way out, so anything normalising one side and not
+    // the other shows up here as an id that does not match what was written.
+    let root = tempfile::tempdir().unwrap();
+    let pack = root.path().join("P");
+    structures::write(&pack, "CanopyPlayers:players", b"x", false).unwrap();
+
+    let listed = structures::list(&pack);
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].id, "CanopyPlayers:players");
+    assert_eq!(listed[0].name, "CanopyPlayers:players");
+}
+
+#[test]
+fn derive_name_keeps_case_and_maps_spaces() {
+    assert_eq!(structures::derive_name("My House").unwrap(), "My_House");
     assert_eq!(
         structures::derive_name("tower-2.v1_a").unwrap(),
         "tower-2.v1_a"
@@ -303,7 +495,7 @@ fn pack_entries_carry_their_file_path() {
     let pack = root.path().join("Construct[BP]");
     touch(&pack.join("structures/bomber.mcstructure"), b"12345");
 
-    let entries = catalog::from_pack(&pack);
+    let entries = catalog::from_pack(&pack, construct_core::pack::Scope::WorldLocal);
     assert_eq!(entries[0].source, Source::Pack);
     assert_eq!(entries[0].id, "mystructure:bomber");
     assert_eq!(
@@ -321,6 +513,7 @@ fn unify_interleaves_both_sources_by_name() {
             source: Source::World,
             size_bytes: 1,
             path: None,
+            scope: None,
         },
         catalog::Entry {
             name: "zebra".into(),
@@ -328,6 +521,7 @@ fn unify_interleaves_both_sources_by_name() {
             source: Source::World,
             size_bytes: 1,
             path: None,
+            scope: None,
         },
     ];
     let pack = vec![catalog::Entry {
@@ -336,6 +530,7 @@ fn unify_interleaves_both_sources_by_name() {
         source: Source::Pack,
         size_bytes: 1,
         path: Some(std::path::PathBuf::from("/p/structures/barn.mcstructure")),
+        scope: None,
     }];
     let all = catalog::unify(world, pack);
     assert_eq!(
@@ -443,21 +638,21 @@ fn depth_does_not_change_the_flat_or_one_level_rules() {
 
     let ids: Vec<String> = structures::list(&pack).into_iter().map(|s| s.id).collect();
     assert!(ids.contains(&"mystructure:house".to_string()));
-    assert!(ids.contains(&"understudy:players".to_string()));
+    assert!(ids.contains(&"Understudy:players".to_string()));
     assert!(ids.contains(&"a:b/c/d".to_string()));
 }
 
 #[test]
-fn only_the_namespace_segment_is_lowercased() {
-    // Minecraft namespaces are lowercase, but the path after the namespace is
-    // part of the name and is left exactly as it sits on disk.
+fn every_segment_is_left_exactly_as_it_sits_on_disk() {
+    // Namespace, intermediate folders, and stem alike: the id is what the
+    // filesystem says, so what `list` prints is what `delete` can address.
     let root = tempfile::tempdir().unwrap();
     let pack = root.path().join("P");
     touch(
         &pack.join("structures/Stuff/Towers/Diamond.mcstructure"),
         b"x",
     );
-    assert_eq!(structures::list(&pack)[0].id, "stuff:Towers/Diamond");
+    assert_eq!(structures::list(&pack)[0].id, "Stuff:Towers/Diamond");
 }
 
 #[test]

@@ -6,9 +6,15 @@
 //! rewriting: an entity's placed position is `Pos - origin + load_position`,
 //! so shifting the origin and the load position together cancels out. See
 //! the plan's "Entity positions need no translation" note and §9.
+//!
+//! Space inside the union that no piece covers is filled with **air**, so
+//! placing the result clears the gaps between the pieces instead of leaving
+//! whatever terrain is already there. A structure void a piece records for
+//! itself is not a gap: it is a builder saying "leave this alone", and it
+//! survives the fill.
 
 use crate::error::{CoreError, Result};
-use crate::mcstructure::{BlockState, BoundingBox, Coord, Structure, VOID};
+use crate::mcstructure::{BlockState, BoundingBox, Coord, Size, Structure, VOID};
 use std::collections::BTreeMap;
 
 /// How to resolve two pieces both contributing a block at one position.
@@ -49,6 +55,19 @@ const PERFORMANCE_WARN_VOLUME: i64 = 64 * 256 * 64;
 /// tiny (a handful at most), so `u32::MAX` can never collide with a real
 /// index.
 const NO_OWNER: u32 = u32::MAX;
+
+/// The palette entry that fills the space between the pieces.
+const AIR: &str = "minecraft:air";
+
+/// A cell of the output grid no piece has claimed.
+///
+/// Distinct from [`VOID`], which a piece can legitimately record for itself:
+/// a structure void means "leave whatever is here alone", and merge keeps it.
+/// `GAP` is the rest — inside the union's bounding box but outside every
+/// piece's — and is replaced by air before the structure is built. The value
+/// is unreachable as a real index, and `encode` refuses any layer value that
+/// is neither [`VOID`] nor a palette index, so a leak cannot reach a file.
+const GAP: i32 = i32::MIN;
 
 impl Default for MergeOptions {
     fn default() -> Self {
@@ -104,6 +123,41 @@ fn checked_sub(a: Coord, b: Coord) -> Option<Coord> {
         y: a.y.checked_sub(b.y)?,
         z: a.z.checked_sub(b.z)?,
     })
+}
+
+/// Where a piece's own flattened block index lands in the merged grid.
+///
+/// `None` when the block cannot be placed: a coordinate whose world position
+/// is not representable (see [`checked_add`]), or one falling outside the
+/// union — neither of which a file this tool wrote can produce, and both of
+/// which the callers treat as "this piece contributes nothing here".
+fn out_index(piece: &Structure, i: usize, size: &Size, min: Coord) -> Option<usize> {
+    let local = piece.size.coord_of(i)?;
+    let world = checked_add(piece.origin, local)?;
+    let target = checked_sub(world, min)?;
+    size.index_of(target)
+}
+
+/// The merged palette's index for air, appending an entry if no piece had one.
+///
+/// An existing `minecraft:air` entry is reused, so merging structures that
+/// already contain air does not leave the result with two air entries. A new
+/// entry copies the highest block `version` in the palette: versions drive the
+/// game's block-upgrade path, and an entry stamped older than its neighbours
+/// would invite an upgrade pass the rest of the structure does not get. An
+/// empty palette leaves nothing to copy, and 0 — "unversioned", upgrade it —
+/// is harmless for air, which has never changed shape.
+fn air_index(palette: &mut Vec<BlockState>) -> i32 {
+    if let Some(i) = palette.iter().position(|e| e.name == AIR) {
+        return i as i32;
+    }
+    let version = palette.iter().map(|e| e.version).max().unwrap_or(0);
+    palette.push(BlockState {
+        name: AIR.to_string(),
+        states: nbtx::Value::Compound(std::collections::HashMap::new()),
+        version,
+    });
+    (palette.len() - 1) as i32
 }
 
 /// Merges `pieces` into one structure positioned at the min corner of the
@@ -168,11 +222,16 @@ pub fn merge(pieces: &[(String, Structure)], options: &MergeOptions) -> Result<M
     }
 
     let structures: Vec<Structure> = pieces.iter().map(|(_, s)| s.clone()).collect();
-    let (palette, remaps) = unify_palettes(&structures);
+    let (mut palette, remaps) = unify_palettes(&structures);
 
     let cells =
         usize::try_from(volume).map_err(|_| refused("merged size is too large to address"))?;
-    let mut layers = [vec![VOID; cells], vec![VOID; cells]];
+    // Layer 0 starts as gap — nothing has claimed any of it yet. Layer 1
+    // starts as void and stays that way wherever no piece writes: the second
+    // layer is void for most blocks in the files the game itself writes (see
+    // the reference documentation), and filling it with air would be a change
+    // to the extra/liquid layer nobody asked for.
+    let mut layers = [vec![GAP; cells], vec![VOID; cells]];
     // Which piece last wrote each cell of each layer, so an overlap can name
     // both contenders and `block_position_data` can follow the winner. A
     // `u32` with a sentinel rather than `Option<usize>`: the latter is 16
@@ -194,38 +253,39 @@ pub fn merge(pieces: &[(String, Structure)], options: &MergeOptions) -> Result<M
     // not a valid index into it, and must never be used to index it.
     let mut bad_indices: Vec<u64> = vec![0; pieces.len()];
 
+    // Pass one: mark the structure voids the pieces recorded for themselves,
+    // so the air fill at the end can tell them from the space between the
+    // pieces. This must finish before any block is written, or a later
+    // piece's void would erase an earlier piece's block — a piece
+    // contributes only where it is not void (§9), in both directions.
+    for (_, piece) in pieces.iter() {
+        for (i, &index) in piece.layers[0].iter().enumerate() {
+            if index != VOID {
+                continue;
+            }
+            if let Some(out_i) = out_index(piece, i, &size, union.min) {
+                layers[0][out_i] = VOID;
+            }
+        }
+    }
+
     for (p, (_, piece)) in pieces.iter().enumerate() {
         for layer in 0..2 {
             for (i, &index) in piece.layers[layer].iter().enumerate() {
                 if index == VOID {
                     continue;
                 }
-                let Some(local) = piece.size.coord_of(i) else {
-                    continue;
-                };
-                // Overflow here means this block's world position cannot be
-                // represented as an `i32` at all, so it cannot possibly land
-                // inside `union` (which is built from every piece's own
-                // bounding box). No legitimate file hits this path; skip
-                // rather than panic or wrap on a malformed one.
-                let Some(world) = checked_add(piece.origin, local) else {
-                    continue;
-                };
-                let Some(target) = checked_sub(world, union.min) else {
-                    continue;
-                };
-                let Some(out_i) = size.index_of(target) else {
+                let Some(out_i) = out_index(piece, i, &size, union.min) else {
                     continue;
                 };
 
                 // Required correction: `index` comes from a file this tool
                 // did not write, and the decoder accepts a value outside the
                 // palette. Indexing `remaps[p]` with it unchecked would
-                // panic. Treat it as void instead — the piece contributes
-                // nothing at this position — which diverges from the game
-                // (which would place air) but is the safer choice: air would
-                // carve into whatever terrain the merged structure is placed
-                // over, while void leaves it untouched.
+                // panic. The piece contributes nothing here instead, leaving
+                // the cell to the air fill below — which is what the game
+                // does with an out-of-range index too, so the merged result
+                // places what loading the original would have placed.
                 let Some(&remapped) = remaps[p].get(index as usize) else {
                     bad_indices[p] += 1;
                     continue;
@@ -262,8 +322,8 @@ pub fn merge(pieces: &[(String, Structure)], options: &MergeOptions) -> Result<M
     for (p, &count) in bad_indices.iter().enumerate() {
         if count > 0 {
             warnings.push(format!(
-                "{} has {count} block index value(s) outside its palette; treated as void rather \
-                 than placed as air",
+                "{} has {count} block index value(s) outside its palette; treated as air, \
+                 which is what the game places for them",
                 pieces[p].0
             ));
         }
@@ -291,6 +351,20 @@ pub fn merge(pieces: &[(String, Structure)], options: &MergeOptions) -> Result<M
             "structures overlap and --on-overlap=error was given: {}",
             detail.join("; ")
         )));
+    }
+
+    // Everything still marked `GAP` is space between the pieces: inside the
+    // union, outside every piece's own bounding box. Fill it with air so
+    // placing the merged structure clears those gaps, rather than leaving
+    // them to whatever terrain the structure lands on. The air entry is
+    // appended only if a gap actually exists, so a merge that tiles its
+    // union exactly gets the palette its pieces had. Appending cannot
+    // disturb `remaps`, whose indices were assigned before it.
+    let mut air = None;
+    for cell in layers[0].iter_mut() {
+        if *cell == GAP {
+            *cell = *air.get_or_insert_with(|| air_index(&mut palette));
+        }
     }
 
     // `block_position_data` follows the block that won its cell. Walking the

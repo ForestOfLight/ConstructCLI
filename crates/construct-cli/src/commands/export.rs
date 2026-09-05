@@ -118,6 +118,7 @@ pub fn run(
     structures: &[String],
     output: Option<&Path>,
     source: Option<Source>,
+    pack_scope: Option<construct_core::pack::Scope>,
     force: bool,
     merge: bool,
     on_overlap: OnOverlap,
@@ -134,6 +135,7 @@ pub fn run(
             structures,
             output,
             source,
+            pack_scope,
             force,
             on_overlap,
             out,
@@ -145,7 +147,7 @@ pub fn run(
     // leaving half a job done.
     let mut plan: Vec<(catalog::Entry, PathBuf)> = Vec::new();
     for name in structures {
-        let entry = catalog::resolve(name, &entries, source)?;
+        let entry = catalog::resolve(name, &entries, source, pack_scope)?;
         let target = match output {
             Some(path) => path.to_path_buf(),
             None => {
@@ -229,6 +231,7 @@ fn run_merge(
     structures: &[String],
     output: Option<&Path>,
     source: Option<Source>,
+    pack_scope: Option<construct_core::pack::Scope>,
     force: bool,
     on_overlap: OnOverlap,
     out: &mut Out,
@@ -243,7 +246,7 @@ fn run_merge(
     let store = store.map(|s| s as &dyn StructureStore);
     let mut pieces = Vec::new();
     for name in structures {
-        let entry = catalog::resolve(name, entries, source)?;
+        let entry = catalog::resolve(name, entries, source, pack_scope)?;
         let bytes = catalog::read_entry(&entry, store)?;
         let decoded = mcstructure::decode(&bytes, &entry.name)?;
         pieces.push((entry.name.clone(), decoded));
