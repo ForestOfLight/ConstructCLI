@@ -464,9 +464,9 @@ allocation guard, not a game limit — Minecraft loads structures beyond structu
 dimensions without trouble, so oversized results produce a **performance warning**, not a
 refusal.
 
-### The encoder is not yet usable
+### The empty-list encoder bug, fixed in stage 3
 
-Measured against three real `.mcstructure` files and a synthetic case: **`nbtx` 3.0.1 cannot
+Measured against three real `.mcstructure` files and a synthetic case: **`nbtx` 3.0.1 could not
 serialize an empty list.** It writes the `TAG_List` id and the name, then omits both the
 element-type byte and the four-byte length — five bytes short — and the result is NBT that
 `nbtx` itself refuses to parse.
@@ -477,9 +477,10 @@ Compound { "empty": List([]) }
                         ^ the element type and length are simply missing
 ```
 
-Every `.mcstructure` examined carries at least one empty list, so this is not an edge case:
-`bomber` has five, `construct` and `bubble_column` one each, and each file re-serializes
-exactly five bytes shorter per empty list.
+Of the three files first examined, every one carried at least one empty list, so this was not
+an edge case: `bomber` had five, `construct` and `bubble_column` one each, and each file
+re-serialized exactly five bytes shorter per empty list. Of the thirteen files measured later
+(below), twelve did; one, `creaking.mcstructure`, has none.
 
 The same crate also converts `ByteArray`, `IntArray`, and `LongArray` into `List` on parse,
 so those tags cannot survive a round-trip either.
