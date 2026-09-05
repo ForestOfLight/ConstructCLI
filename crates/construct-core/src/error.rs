@@ -90,6 +90,9 @@ pub enum CoreError {
     #[error("malformed structure {what}: {reason}")]
     BadStructureFile { what: String, reason: String },
 
+    #[error("cannot merge: {reason}")]
+    MergeRefused { reason: String },
+
     #[error("Construct is not installed")]
     ConstructNotInstalled { searched: Vec<PathBuf> },
 
