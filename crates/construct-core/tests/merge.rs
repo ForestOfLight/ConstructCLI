@@ -74,19 +74,170 @@ fn two_disjoint_pieces_land_at_their_world_positions() {
 }
 
 #[test]
-fn the_gap_between_pieces_is_void_not_air() {
-    // Void leaves existing terrain alone; air would carve holes in whatever
-    // the merged structure is placed over (§9).
+fn the_gap_between_pieces_is_air() {
+    // The space between the pieces is filled, so placing the result clears
+    // it instead of leaving whatever terrain the structure lands on.
     let a = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
     let b = Build::solid([1, 1, 1], [3, 0, 0], "minecraft:dirt");
     let out = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default())
         .unwrap()
         .structure;
 
-    assert_eq!(block_at(&out, 0, Coord { x: 1, y: 0, z: 0 }), None);
-    assert_eq!(block_at(&out, 0, Coord { x: 2, y: 0, z: 0 }), None);
-    let void_count = out.layers[0].iter().filter(|&&i| i == VOID).count();
-    assert_eq!(void_count, 2);
+    assert_eq!(
+        block_at(&out, 0, Coord { x: 1, y: 0, z: 0 }),
+        Some("minecraft:air")
+    );
+    assert_eq!(
+        block_at(&out, 0, Coord { x: 2, y: 0, z: 0 }),
+        Some("minecraft:air")
+    );
+    // Nothing on layer 0 is left void: neither piece recorded a void of its
+    // own, so every cell of the union is either a block or filled air.
+    assert_eq!(out.layers[0].iter().filter(|&&i| i == VOID).count(), 0);
+}
+
+#[test]
+fn the_gap_is_filled_on_the_first_layer_only() {
+    // The second layer is void for most blocks in the files the game itself
+    // writes; filling it would be a change to the extra/liquid layer that
+    // merging two structures has no reason to make.
+    let a = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
+    let b = Build::solid([1, 1, 1], [3, 0, 0], "minecraft:dirt");
+    let out = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default())
+        .unwrap()
+        .structure;
+
+    assert_eq!(block_at(&out, 1, Coord { x: 1, y: 0, z: 0 }), None);
+    assert!(
+        out.layers[1].iter().all(|&i| i == VOID),
+        "{:?}",
+        out.layers[1]
+    );
+}
+
+#[test]
+fn a_pieces_own_structure_void_is_kept_rather_than_filled() {
+    // The discriminating case for the fill: world x=1 is void because piece
+    // a says so — a builder marking "leave this alone" — while world x=2 is
+    // void only because no piece reaches it. The first must survive; the
+    // second must become air.
+    let mut a = Build::solid([2, 1, 1], [0, 0, 0], "minecraft:stone");
+    a.layer0 = vec![0, VOID];
+    let b = Build::solid([1, 1, 1], [3, 0, 0], "minecraft:dirt");
+    let out = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default())
+        .unwrap()
+        .structure;
+
+    assert_eq!(
+        block_at(&out, 0, Coord { x: 1, y: 0, z: 0 }),
+        None,
+        "a structure void a piece recorded for itself must survive the fill"
+    );
+    assert_eq!(
+        block_at(&out, 0, Coord { x: 2, y: 0, z: 0 }),
+        Some("minecraft:air")
+    );
+}
+
+#[test]
+fn a_pieces_void_does_not_erase_an_earlier_pieces_block() {
+    // The void marking runs as its own pass before any block is written, so
+    // the order of the two passes is worth pinning: b's void at world x=1
+    // must not overwrite a's block there, whichever pass wrote first.
+    let a = Build::solid([2, 1, 1], [0, 0, 0], "minecraft:stone");
+    let mut b = Build::solid([2, 1, 1], [1, 0, 0], "minecraft:dirt");
+    b.layer0 = vec![VOID, 0];
+    let out = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default())
+        .unwrap()
+        .structure;
+
+    assert_eq!(
+        block_at(&out, 0, Coord { x: 1, y: 0, z: 0 }),
+        Some("minecraft:stone")
+    );
+}
+
+#[test]
+fn air_recorded_by_a_piece_stays_air() {
+    // Air a builder placed is a block like any other. These two pieces tile
+    // their union exactly, so nothing here comes from the gap fill.
+    let mut a = Build::solid([2, 1, 1], [0, 0, 0], "minecraft:stone");
+    a.palette.push(block("minecraft:air"));
+    a.layer0 = vec![0, 1];
+    let b = Build::solid([1, 1, 1], [2, 0, 0], "minecraft:dirt");
+    let out = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default())
+        .unwrap()
+        .structure;
+
+    assert_eq!(
+        block_at(&out, 0, Coord { x: 1, y: 0, z: 0 }),
+        Some("minecraft:air")
+    );
+}
+
+#[test]
+fn no_air_entry_is_added_when_the_pieces_tile_the_union() {
+    // Two pieces flush against each other leave no gap, so the merged
+    // palette is exactly what the pieces brought.
+    let a = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
+    let b = Build::solid([1, 1, 1], [1, 0, 0], "minecraft:dirt");
+    let out = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default())
+        .unwrap()
+        .structure;
+
+    assert_eq!(
+        out.palette
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["minecraft:stone", "minecraft:dirt"]
+    );
+}
+
+#[test]
+fn the_fill_reuses_an_air_entry_a_piece_already_had() {
+    let mut a = Build::solid([2, 1, 1], [0, 0, 0], "minecraft:stone");
+    a.palette.push(block("minecraft:air"));
+    a.layer0 = vec![0, 1];
+    let b = Build::solid([1, 1, 1], [4, 0, 0], "minecraft:dirt");
+    let out = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default())
+        .unwrap()
+        .structure;
+
+    assert_eq!(
+        block_at(&out, 0, Coord { x: 3, y: 0, z: 0 }),
+        Some("minecraft:air"),
+        "the gap must still be filled"
+    );
+    assert_eq!(
+        out.palette
+            .iter()
+            .filter(|p| p.name == "minecraft:air")
+            .count(),
+        1,
+        "a second air entry would be a duplicate: {:?}",
+        out.palette.iter().map(|p| &p.name).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn an_added_air_entry_carries_the_pieces_block_version() {
+    // Block versions drive the game's upgrade path. An air entry stamped
+    // older than its neighbours would invite an upgrade pass the rest of the
+    // structure does not get. `support::block` builds every fixture entry at
+    // 18163713.
+    let a = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
+    let b = Build::solid([1, 1, 1], [3, 0, 0], "minecraft:dirt");
+    let out = merge::merge(&[named("a", &a), named("b", &b)], &MergeOptions::default())
+        .unwrap()
+        .structure;
+
+    let air = out
+        .palette
+        .iter()
+        .find(|p| p.name == "minecraft:air")
+        .expect("the gap must have added an air entry");
+    assert_eq!(air.version, 18163713);
 }
 
 #[test]
@@ -320,7 +471,7 @@ fn a_piece_at_an_extreme_origin_does_not_panic() {
 // --- malformed input: out-of-range palette index ---
 
 #[test]
-fn an_out_of_range_palette_index_is_treated_as_void_and_warned_about() {
+fn an_out_of_range_palette_index_becomes_air_and_is_warned_about() {
     // The decoder deliberately accepts a block_indices value outside the
     // palette (the game places air for it), so merge must tolerate it rather
     // than index its per-piece remap table out of bounds.
@@ -338,8 +489,9 @@ fn an_out_of_range_palette_index_is_treated_as_void_and_warned_about() {
 
     assert_eq!(
         block_at(&report.structure, 0, Coord { x: 6, y: 0, z: 0 }),
-        None,
-        "an out-of-range index must contribute nothing, not panic or place a bogus block"
+        Some("minecraft:air"),
+        "an out-of-range index must place air — what the game does with it — \
+         not panic or place a bogus block"
     );
     assert!(
         report
