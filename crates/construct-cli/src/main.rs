@@ -113,13 +113,25 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
             world,
             structures,
             output,
+            merge,
+            on_overlap,
         } => {
-            if structures.len() > 1 && output.is_some() {
+            if *merge && output.is_none() {
+                // --merge produces one file, and there is no structure name to
+                // derive it from — the result is not any one of the inputs.
+                eprintln!(
+                    "error: --merge writes a single file and needs -o to name it\n\n\
+                     construct export <world> <s1> <s2>... --merge -o merged.mcstructure"
+                );
+                std::process::exit(2);
+            }
+            if !*merge && structures.len() > 1 && output.is_some() {
                 // -o names a single file and cannot name several. Usage error,
                 // not a failure: nothing was attempted.
                 eprintln!(
                     "error: -o takes a single output file, but {} structures were given\n\n\
-                     Drop -o to write one file per structure, or pass --merge (stage 3).",
+                     Drop -o to write one file per structure, or add --merge to combine them \
+                     into one.",
                     structures.len()
                 );
                 std::process::exit(2);
@@ -132,6 +144,8 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 output.as_deref(),
                 cli.source.map(Into::into),
                 cli.force,
+                *merge,
+                (*on_overlap).into(),
                 out,
             )
         }
@@ -280,6 +294,15 @@ fn report(err: &CoreError) {
         }
         CoreError::TargetExists { .. } => {
             eprintln!("\nPass --force to overwrite.");
+        }
+        CoreError::MergeRefused { .. } => {
+            eprintln!(
+                "\nNothing was written. Check that the structures were saved at different \
+                 places in the world — merge reassembles them at their recorded positions."
+            );
+        }
+        CoreError::BadStructureFile { .. } => {
+            eprintln!("\nThe file is not a readable .mcstructure.");
         }
         CoreError::AmbiguousStructure { name, sources } => {
             eprintln!("\n{name} exists in: {}", sources.join(", "));

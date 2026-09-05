@@ -10,6 +10,8 @@ use construct_core::Result;
 use construct_core::catalog::{self, Source};
 use construct_core::discovery::{Installation, World};
 use construct_core::error::CoreError;
+use construct_core::mcstructure;
+use construct_core::merge::{self, MergeOptions, OnOverlap};
 use construct_core::store::StructureStore;
 use serde::Serialize;
 use std::io;
@@ -109,6 +111,7 @@ fn sanitize_for_filename(name: &str) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     world: &World,
     installations: &[Installation],
@@ -116,10 +119,26 @@ pub fn run(
     output: Option<&Path>,
     source: Option<Source>,
     force: bool,
+    merge: bool,
+    on_overlap: OnOverlap,
     out: &mut Out,
 ) -> Result<()> {
     let loaded = loader::for_world(world, installations, source, out)?;
     let entries = loaded.entries;
+
+    if merge {
+        return run_merge(
+            world,
+            &entries,
+            loaded.store.as_ref(),
+            structures,
+            output,
+            source,
+            force,
+            on_overlap,
+            out,
+        );
+    }
 
     // Resolve every name and target path before writing anything, so a
     // collision — or a refused name — stops the whole command rather than
@@ -172,6 +191,115 @@ pub fn run(
     out.emit(Payload {
         world: world.qualified(),
         written,
+    });
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct MergedPayload {
+    world: String,
+    merged: Merged,
+}
+
+#[derive(Serialize)]
+struct Merged {
+    path: String,
+    bytes: u64,
+    sources: Vec<String>,
+    size: [i32; 3],
+    origin: [i32; 3],
+    overlaps: Vec<OverlapRow>,
+}
+
+#[derive(Serialize)]
+struct OverlapRow {
+    count: u64,
+    pieces: Vec<String>,
+}
+
+/// `--merge`: decode every named structure, combine them, and write one file.
+///
+/// Unlike the plain path this one must decode — merge is the only command that
+/// looks inside a `.mcstructure` at all. Everything else copies bytes.
+#[allow(clippy::too_many_arguments)]
+fn run_merge(
+    world: &World,
+    entries: &[catalog::Entry],
+    store: Option<&construct_core::store::OpenedStore>,
+    structures: &[String],
+    output: Option<&Path>,
+    source: Option<Source>,
+    force: bool,
+    on_overlap: OnOverlap,
+    out: &mut Out,
+) -> Result<()> {
+    let target = output.expect("main.rs refuses --merge without -o");
+    if target.exists() && !force {
+        return Err(CoreError::TargetExists {
+            path: target.to_path_buf(),
+        });
+    }
+
+    let store = store.map(|s| s as &dyn StructureStore);
+    let mut pieces = Vec::new();
+    for name in structures {
+        let entry = catalog::resolve(name, entries, source)?;
+        let bytes = catalog::read_entry(&entry, store)?;
+        let decoded = mcstructure::decode(&bytes, &entry.name)?;
+        pieces.push((entry.name.clone(), decoded));
+    }
+
+    let options = MergeOptions {
+        on_overlap,
+        ..MergeOptions::default()
+    };
+    let report = merge::merge(&pieces, &options)?;
+
+    for warning in &report.warnings {
+        out.warn(warning.clone());
+    }
+    for overlap in &report.overlaps {
+        out.warn(format!(
+            "{} blocks overlapped between {:?} and {:?}",
+            overlap.count, overlap.pieces[0], overlap.pieces[1]
+        ));
+    }
+
+    let bytes = mcstructure::encode(&report.structure, &target.display().to_string())?;
+    if let Some(parent) = target.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(target, &bytes)?;
+
+    let s = &report.structure;
+    out.line(format!(
+        "wrote {} ({}) — {} x {} x {} from {} structures",
+        target.display(),
+        human_size(bytes.len() as u64),
+        s.size.x,
+        s.size.y,
+        s.size.z,
+        pieces.len()
+    ));
+    out.line("Reload the world before Construct sees it.");
+
+    out.emit(MergedPayload {
+        world: world.qualified(),
+        merged: Merged {
+            path: target.display().to_string(),
+            bytes: bytes.len() as u64,
+            sources: pieces.into_iter().map(|(n, _)| n).collect(),
+            size: [s.size.x, s.size.y, s.size.z],
+            origin: [s.origin.x, s.origin.y, s.origin.z],
+            overlaps: report
+                .overlaps
+                .iter()
+                .map(|o| OverlapRow {
+                    count: o.count,
+                    pieces: o.pieces.clone(),
+                })
+                .collect(),
+        },
     });
     Ok(())
 }

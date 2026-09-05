@@ -64,6 +64,13 @@ pub enum Command {
         /// Output file. Only valid with a single structure.
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
+        /// Combine the structures into one, reassembled at their saved world
+        /// positions. Requires -o.
+        #[arg(long)]
+        merge: bool,
+        /// How to resolve positions where two structures both have a block.
+        #[arg(long, value_name = "MODE", default_value = "last")]
+        on_overlap: OverlapArg,
     },
 
     /// Copy a .mcstructure file into Construct's structures folder.
@@ -128,5 +135,25 @@ pub enum OnOff {
 impl OnOff {
     pub fn as_bool(self) -> bool {
         self == OnOff::On
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
+pub enum OverlapArg {
+    /// The structure named later on the command line wins.
+    Last,
+    /// The structure named earlier on the command line wins.
+    First,
+    /// Refuse the merge.
+    Error,
+}
+
+impl From<OverlapArg> for construct_core::merge::OnOverlap {
+    fn from(v: OverlapArg) -> Self {
+        match v {
+            OverlapArg::Last => Self::Last,
+            OverlapArg::First => Self::First,
+            OverlapArg::Error => Self::Error,
+        }
     }
 }
