@@ -21,6 +21,27 @@ pub struct WorldRef {
     pub extra_segments: bool,
 }
 
+/// Whether an input reads as a filesystem path rather than a world reference.
+///
+/// No reference form is rooted: a name is a name, and a qualified reference is
+/// `<installation>/<account>/<world>`. So a rooted input is a path the user
+/// expected to exist, and saying that beats offering near-matching world names.
+///
+/// Every spelling is recognised on every platform, so the two do not disagree
+/// about what a reference means. Deliberately *not* a bare `contains(':')`:
+/// Minecraft's default level name embeds a time, as in
+/// "Advanced Automation 10/13/21 23:33:18", and that is a name, not a path.
+/// A drive letter only counts when the colon follows a single letter.
+fn looks_like_path(input: &str) -> bool {
+    let drive_letter = match input.as_bytes() {
+        [d, b':', rest @ ..] => {
+            d.is_ascii_alphabetic() && matches!(rest, [] | [b'/', ..] | [b'\\', ..])
+        }
+        _ => false,
+    };
+    input.starts_with('/') || input.starts_with('\\') || drive_letter
+}
+
 /// Splits a reference into its segments. Never fails — an unparseable reference
 /// is simply a world name that will not match.
 pub fn parse(input: &str) -> WorldRef {
@@ -98,13 +119,20 @@ pub fn resolve(input: &str, worlds: &[World]) -> Result<World> {
         by_folder
     };
 
+    // A path is only ever a path once it has failed to name a world, for the
+    // same reason an over-long reference is only wrong once nothing matched.
+    let path_shaped = looks_like_path(input);
+
     match candidates.as_slice() {
         [one] => Ok((*one).clone()),
         // Only once nothing matched by name is an over-long reference wrong:
         // until then it may have been a name that simply contains slashes.
-        [] if r.extra_segments => Err(CoreError::MalformedReference {
+        // A rooted input is reported the same way whatever its segment count:
+        // a Windows path has no `/` to count, so segments alone would let it
+        // fall through to near-matching world names.
+        [] if r.extra_segments || path_shaped => Err(CoreError::MalformedReference {
             reference: input.to_string(),
-            looks_like_path: input.starts_with('/') || input.contains(':'),
+            looks_like_path: path_shaped,
         }),
         [] => Err(CoreError::WorldNotFound {
             reference: input.to_string(),
@@ -483,6 +511,48 @@ mod tests {
                 looks_like_path: true
             } if reference == "/nonexistent/world/path"
         ));
+    }
+
+    #[test]
+    fn a_windows_path_that_does_not_exist_reports_path_not_found() {
+        // The Windows spelling has no `/` to segment, so before `looks_like_path`
+        // this fell through to near-matching world names. Checked on every
+        // platform: it is string shape, not filesystem behaviour.
+        for input in [
+            r"C:\nonexistent\world\path",
+            r"C:/nonexistent/world/path",
+            r"\\server\share\world",
+        ] {
+            assert!(
+                matches!(
+                    resolve(input, &fixture()),
+                    Err(CoreError::MalformedReference {
+                        looks_like_path: true,
+                        ..
+                    })
+                ),
+                "{input} should read as a path"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_carrying_a_colon_is_a_name_not_a_path() {
+        // Minecraft's default level name embeds a time. A bare `contains(':')`
+        // would call this a filesystem path and drop the near-matches.
+        for input in [
+            "Advanced Automation 10/13/21 23:33:18",
+            "23:33:18",
+            "release/Shared/not:a:drive",
+        ] {
+            assert!(
+                matches!(
+                    resolve(input, &fixture()),
+                    Err(CoreError::WorldNotFound { .. })
+                ),
+                "{input} should read as a name"
+            );
+        }
     }
 
     #[test]
