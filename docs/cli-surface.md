@@ -254,6 +254,8 @@ candidates for clap-native expression (`conflicts_with`, `requires`,
   (root named `env`), `CONSTRUCT_GITHUB_TOKEN`/`GITHUB_TOKEN`,
   `CONSTRUCT_GITHUB_API`, `CONSTRUCT_STATE_DIR` (where `writemark` keeps its
   per-world records; exists so tests do not write into the real data
-  directory, not a documented user knob).
+  directory, not a documented user knob), `CONSTRUCT_BACKUPS_DIR` (the same
+  for backups — it stands in for the platform data directory and loses to
+  `[backups] dir`; also not a documented user knob).
 - **Config**: `default_installation`, `[[roots]] name/path`,
   `[backups] dir/keep` (default 10). Precedence: flag → env → file → discovery.

@@ -8,6 +8,14 @@ fn bin() -> Command {
     std::fs::create_dir_all(&empty).unwrap();
     c.env("HOME", &empty).env("USERPROFILE", &empty);
     c.env_remove("APPDATA").env_remove("LOCALAPPDATA");
+    // With `HOME`/`USERPROFILE` pointed at a scratch directory there is no
+    // platform data directory to fall back on. On Unix one is still derived
+    // from the environment, but on Windows the lookup goes to the real known
+    // folder and fails, so anything that takes a backup — `install` enabling
+    // Beta APIs, say — failed there and only there. Name the directory instead
+    // of relying on the fallback. Tests that care where backups land set
+    // `[backups] dir`, which still wins over this.
+    c.env("CONSTRUCT_BACKUPS_DIR", empty.join("backups"));
     c.env_remove("CONSTRUCT_COM_MOJANG")
         .env_remove("CONSTRUCT_INSTALLATION");
     c.env("CONSTRUCT_CONFIG", empty.join("no-such-config.toml"));

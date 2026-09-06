@@ -11,10 +11,33 @@ use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// The directory backups go in: configured, else the platform data directory.
+/// The directory backups go in: configured, else `CONSTRUCT_BACKUPS_DIR`, else
+/// the platform data directory.
+///
+/// The environment override sits *below* `[backups] dir` because that is the
+/// documented user knob; this one stands in for the platform lookup, so that
+/// tests never write into the real user's data directory. It is not a
+/// documented user knob, and it is separate from `CONSTRUCT_STATE_DIR` for the
+/// reason given on [`crate::writemark::root`]: a mark is not a backup.
+///
+/// Tests need it because a harness that points `HOME`/`USERPROFILE` at a
+/// scratch directory has no platform data directory at all on Windows, where
+/// the lookup resolves the *real* known folder and fails when it is missing —
+/// unlike Unix, where it is built from the environment and always yields a
+/// path. Without the override the failure surfaces as a spurious "could not
+/// turn Beta APIs on" and a partial-success exit.
 pub fn root(backups: &Backups) -> Result<PathBuf> {
+    root_from(backups, &|k| std::env::var(k).ok())
+}
+
+/// `root`, with the environment injected — the same seam [`crate::config::load`]
+/// uses, so precedence is testable without mutating the process environment.
+fn root_from(backups: &Backups, env: &dyn Fn(&str) -> Option<String>) -> Result<PathBuf> {
     if let Some(dir) = &backups.dir {
         return Ok(dir.clone());
+    }
+    if let Some(dir) = env("CONSTRUCT_BACKUPS_DIR") {
+        return Ok(PathBuf::from(dir));
     }
     directories::ProjectDirs::from("", "", "constructcli")
         .map(|d| d.data_dir().join("backups"))
@@ -141,6 +164,23 @@ mod tests {
             dir: Some(dir.to_path_buf()),
             keep,
         }
+    }
+
+    #[test]
+    fn the_configured_directory_wins_over_the_environment() {
+        let configured = backups(Path::new("/configured"), 5);
+        let env = |k: &str| (k == "CONSTRUCT_BACKUPS_DIR").then(|| "/from-env".to_string());
+        assert_eq!(
+            root_from(&configured, &env).unwrap(),
+            PathBuf::from("/configured")
+        );
+    }
+
+    #[test]
+    fn the_environment_stands_in_for_the_platform_directory() {
+        let unset = Backups { dir: None, keep: 5 };
+        let env = |k: &str| (k == "CONSTRUCT_BACKUPS_DIR").then(|| "/from-env".to_string());
+        assert_eq!(root_from(&unset, &env).unwrap(), PathBuf::from("/from-env"));
     }
 
     #[test]
