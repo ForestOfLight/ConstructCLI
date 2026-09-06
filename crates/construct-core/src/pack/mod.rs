@@ -30,6 +30,20 @@ pub fn resource_root(dev_pack_root: &Path) -> PathBuf {
     dev_pack_root.join("development_resource_packs")
 }
 
+/// The non-development sibling of [`behavior_root`], where a hand-installed
+/// Construct ends up when it is dropped into the wrong folder. Nothing this
+/// tool writes belongs here; `install::adopt` is the one thing that reads it,
+/// to move a misplaced copy out of it.
+pub fn stray_behavior_root(dev_pack_root: &Path) -> PathBuf {
+    dev_pack_root.join("behavior_packs")
+}
+
+/// The non-development sibling of [`resource_root`]. See
+/// [`stray_behavior_root`].
+pub fn stray_resource_root(dev_pack_root: &Path) -> PathBuf {
+    dev_pack_root.join("resource_packs")
+}
+
 /// A world's own copy of its packs, which takes precedence over the shared root.
 pub fn world_behavior_root(world: &World) -> PathBuf {
     world.path.join("behavior_packs")

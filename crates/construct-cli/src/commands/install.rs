@@ -6,6 +6,7 @@
 use crate::output::Out;
 use construct_core::config::Backups;
 use construct_core::discovery::{Installation, World};
+use construct_core::install::adopt::{self, AdoptKind};
 use construct_core::install::releases::Releases;
 use construct_core::install::{self, mcaddon, releases};
 use construct_core::pack::{self, manifest};
@@ -20,12 +21,117 @@ struct Payload {
     behavior: String,
     resource: String,
     preserved: usize,
+    migrated: Vec<Migrated>,
     world: Option<String>,
     beta_apis: Option<bool>,
     structures_pack: Option<String>,
     enable_error: Option<String>,
     level_dat_error: Option<String>,
     structures_error: Option<String>,
+}
+
+/// One pack rescued out of a non-development root, for `-o json`.
+#[derive(Serialize)]
+struct Migrated {
+    /// `moved` when the development root had no copy and the misplaced one
+    /// became it, `merged` when it already had one and only structures were
+    /// carried across.
+    kind: &'static str,
+    from: String,
+    to: String,
+    /// Structure files written into the development copy. Always 0 for a
+    /// `moved`, where the pack arrived whole.
+    merged: usize,
+    rescued: Vec<Rescued>,
+    /// Set when the structures all arrived but the emptied misplaced folder
+    /// could not be removed.
+    left_behind: Option<String>,
+}
+
+/// A structure that existed in both copies under one name with different
+/// contents, and so was kept under a second name rather than dropped.
+#[derive(Serialize)]
+struct Rescued {
+    from: String,
+    to: String,
+}
+
+/// Folds a Construct sitting in `stray_root` — `behavior_packs` or
+/// `resource_packs`, the non-development siblings a by-hand install is easy
+/// to drop into — back into `dev_root`, and says so.
+///
+/// Runs before `install::place`, so a rescued pack is the one `place` then
+/// upgrades and its structures are carried across the version bump by
+/// `place`'s ordinary preservation rather than needing anything special here.
+///
+/// A failure is warned about, not returned: the misplaced copy is left
+/// untouched by a failed `adopt`, which is exactly the state the user was
+/// already in, and it is no reason to refuse to install Construct.
+fn migrate_stray(dev_root: &Path, stray_root: &Path, uuid: &str, out: &mut Out) -> Option<Migrated> {
+    let folder = |p: &Path| {
+        p.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    };
+    let adopted = match adopt::adopt(dev_root, stray_root, uuid) {
+        Ok(Some(adopted)) => adopted,
+        Ok(None) => return None,
+        Err(e) => {
+            out.warn(format!(
+                "found Construct in {} but could not move it into {}: {e}",
+                stray_root.display(),
+                folder(dev_root)
+            ));
+            return None;
+        }
+    };
+
+    let verb = match adopted.kind {
+        AdoptKind::Moved => "moved",
+        AdoptKind::Merged => "merged",
+    };
+    out.line(format!(
+        "  {verb} the copy in {} into {}",
+        folder(stray_root),
+        folder(dev_root)
+    ));
+    out.line(format!(
+        "    {} → {}",
+        adopted.from.display(),
+        adopted.to.display()
+    ));
+    if adopted.merged > 0 {
+        out.line(format!("    kept {} structure(s) from it", adopted.merged));
+    }
+    for r in &adopted.rescued {
+        out.line(format!(
+            "    {} was already there and differed; kept as {}",
+            r.from, r.to
+        ));
+    }
+    if let Some(reason) = &adopted.left_behind {
+        out.warn(format!(
+            "every structure was carried across, but {} could not be removed: {reason}",
+            adopted.from.display()
+        ));
+    }
+
+    Some(Migrated {
+        kind: verb,
+        from: adopted.from.display().to_string(),
+        to: adopted.to.display().to_string(),
+        merged: adopted.merged,
+        rescued: adopted
+            .rescued
+            .into_iter()
+            .map(|r| Rescued {
+                from: r.from,
+                to: r.to,
+            })
+            .collect(),
+        left_behind: adopted.left_behind,
+    })
 }
 
 /// Confirms an extracted pack really is Construct's, by header UUID rather
@@ -82,6 +188,28 @@ pub fn run(
     // Refuse before anything is placed if the archive is not really Construct.
     verify_uuid(&extracted.behavior, pack::CONSTRUCT_BP_UUID, "behaviour")?;
     verify_uuid(&extracted.resource, pack::CONSTRUCT_RP_UUID, "resource")?;
+
+    // Before anything is placed: a Construct the player dropped into
+    // `behavior_packs`/`resource_packs` instead of the `development_*`
+    // sibling beside it. The game loads both roots, so the misplaced copy
+    // shadows the one about to be installed, and no command here can see the
+    // structures inside it.
+    let root = &installation.dev_pack_root;
+    let migrated: Vec<Migrated> = [
+        (
+            pack::behavior_root(root),
+            pack::stray_behavior_root(root),
+            pack::CONSTRUCT_BP_UUID,
+        ),
+        (
+            pack::resource_root(root),
+            pack::stray_resource_root(root),
+            pack::CONSTRUCT_RP_UUID,
+        ),
+    ]
+    .iter()
+    .filter_map(|(dev, stray, uuid)| migrate_stray(dev, stray, uuid, out))
+    .collect();
 
     let bp = install::place(
         &pack::behavior_root(&installation.dev_pack_root),
@@ -232,6 +360,7 @@ pub fn run(
         behavior: bp.dir.display().to_string(),
         resource: rp.dir.display().to_string(),
         preserved: bp.preserved,
+        migrated,
         world: world.map(|w| w.display_name.clone()),
         beta_apis,
         structures_pack,

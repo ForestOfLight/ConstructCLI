@@ -143,6 +143,21 @@ fn the_pack_roots_are_the_documented_folder_names() {
     );
 }
 
+#[test]
+fn the_stray_roots_are_the_non_development_siblings() {
+    // Where a hand-installed Construct lands when it is dropped in the wrong
+    // folder — the pair `install::adopt` rescues it from.
+    let base = Path::new("/com.mojang");
+    assert_eq!(
+        pack::stray_behavior_root(base),
+        Path::new("/com.mojang/behavior_packs")
+    );
+    assert_eq!(
+        pack::stray_resource_root(base),
+        Path::new("/com.mojang/resource_packs")
+    );
+}
+
 // --- where a world's structures live ---
 
 /// A world directory under `com_mojang/minecraftWorlds/`, so that
