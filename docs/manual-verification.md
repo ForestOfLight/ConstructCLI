@@ -88,7 +88,7 @@ spec holds the full list.
       hand-made pack in `development_behavior_packs` claiming the same header
       UUID; two packs answering one `pack_id` is a conflict the game resolves
       on its own terms.
-- [ ] **Does Minecraft rewrite `world_behavior_packs.json` from memory on
+- [x] **Does Minecraft rewrite `world_behavior_packs.json` from memory on
       save?** `level.dat` does, which is why §8 refuses to write it under a
       live world. Creating a structures home edits the pack list instead, and
       currently assumes it is safe while the world is open. With the world
@@ -96,7 +96,7 @@ spec holds the full list.
       world with no home yet), then close the world and check the pack list
       still names `ConstructStructures`. If the entry is gone, creating a home
       has to move onto the in-use refusal path.
-- [ ] **Does the game keep the case of a structure loaded from a pack?**
+- [x] **Does the game keep the case of a structure loaded from a pack?**
       `construct import house.mcstructure --name MyBase --world <world>`, reload,
       and check whether `/structure load mystructure:MyBase` works or only
       `mystructure:mybase` does. The tool now preserves case end to end, on the
