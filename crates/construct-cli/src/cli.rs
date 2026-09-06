@@ -70,18 +70,17 @@ impl From<SourceArg> for construct_core::catalog::Source {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Add a com.mojang or world folder to the automatic search.
+    /// Add a com.mojang or world folder to automatic discovery.
     Add {
         /// Directory to add to the appropriate configuration list.
         #[arg(value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
         path: PathBuf,
     },
 
-    /// List discovered worlds.
+    /// List all discovered worlds.
     Worlds,
 
-    /// List the structures in a world, or in the shared copy of Construct
-    /// with no world.
+    /// List the structures in a world, or in the shared copy of Construct.
     List {
         /// World name, qualified reference, or path. Without one, the
         /// shared copy of Construct is listed on its own.
@@ -109,7 +108,7 @@ pub enum Command {
         on_overlap: OverlapArg,
     },
 
-    /// Copy .mcstructure files into Construct's structures folder.
+    /// Import .mcstructure files into a world.
     Import {
         /// One or more .mcstructure files to import.
         #[arg(required = true, value_hint = clap::ValueHint::FilePath)]
@@ -123,7 +122,7 @@ pub enum Command {
         name: Option<String>,
     },
 
-    /// Copy structures into another world's Construct.
+    /// Copy structures from one world into another world.
     Copy {
         /// Source world name, qualified reference, or path.
         #[arg(add = ArgValueCandidates::new(crate::complete::complete_worlds))]
@@ -146,14 +145,14 @@ pub enum Command {
         structures: Vec<String>,
     },
 
-    /// Turn a world's Beta APIs (`gametest`) experiment on.
+    /// Turn a world's Beta APIs experiment on.
     EnableBetaApis {
         /// World name, qualified reference, or path.
         #[arg(add = ArgValueCandidates::new(crate::complete::complete_worlds))]
         world: String,
     },
 
-    /// Download and install Construct.
+    /// Install or upgrade Construct
     Install {
         /// A specific version, e.g. 1.2.0. Defaults to the latest release.
         #[arg(long, value_name = "VERSION")]
