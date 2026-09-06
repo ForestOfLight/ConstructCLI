@@ -107,11 +107,11 @@ pub enum Command {
         /// One or more structure names.
         #[arg(required = true, add = ArgValueCandidates::new(crate::complete::complete_structures))]
         structures: Vec<String>,
-        /// Output file. Only valid with a single structure.
-        #[arg(short = 'o', long, value_hint = clap::ValueHint::FilePath)]
-        output: Option<PathBuf>,
+        /// Name for the output file. Only valid with a single structure.
+        #[arg(short = 'n', long, value_name = "NAME", value_hint = clap::ValueHint::FilePath)]
+        name: Option<PathBuf>,
         /// Combine the structures into one, reassembled at their saved world
-        /// positions. Requires -o.
+        /// positions. Requires -n.
         #[arg(long)]
         merge: bool,
         /// How to resolve positions where two structures both have a block.

@@ -56,7 +56,7 @@ construct structures --world <world> --source shared-pack   # ...only the ones f
 construct export <structure>              # write <structure>.mcstructure out of the shared Construct
 construct export <s1> <s2>                # one file each
 construct export <structure> --world <world>           # out of that world's database or its own Construct copy
-construct export <s> -o out.mcstructure                # -o always writes a .mcstructure; a bare name gets the extension
+construct export <s> -n out.mcstructure                # -n always writes a .mcstructure; a bare name gets the extension
 construct install                         # download and install the latest Construct
 construct install --version 1.2.0         # a specific release
 construct install --world <world>         # also enable it in a world and turn Beta APIs on

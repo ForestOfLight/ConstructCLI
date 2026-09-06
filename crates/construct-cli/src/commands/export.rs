@@ -39,7 +39,7 @@ struct Written {
 /// anywhere in it, and no `..`/root/prefix component. This is a security
 /// boundary (structure names come from a world file the user may not have
 /// authored), so a violation is refused, never guessed around. An explicit
-/// `-o` path is the user's own choice and is never subject to this check.
+/// `-n` path is the user's own choice and is never subject to this check.
 fn refuse_traversal(name: &str) -> Result<()> {
     let has_separator = name.contains('/') || name.contains('\\');
     let has_dangerous_component = Path::new(name).components().any(|c| {
@@ -53,7 +53,7 @@ fn refuse_traversal(name: &str) -> Result<()> {
             io::ErrorKind::InvalidInput,
             format!(
                 "structure {name:?} cannot be used as a filename: it would write \
-                 outside the output directory. Pass -o to choose the destination \
+                 outside the output directory. Pass -n to choose the destination \
                  explicitly."
             ),
         )));
@@ -64,14 +64,14 @@ fn refuse_traversal(name: &str) -> Result<()> {
 /// A structure name that decodes to the empty string (e.g. from a key like
 /// `structuretemplate_mystructure:`) would derive the filename
 /// `.mcstructure` — a hidden file with no name. Refused, in the same style
-/// as a traversal attempt; an explicit `-o` path chooses the destination
+/// as a traversal attempt; an explicit `-n` path chooses the destination
 /// directly and is not subject to this check.
 fn refuse_empty_derived_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(CoreError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
             "structure has an empty name and cannot be used as a filename. \
-             Pass -o to choose the destination explicitly."
+             Pass -n to choose the destination explicitly."
                 .to_string(),
         )));
     }
@@ -296,7 +296,7 @@ fn run_merge(
     on_overlap: OnOverlap,
     out: &mut Out,
 ) -> Result<()> {
-    let target = output.expect("main.rs refuses --merge without -o");
+    let target = output.expect("main.rs refuses --merge without -n");
     if target.exists() && !force {
         return Err(CoreError::TargetExists {
             path: target.to_path_buf(),

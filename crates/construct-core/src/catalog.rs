@@ -144,7 +144,7 @@ pub fn resolve(name: &str, entries: &[Entry], source: Option<Source>) -> Result<
 
 /// Every structure matching a name, for the one command that wants them all.
 ///
-/// `resolve` refuses when a name is in two places, because `export -o` and
+/// `resolve` refuses when a name is in two places, because `export -n` and
 /// `copy` have to pick one and guessing is the wrong answer. `delete` is the
 /// exception: "remove this name from this world" is a complete instruction
 /// with no guess in it, so a name in the world's database *and* in its pack

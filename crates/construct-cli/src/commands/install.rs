@@ -30,7 +30,7 @@ struct Payload {
     structures_error: Option<String>,
 }
 
-/// One pack rescued out of a non-development root, for `-o json`.
+/// One pack rescued out of a non-development root, for `--json`.
 #[derive(Serialize)]
 struct Migrated {
     /// `moved` when the development root had no copy and the misplaced one
@@ -372,7 +372,7 @@ pub fn run(
     // §11: the packs installed but a later step failing is partial, not
     // total, success — exit 5 and name the remaining manual step(s). Exiting
     // here rather than returning an error keeps the success payload above
-    // intact, the same way main.rs already handles the `-o` usage error.
+    // intact, the same way main.rs already handles the `-n` usage error.
     if enable_error.is_some() || level_dat_error.is_some() || structures_error.is_some() {
         let world_name = world.map(|w| w.display_name.as_str()).unwrap_or("<world>");
         eprintln!("\nThe packs are installed.");

@@ -12,7 +12,7 @@ anchors for editing and a list of the seams where the grammar is inconsistent.
 | ------- | ----------- | ----------- |
 | `worlds` | — | — |
 | `structures` | — | `-w/--world v`, `--source v` (`world-db`\|`world-pack`\|`shared-pack`) |
-| `export` | **`structures…`** | `-o/--output v`, `--merge`, `--on-overlap v` (`last`\|`first`\|`error`, default `last`), `-w/--world v`, `--source v`, `--force` |
+| `export` | **`structures…`** | `-n/--name v`, `--merge`, `--on-overlap v` (`last`\|`first`\|`error`, default `last`), `-w/--world v`, `--source v`, `--force` |
 | `import` | **`files…`** | `-w/--world v`, `--name v`, `--force` |
 | `copy` | **`src_world`** **`dst_world`** **`structures…`** | `--source v`, `--force` |
 | `delete` | **`structures…`** | `-w/--world v`, `--source v` |
@@ -129,7 +129,7 @@ has since been retired outright — see the next section.
   the development root the pack is moved whole; with one already there only
   its `structures/` is folded in, and a structure that clashes by name but
   differs by content is kept as `<name>-1.mcstructure` rather than dropped.
-  Reported in the human output and in `migrated[]` under `-o json`.
+  Reported in the human output and in `migrated[]` under `--json`.
 
 ## Validation hand-rolled in `main.rs`, not expressed in clap
 
@@ -139,9 +139,9 @@ candidates for clap-native expression (`conflicts_with`, `requires`,
 
 | Rule | Where |
 | ---- | ----- |
-| `--merge` requires `-o` | `main.rs:148` |
-| `-o` with >1 structure and no `--merge` | `main.rs:178` |
-| `-o` must end `.mcstructure` (missing ext is filled in, wrong ext refused) | `main.rs:161`, `mcstructure_path` at `main.rs:309` |
+| `--merge` requires `-n` | `main.rs:148` |
+| `-n` with >1 structure and no `--merge` | `main.rs:178` |
+| `-n` must end `.mcstructure` (missing ext is filled in, wrong ext refused) | `main.rs:161`, `mcstructure_path` at `main.rs:309` |
 | `--name` with >1 file on `import` | `main.rs:205` |
 | `--source world-db`/`world-pack` with no `--world` on `structures`, `export`, `delete` | `main.rs:check_source_against_world` |
 | `--source shared-pack` with `--world` on `export`, `delete` | the same, with `world_excludes_shared` set |
@@ -182,7 +182,7 @@ candidates for clap-native expression (`conflicts_with`, `requires`,
 6. **A second experiment toggle has nowhere to go.** `enable-beta-apis` is named
    for its one toggle, so another would be another verb command
    (`enable-<toggle>`), and there is still no way to turn any of them off.
-7. **`-o` is the only short flag.** Either commit to shorts or drop it.
+7. **Shorts are uneven.** `-w`, `-n` exist; `import --name` has no short.
 8. **Exit 5 escapes the error taxonomy** — emitted directly so the success JSON
    already printed isn't clobbered. Any restructure of partial-success reporting
    has to keep that ordering property.

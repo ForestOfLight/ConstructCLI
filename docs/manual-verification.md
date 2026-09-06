@@ -114,7 +114,7 @@ spec holds the full list.
       which is exactly the bug this replaced, so it is worth re-measuring per
       platform rather than assuming.
 - [x] **Does a merged structure load and place correctly in-game?** Save two pieces of one
-      build with structure blocks, `construct export <a> <b> --world <world> --merge -o merged.mcstructure`,
+      build with structure blocks, `construct export <a> <b> --world <world> --merge -n merged.mcstructure`,
       import it, and place it. Check that the pieces land in their original relative positions,
       that the gaps between them are cleared to air rather than left as terrain, and
       that block entities (a labelled chest in each piece) kept their contents. Spec §12 asserts

@@ -146,7 +146,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
         Command::Export {
             world,
             structures,
-            output,
+            name: output,
             merge,
             on_overlap,
             source,
@@ -157,8 +157,8 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 // --merge produces one file, and there is no structure name to
                 // derive it from — the result is not any one of the inputs.
                 eprintln!(
-                    "error: --merge writes a single file and needs -o to name it\n\n\
-                     construct export <s1> <s2>... --merge -o merged.mcstructure"
+                    "error: --merge writes a single file and needs -n to name it\n\n\
+                     construct export <s1> <s2>... --merge -n merged.mcstructure"
                 );
                 std::process::exit(2);
             }
@@ -169,16 +169,16 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 *source,
                 true,
             );
-            // `-o` names the file this writes, and the only file Minecraft
+            // `-n` names the file this writes, and the only file Minecraft
             // loads is a `.mcstructure`. A missing extension is completed
-            // rather than refused — `-o castle` is unambiguous — but a
+            // rather than refused — `-n castle` is unambiguous — but a
             // different one is a mistake worth stopping: the bytes would be
             // fine and the file would be one the game never offers to load.
             let output = match output.as_deref().map(mcstructure_path) {
                 Some(Err(found)) => {
                     eprintln!(
-                        "error: -o writes a .mcstructure file, but {found} was given\n\n\
-                         construct export <structure> -o {}.mcstructure",
+                        "error: -n writes a .mcstructure file, but {found} was given\n\n\
+                         construct export <structure> -n {}.mcstructure",
                         output
                             .as_deref()
                             .and_then(|p| p.file_stem())
@@ -191,11 +191,11 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
             };
             let output = output.as_deref();
             if !*merge && structures.len() > 1 && output.is_some() {
-                // -o names a single file and cannot name several. Usage error,
+                // -n names a single file and cannot name several. Usage error,
                 // not a failure: nothing was attempted.
                 eprintln!(
-                    "error: -o takes a single output file, but {} structures were given\n\n\
-                     Drop -o to write one file per structure, or add --merge to combine them \
+                    "error: -n takes a single output file, but {} structures were given\n\n\
+                     Drop -n to write one file per structure, or add --merge to combine them \
                      into one.",
                     structures.len()
                 );
@@ -248,7 +248,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
         } => {
             if name.is_some() {
                 // --name renames one import and cannot name several, exactly
-                // as -o names one output file. Usage error, not a failure:
+                // as -n names one output file. Usage error, not a failure:
                 // nothing was attempted. A folder is a batch for the same
                 // reason, whatever it happens to hold — its whole point is the
                 // names it already carries.
@@ -437,11 +437,11 @@ fn check_source_against_world(
     }
 }
 
-/// `-o`'s path with the `.mcstructure` extension it must have, or the
+/// `-n`'s path with the `.mcstructure` extension it must have, or the
 /// extension that was given instead.
 ///
 /// Case-insensitive on the way in, because the filesystems this runs on are:
-/// refusing `-o CASTLE.MCSTRUCTURE` would refuse a name that already works.
+/// refusing `-n CASTLE.MCSTRUCTURE` would refuse a name that already works.
 /// A path with no file name at all (`.`, `/`) is returned untouched — it is
 /// not a file this could correct, and the write below fails on its own terms
 /// with the real reason.

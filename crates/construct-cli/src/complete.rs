@@ -268,8 +268,8 @@ fn extract_target_from_args() -> Target {
         if word.starts_with('-') {
             if word == "--world" || word == "-w" {
                 expect_world = true;
-            } else if word == "-o"
-                || word == "--output"
+            } else if word == "-n"
+                || word == "--name"
                 || word == "--on-overlap"
                 || word == "--source"
                 || word == "--path"

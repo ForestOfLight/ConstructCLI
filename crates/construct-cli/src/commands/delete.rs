@@ -14,7 +14,7 @@
 //!
 //! Within a world, though, a name can still mean two things at once: a key in
 //! the world's database and a file in the world's own pack. Every other command
-//! refuses such a name and asks for `--source`, because `export -o` and `copy`
+//! refuses such a name and asks for `--source`, because `export -n` and `copy`
 //! have to pick one and guessing is the wrong answer. `delete` removes both,
 //! because "remove this name from this world" is a complete instruction with no
 //! guess in it. `--source world-db` or `--source world-pack` narrows it for

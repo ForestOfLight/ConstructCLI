@@ -603,7 +603,7 @@ fn export_with_o_uses_the_given_name() {
             "--world",
             world.to_str().unwrap(),
             "house",
-            "-o",
+            "-n",
             target.to_str().unwrap(),
         ])
         .output()
@@ -625,7 +625,7 @@ fn export_refuses_an_existing_target_and_points_at_force() {
             "--world",
             world.to_str().unwrap(),
             "house",
-            "-o",
+            "-n",
             target.to_str().unwrap(),
         ])
         .output()
@@ -652,7 +652,7 @@ fn export_force_overwrites() {
             "--world",
             world.to_str().unwrap(),
             "house",
-            "-o",
+            "-n",
             target.to_str().unwrap(),
             "--force",
         ])
@@ -682,7 +682,7 @@ fn exporting_several_structures_writes_one_file_each() {
 
 #[test]
 fn several_structures_with_o_is_a_usage_error() {
-    // -o names a single file; it cannot name several.
+    // -n names a single file; it cannot name several.
     let (_tmp, world) = fixture_world();
     let dir = tempfile::tempdir().unwrap();
     let out = bin()
@@ -692,7 +692,7 @@ fn several_structures_with_o_is_a_usage_error() {
             world.to_str().unwrap(),
             "house",
             "barn",
-            "-o",
+            "-n",
             dir.path().join("x.mcstructure").to_str().unwrap(),
         ])
         .output()
@@ -769,7 +769,7 @@ fn a_traversal_structure_name_is_refused_and_writes_nothing() {
 
     assert_eq!(out.status.code(), Some(1));
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("-o"), "should point at -o:\n{err}");
+    assert!(err.contains("-n"), "should point at -n:\n{err}");
     assert!(
         !escape_target.exists(),
         "must not write outside the output directory"
@@ -784,7 +784,7 @@ fn a_traversal_structure_name_is_refused_and_writes_nothing() {
 
 #[test]
 fn o_without_an_extension_gets_mcstructure() {
-    // `-o castle` is unambiguous, and the only file Minecraft loads is a
+    // `-n castle` is unambiguous, and the only file Minecraft loads is a
     // `.mcstructure`, so the extension is completed rather than demanded.
     let (_tmp, world) = fixture_world();
     let dir = tempfile::tempdir().unwrap();
@@ -794,7 +794,7 @@ fn o_without_an_extension_gets_mcstructure() {
             "--world",
             world.to_str().unwrap(),
             "house",
-            "-o",
+            "-n",
             dir.path().join("castle").to_str().unwrap(),
         ])
         .output()
@@ -824,7 +824,7 @@ fn o_with_another_extension_is_refused() {
             "--world",
             world.to_str().unwrap(),
             "house",
-            "-o",
+            "-n",
             dir.path().join("castle.txt").to_str().unwrap(),
         ])
         .output()
@@ -858,7 +858,7 @@ fn o_with_an_uppercase_extension_is_accepted_as_given() {
             "--world",
             world.to_str().unwrap(),
             "house",
-            "-o",
+            "-n",
             dir.path().join("CASTLE.MCSTRUCTURE").to_str().unwrap(),
         ])
         .output()
@@ -886,7 +886,7 @@ fn a_merge_target_without_an_extension_gets_mcstructure_too() {
             "north",
             "tower",
             "--merge",
-            "-o",
+            "-n",
             dir.path().join("both").to_str().unwrap(),
             "--path",
             root.path().to_str().unwrap(),
@@ -919,8 +919,8 @@ fn other_traversal_shapes_are_also_refused() {
             "name {name:?} should be refused"
         );
         assert!(
-            String::from_utf8_lossy(&out.stderr).contains("-o"),
-            "name {name:?} error should point at -o"
+            String::from_utf8_lossy(&out.stderr).contains("-n"),
+            "name {name:?} error should point at -n"
         );
     }
 }
@@ -1024,7 +1024,7 @@ fn an_empty_derived_name_is_refused_and_points_at_o() {
 
     assert_eq!(out.status.code(), Some(1));
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("-o"), "should point at -o:\n{err}");
+    assert!(err.contains("-n"), "should point at -n:\n{err}");
     assert!(
         std::fs::read_dir(dir.path()).unwrap().next().is_none(),
         "must write nothing"
@@ -1044,7 +1044,7 @@ fn explicit_o_path_bypasses_the_derived_name_rules() {
             "--world",
             world.to_str().unwrap(),
             "house",
-            "-o",
+            "-n",
             "../outside.mcstructure",
         ])
         .output()
@@ -4610,7 +4610,7 @@ fn an_install_without_a_world_still_asks_for_a_reload() {
 
 #[test]
 fn merge_without_o_is_a_usage_error() {
-    // §5: "--merge requires -o". Without it there is no single name to derive.
+    // §5: "--merge requires -n". Without it there is no single name to derive.
     let root = world_with_construct(&[]);
     let out = bin()
         .args([
@@ -4645,7 +4645,7 @@ fn merge_writes_one_file_from_several_structures() {
             "north",
             "tower",
             "--merge",
-            "-o",
+            "-n",
             target.to_str().unwrap(),
             "--json",
             // `world_with_construct`'s `db/` is a stub directory, never a real
@@ -4697,7 +4697,7 @@ fn merge_refuses_an_existing_target_without_force() {
             "north",
             "tower",
             "--merge",
-            "-o",
+            "-n",
             target.to_str().unwrap(),
             "--source",
             "shared-pack",
@@ -4725,7 +4725,7 @@ fn merge_reports_overlap_on_stderr_and_in_the_payload() {
             "north",
             "tower",
             "--merge",
-            "-o",
+            "-n",
             target.to_str().unwrap(),
             "--json",
             "--source",
@@ -4775,7 +4775,7 @@ fn merge_with_on_overlap_error_exits_1_and_writes_nothing() {
             "--merge",
             "--on-overlap",
             "error",
-            "-o",
+            "-n",
             target.to_str().unwrap(),
             "--source",
             "shared-pack",
@@ -4803,7 +4803,7 @@ fn merging_one_structure_is_allowed() {
             "export",
             "solo",
             "--merge",
-            "-o",
+            "-n",
             target.to_str().unwrap(),
             "--source",
             "shared-pack",
@@ -5340,7 +5340,7 @@ fn import_refuses_two_files_that_would_derive_one_name() {
 #[test]
 fn import_name_with_more_than_one_file_is_a_usage_error() {
     // `--name` renames a single import; it cannot name several, the same way
-    // `export -o` cannot name several output files.
+    // `export -n` cannot name several output files.
     let root = world_with_construct(&[]);
     let barn = root.path().join("barn.mcstructure");
     let silo = root.path().join("silo.mcstructure");
