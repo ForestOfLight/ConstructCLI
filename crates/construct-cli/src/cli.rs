@@ -209,7 +209,7 @@ pub enum Command {
         discovery: Discovery,
     },
 
-    /// Turn a world's Beta APIs experiment on.
+    /// Enable a world's Beta APIs experiment.
     EnableBetaApis {
         /// World name, qualified reference, or path.
         #[arg(add = ArgValueCandidates::new(crate::complete::complete_worlds))]
