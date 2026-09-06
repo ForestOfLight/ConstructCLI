@@ -31,7 +31,7 @@ spec holds the full list.
       `construct import <file> --world <world>`, reload the world, and look
       for it in Construct's in-game list.
 - [x] **Does the `level.dat` Beta APIs flip register in-game?**
-      `construct experiment <world> --beta-apis on`, then check that world's
+      `construct enable-beta-apis <world>`, then check that world's
       Experiments settings. The command already proves the file round-trips;
       only the game proves the flip is honored.
 - [x] **Does a `.mcstructure` under `structures/<namespace>/` load as
@@ -76,7 +76,7 @@ spec holds the full list.
       folds case there, `list` would print an id the game does not answer to.
 - [ ] **Does the in-use refusal fire on Minecraft builds other than
       mcpelauncher/macOS?** With a world loaded, run
-      `construct experiment <world> --beta-apis on` and expect exit 4 and the
+      `construct enable-beta-apis <world>` and expect exit 4 and the
       "Close the world" message; then close the world and expect the flip to
       succeed. The 10-second window comes from one measured autosave cadence
       (~5s, mcpelauncher/macOS, 2026-09-04). A build that saves less often

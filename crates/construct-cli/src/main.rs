@@ -244,14 +244,9 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 out,
             )
         }
-        Command::Experiment { world, beta_apis } => {
+        Command::EnableBetaApis { world } => {
             let w = resolve_world(world)?;
-            commands::experiment::run(
-                &w,
-                beta_apis.map(cli::OnOff::as_bool),
-                &loaded.config.backups,
-                out,
-            )
+            commands::enable_beta_apis::run(&w, &loaded.config.backups, out)
         }
         Command::Install { version, world } => {
             let w = world.as_deref().map(resolve_world).transpose()?;

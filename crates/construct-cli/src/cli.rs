@@ -129,13 +129,10 @@ pub enum Command {
         structure: String,
     },
 
-    /// Read or set a world's experimental toggles.
-    Experiment {
+    /// Turn a world's Beta APIs (`gametest`) experiment on.
+    EnableBetaApis {
         /// World name, qualified reference, or path.
         world: String,
-        /// Beta APIs (`gametest`). Omit the value to print the current state.
-        #[arg(long, required = true, num_args = 0..=1, value_name = "on|off")]
-        beta_apis: Option<OnOff>,
     },
 
     /// Download and install Construct.
@@ -150,18 +147,6 @@ pub enum Command {
 
     /// Show the installed version, the latest available, and where it's enabled.
     Status,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
-pub enum OnOff {
-    On,
-    Off,
-}
-
-impl OnOff {
-    pub fn as_bool(self) -> bool {
-        self == OnOff::On
-    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]

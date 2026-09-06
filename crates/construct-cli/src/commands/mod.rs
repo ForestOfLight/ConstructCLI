@@ -11,7 +11,7 @@ use std::path::Path;
 pub mod catalog;
 pub mod copy;
 pub mod delete;
-pub mod experiment;
+pub mod enable_beta_apis;
 pub mod export;
 pub mod import;
 pub mod install;

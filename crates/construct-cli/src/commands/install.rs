@@ -259,7 +259,7 @@ pub fn run(
         if level_dat_error.is_some() {
             eprintln!(
                 "Turn Beta APIs on yourself, in the world's settings under Experiments, \
-                 or with:\n  construct experiment {world_name} --beta-apis on"
+                 or with:\n  construct enable-beta-apis {world_name}"
             );
         }
         if structures_error.is_some() {

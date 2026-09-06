@@ -2222,39 +2222,7 @@ fn world_with_experiments(gametest: i8) -> tempfile::TempDir {
 }
 
 #[test]
-fn experiment_reads_the_current_state_without_writing() {
-    let root = world_with_experiments(1);
-    let level = root.path().join("minecraftWorlds/Test/level.dat");
-    let before = std::fs::read(&level).unwrap();
-
-    let out = bin()
-        .args([
-            "experiment",
-            "Test",
-            "--beta-apis",
-            "--json",
-            "--com-mojang",
-            root.path().to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["beta_apis"], true);
-    assert_eq!(v["changed"], false);
-    assert_eq!(
-        std::fs::read(&level).unwrap(),
-        before,
-        "a read must not write"
-    );
-}
-
-#[test]
-fn experiment_turns_beta_apis_on_and_backs_the_file_up_first() {
+fn enable_beta_apis_turns_it_on_and_backs_the_file_up_first() {
     let root = world_with_experiments(0);
     let level = root.path().join("minecraftWorlds/Test/level.dat");
     let before = std::fs::read(&level).unwrap();
@@ -2269,10 +2237,8 @@ fn experiment_turns_beta_apis_on_and_backs_the_file_up_first() {
     let out = bin()
         .env("CONSTRUCT_CONFIG", &config)
         .args([
-            "experiment",
+            "enable-beta-apis",
             "Test",
-            "--beta-apis",
-            "on",
             "--json",
             "--com-mojang",
             root.path().to_str().unwrap(),
@@ -2290,12 +2256,14 @@ fn experiment_turns_beta_apis_on_and_backs_the_file_up_first() {
     assert_eq!(v["changed"], true);
     assert!(v["backup"].is_string());
 
-    // Verified by re-reading, which is what the command itself does.
+    // Verified by running it again: on a world that now has Beta APIs on,
+    // a second run reports the no-op, and that report is the command's own
+    // read of the file it just wrote.
     let out = bin()
+        .env("CONSTRUCT_CONFIG", &config)
         .args([
-            "experiment",
+            "enable-beta-apis",
             "Test",
-            "--beta-apis",
             "--json",
             "--com-mojang",
             root.path().to_str().unwrap(),
@@ -2304,6 +2272,7 @@ fn experiment_turns_beta_apis_on_and_backs_the_file_up_first() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["beta_apis"], true);
+    assert_eq!(v["changed"], false, "the flip must already have stuck");
 
     // The backup holds exactly the pre-flip file — the property that
     // actually matters, not merely that it differs from the post-flip one.
@@ -2319,7 +2288,7 @@ fn experiment_turns_beta_apis_on_and_backs_the_file_up_first() {
 #[test]
 fn a_no_op_flip_takes_no_backup() {
     // Regression: `backup::file` used to run before `apply_beta_apis`'s own
-    // "already in that state" short-circuit, so ten no-op `--beta-apis on`
+    // "already in that state" short-circuit, so ten no-op `enable-beta-apis`
     // runs would evict every genuine pre-flip backup at the default `keep`.
     // A no-op must take none at all.
     let root = world_with_experiments(1); // beta apis already on
@@ -2334,10 +2303,8 @@ fn a_no_op_flip_takes_no_backup() {
     let out = bin()
         .env("CONSTRUCT_CONFIG", &config)
         .args([
-            "experiment",
+            "enable-beta-apis",
             "Test",
-            "--beta-apis",
-            "on",
             "--json",
             "--com-mojang",
             root.path().to_str().unwrap(),
@@ -2359,15 +2326,13 @@ fn a_no_op_flip_takes_no_backup() {
 }
 
 #[test]
-fn experiment_on_a_world_with_no_level_dat_fails_cleanly() {
+fn enable_beta_apis_on_a_world_with_no_level_dat_fails_cleanly() {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("minecraftWorlds/Test/db")).unwrap();
     let out = bin()
         .args([
-            "experiment",
+            "enable-beta-apis",
             "Test",
-            "--beta-apis",
-            "on",
             "--com-mojang",
             root.path().to_str().unwrap(),
         ])
@@ -2858,7 +2823,7 @@ fn install_exits_5_with_the_packs_already_placed_when_level_dat_cannot_be_flippe
     // stderr names the manual step.
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("construct experiment Test --beta-apis on"),
+        stderr.contains("construct enable-beta-apis Test"),
         "expected the manual recovery command in stderr: {stderr}"
     );
 }
@@ -3214,7 +3179,7 @@ fn mark_db_active(root: &std::path::Path) {
 }
 
 #[test]
-fn experiment_refuses_with_exit_4_when_minecraft_has_the_world_open() {
+fn enable_beta_apis_refuses_with_exit_4_when_minecraft_has_the_world_open() {
     // The bug this guards: Minecraft keeps level.dat in memory for the whole
     // session and rewrites it from memory on every save, so a flip written
     // under a live world verifies correctly and is then silently discarded.
@@ -3234,10 +3199,8 @@ fn experiment_refuses_with_exit_4_when_minecraft_has_the_world_open() {
     let out = bin()
         .env("CONSTRUCT_CONFIG", &config)
         .args([
-            "experiment",
+            "enable-beta-apis",
             "Test",
-            "--beta-apis",
-            "on",
             "--com-mojang",
             root.path().to_str().unwrap(),
         ])
@@ -3264,34 +3227,6 @@ fn experiment_refuses_with_exit_4_when_minecraft_has_the_world_open() {
         stderr.contains("Close the world"),
         "the refusal must say what to do about it: {stderr}"
     );
-}
-
-#[test]
-fn experiment_still_reads_a_world_that_is_in_use() {
-    // Reads are safe at any time and must stay that way: the read path never
-    // touches the file, so an open world is no reason to refuse it.
-    let root = world_with_experiments(1);
-    mark_db_active(root.path());
-
-    let out = bin()
-        .args([
-            "experiment",
-            "Test",
-            "--beta-apis",
-            "--json",
-            "--com-mojang",
-            root.path().to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["beta_apis"], true);
 }
 
 #[test]
@@ -3356,7 +3291,7 @@ fn install_without_a_world_ignores_whether_any_world_is_in_use() {
 
 #[test]
 fn a_flip_that_required_a_closed_world_does_not_ask_for_a_reload() {
-    // `experiment --beta-apis on` refuses outright while the world is open,
+    // `enable-beta-apis` refuses outright while the world is open,
     // so a flip that succeeded happened with the world closed. Telling the
     // user to reload a world they are not in is noise.
     let root = world_with_experiments(0);
@@ -3371,10 +3306,8 @@ fn a_flip_that_required_a_closed_world_does_not_ask_for_a_reload() {
     let out = bin()
         .env("CONSTRUCT_CONFIG", &config)
         .args([
-            "experiment",
+            "enable-beta-apis",
             "Test",
-            "--beta-apis",
-            "on",
             "--com-mojang",
             root.path().to_str().unwrap(),
         ])

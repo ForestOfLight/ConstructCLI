@@ -25,7 +25,7 @@ construct import house.mcstructure --world "My Survival"
 
 Stage 2 of 4. `worlds`, `list`, and `export` now see a world's database and
 Construct's own `structures/` folder as one catalog. `install`, `import`,
-`copy`, `delete --source pack`, `status`, and `experiment` are also built.
+`copy`, `delete --source pack`, `status`, and `enable-beta-apis` are also built.
 Merging structures and deleting one from a world's database are not — see
 `docs/superpowers/specs/2026-08-31-constructcli-design.md`.
 
@@ -71,8 +71,7 @@ construct delete <world> house --source pack          # remove an imported struc
 construct delete <world> house --pack world          # ...when both packs have that name
 construct list                            # just the shared pack: what every world using it gets
 construct status                          # installed version, latest available, where it's enabled, and where structures live
-construct experiment <world> --beta-apis         # show the current toggle
-construct experiment <world> --beta-apis on      # turn it on
+construct enable-beta-apis <world>        # turn a world's Beta APIs experiment on
 ```
 
 Merge several saves of one build back into a single structure, reassembled at the
@@ -180,7 +179,7 @@ measured, not assumed. So ConstructCLI never opens a world's live database:
 every read copies `db/` to a temporary directory first and reads the copy,
 telling you when it does (`reading from a 2.2 MB snapshot`). This is why a
 world currently open in Minecraft can be read safely. No command in stage 2
-opens or writes a world's database either — `install` and `experiment` write
+opens or writes a world's database either — `install` and `enable-beta-apis` write
 `level.dat`, and `import`, `copy`, and `delete` write only files under
 Construct's own `structures/`. Every `level.dat` write is backed up first and
 runs through a fidelity gate — re-serializing the file *unmodified* and
