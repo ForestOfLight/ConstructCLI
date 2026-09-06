@@ -168,3 +168,134 @@ fn world_at(dir: &std::path::Path) -> construct_core::discovery::World {
         size_bytes: 0,
     }
 }
+
+/// Builds a directory shaped like a leveldb: one immutable table, and the
+/// three kinds of file leveldb appends to or replaces in place.
+fn fake_db(at: &std::path::Path) {
+    std::fs::create_dir_all(at).unwrap();
+    std::fs::write(at.join("000005.ldb"), vec![7u8; 4096]).unwrap();
+    std::fs::write(at.join("000006.log"), b"log records").unwrap();
+    std::fs::write(at.join("MANIFEST-000004"), b"manifest records").unwrap();
+    std::fs::write(at.join("CURRENT"), b"MANIFEST-000004\n").unwrap();
+}
+
+#[cfg(unix)]
+fn same_inode(a: &std::path::Path, b: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let (a, b) = (std::fs::metadata(a).unwrap(), std::fs::metadata(b).unwrap());
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_snapshot_hardlinks_the_immutable_table_files() {
+    // `.ldb` files are written once and thereafter only read or unlinked, so a
+    // link is as good as a copy and costs nothing. This is the whole point of
+    // the exercise: a gigabyte world should not need a gigabyte of copying.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("db");
+    fake_db(&src);
+    let dst = tmp.path().join("snap");
+
+    snapshot::link_or_copy_dir(&src, &dst).unwrap();
+
+    assert!(
+        same_inode(&src.join("000005.ldb"), &dst.join("000005.ldb")),
+        "an immutable table must be linked, not copied"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_snapshot_copies_the_files_leveldb_writes_in_place() {
+    // The log and the manifest are *appended to* in place, and CURRENT is
+    // replaced. Linking those would let a running game's writes bleed into the
+    // snapshot mid-read, which is precisely the tearing the snapshot exists to
+    // prevent.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("db");
+    fake_db(&src);
+    let dst = tmp.path().join("snap");
+
+    snapshot::link_or_copy_dir(&src, &dst).unwrap();
+
+    for name in ["000006.log", "MANIFEST-000004", "CURRENT"] {
+        assert!(
+            !same_inode(&src.join(name), &dst.join(name)),
+            "{name} is written in place and must be a real copy"
+        );
+    }
+}
+
+#[test]
+fn a_snapshot_is_unaffected_by_later_writes_to_the_live_log() {
+    // The behavioural statement of the test above: whatever the mechanism, an
+    // autosave landing after the snapshot must not change what the snapshot
+    // reads.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("db");
+    fake_db(&src);
+    let dst = tmp.path().join("snap");
+
+    snapshot::link_or_copy_dir(&src, &dst).unwrap();
+    std::fs::write(src.join("000006.log"), b"log records + an autosave").unwrap();
+
+    assert_eq!(
+        std::fs::read(dst.join("000006.log")).unwrap(),
+        b"log records",
+        "the snapshot must hold the bytes that were there when it was taken"
+    );
+}
+
+#[test]
+fn discarding_a_snapshot_leaves_the_linked_originals_intact() {
+    // Unlinking a hardlink drops one name, not the file. If this were wrong,
+    // dropping the TempDir at the end of every read would delete the world's
+    // tables — the worst bug this change could introduce.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("db");
+    fake_db(&src);
+    let snap = tempfile::tempdir().unwrap();
+    let dst = snap.path().join("db");
+
+    snapshot::link_or_copy_dir(&src, &dst).unwrap();
+    drop(snap);
+
+    assert_eq!(
+        std::fs::read(src.join("000005.ldb")).unwrap(),
+        vec![7u8; 4096],
+        "the world's table survived the snapshot being discarded"
+    );
+}
+
+#[test]
+fn a_snapshot_reports_only_the_bytes_it_actually_copied() {
+    // The 4096-byte table is linked; the three small files are copied. The
+    // reported figure is what the read cost, so it must not count linked bytes.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("db");
+    fake_db(&src);
+    let dst = tmp.path().join("snap");
+
+    let copied = snapshot::link_or_copy_dir(&src, &dst).unwrap();
+    let small = 11 + 16 + 16; // log + manifest + CURRENT
+
+    assert_eq!(copied, small, "linked bytes are not copied bytes");
+}
+
+#[test]
+fn a_read_links_the_world_tables_instead_of_copying_them() {
+    // The reported figure is bytes copied. If the read is linking the tables,
+    // it is necessarily well below the size of the directory it snapshotted.
+    let (_tmp, db) = extract();
+    let world = world_at(db.parent().unwrap());
+
+    let opened = construct_core::store::open_world_store(&world).unwrap();
+    let copied = opened.via_snapshot.expect("read went through a snapshot");
+    let total = snapshot::dir_size(&db);
+
+    assert!(
+        copied < total,
+        "a linking snapshot copies less than the whole directory: {copied} of {total}"
+    );
+}

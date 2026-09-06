@@ -69,6 +69,10 @@ pub struct OpenedStore {
     /// Held so the snapshot directory outlives the database handle.
     pub(crate) _snapshot: Option<tempfile::TempDir>,
     /// `Some(bytes)` when the read came from a snapshot rather than the world.
+    ///
+    /// The figure is bytes *copied*, which on a linking snapshot is far less
+    /// than the size of `db/`: the table files are hardlinked and cost nothing.
+    /// See [`snapshot::link_or_copy_dir`].
     pub via_snapshot: Option<u64>,
 }
 
