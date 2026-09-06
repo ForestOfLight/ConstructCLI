@@ -2,6 +2,10 @@
 
 Move structures between Minecraft Bedrock worlds from the command line.
 
+This tool is designed to compliment the host of solutions for moving structures between Minecraft Bedrock worlds. It does not assume sole ownership over your structures. Instead, it expects to find them in a variety of places and handle changes gracefully.
+
+### Upgrading the Old Construct Workfow
+
 [Construct](https://github.com/ForestOfLight/Construct)'s documented workflow
 for getting a structure out of a world is to upload the whole world to
 holoprint-mc.github.io and use its "Extract From World" feature. This replaces
@@ -20,14 +24,6 @@ replaces that with:
 construct install --world "My Survival"
 construct import house.mcstructure --world "My Survival"
 ```
-
-## Status
-
-Stage 2 of 4. `worlds`, `list`, and `export` now see a world's database and
-Construct's own `structures/` folder as one catalog. `install`, `import`,
-`copy`, `delete --source pack`, `status`, and `experiment` are also built.
-Merging structures and deleting one from a world's database are not — see
-`docs/superpowers/specs/2026-08-31-constructcli-design.md`.
 
 ## Install
 
@@ -78,24 +74,8 @@ construct experiment <world> --beta-apis         # show the current toggle
 construct experiment <world> --beta-apis on      # turn it on
 ```
 
-Merge several saves of one build back into a single structure, reassembled at the
-positions they were saved at:
-
-```console
-$ construct export "My World" north_wing tower --merge -o castle.mcstructure
-warning: 1,204 blocks overlapped between "north_wing" and "tower"
-wrote castle.mcstructure (2.1 MB) — 48 x 31 x 52 from 2 structures
-```
-
-Gaps between the pieces are filled with air, so placing the result clears the space
-between them. The merged structure's footprint is the whole union of the pieces, so
-pieces saved far apart clear everything in between — a structure void a piece recorded
-for itself is kept, but empty space is not. Where two pieces both have a block, the one
-named later wins; `--on-overlap first` reverses that and `--on-overlap error` refuses
-instead.
-
-`import`, `copy`, and `delete` all write into a `structures/` folder, never
-into a world's database — reload the world before Construct shows the change.
+`import`, `copy`, and `delete` all write within a `BP/structures/` folder, never
+into a world's database to mitigate world corruption.
 
 **Structures belong to a world.** Every world Construct is installed in gets
 one structures home: its own copy of Construct when it has one, otherwise a
@@ -137,6 +117,33 @@ A `<world>` is a world's display name, a folder name, a qualified
 `<installation>/<account>/<world>` reference, or a path to a world directory.
 When a name is ambiguous, the error prints the qualified forms to pick from.
 
+### Tab Autocompletion
+
+ConstructCLI supports dynamic tab autocompletion for subcommands, options, world names, and structure names.
+
+To enable completions in your shell:
+
+- **Bash** (`~/.bashrc`):
+  ```bash
+  source <(construct completions bash)
+  ```
+- **Zsh** (`~/.zshrc`):
+  ```zsh
+  source <(construct completions zsh)
+  ```
+- **Fish** (`~/.config/fish/config.fish`):
+  ```fish
+  construct completions fish | source
+  ```
+- **PowerShell** (`$PROFILE`):
+  ```powershell
+  construct completions powershell | Out-String | Invoke-Expression
+  ```
+- **Elvish** (`~/.elvish/rc.elv`):
+  ```elvish
+  eval (construct completions elvish | slurp)
+  ```
+
 Global flags, available on every command:
 
 - `--json` — print one JSON document instead of human-readable output.
@@ -175,24 +182,3 @@ Three environment variables:
 | 3 | not found |
 | 4 | world in use |
 | 5 | partial success — `install` placed the packs but could not flip Beta APIs on |
-
-## Safety
-
-Opening a leveldb database runs recovery and can rewrite it — this was
-measured, not assumed. So ConstructCLI never opens a world's live database:
-every read copies `db/` to a temporary directory first and reads the copy,
-telling you when it does (`reading from a 2.2 MB snapshot`). This is why a
-world currently open in Minecraft can be read safely. No command in stage 2
-opens or writes a world's database either — `install` and `experiment` write
-`level.dat`, and `import`, `copy`, and `delete` write only files under
-Construct's own `structures/`. Every `level.dat` write is backed up first and
-runs through a fidelity gate — re-serializing the file *unmodified* and
-refusing to write if that doesn't round-trip byte-for-byte. The one write
-this tool does not yet make is into a world's structure database itself;
-that's stage 4.
-
-## License
-
-MIT, matching Construct. The test fixture world is derived from
-[bedrock-rs](https://github.com/bedrock-crustaceans/bedrock-rs) under Apache-2.0;
-see `crates/construct-core/tests/fixtures/NOTICE`.

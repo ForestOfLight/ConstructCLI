@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use clap_complete::engine::ArgValueCandidates;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -9,7 +10,7 @@ use std::path::PathBuf;
 )]
 pub struct Cli {
     /// Extra com.mojang root to probe. Repeatable.
-    #[arg(long, global = true, value_name = "PATH")]
+    #[arg(long, global = true, value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
     pub com_mojang: Vec<PathBuf>,
 
     /// Emit one JSON document on stdout instead of human output.
@@ -70,8 +71,6 @@ impl From<SourceArg> for construct_core::catalog::Source {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// List discovered worlds.
-    Worlds,
     /// Add a com.mojang or world folder to the automatic search.
     Add {
         /// Directory to add to the appropriate configuration list.
@@ -79,23 +78,27 @@ pub enum Command {
         path: PathBuf,
     },
 
+    /// List discovered worlds.
+    Worlds,
 
     /// List the structures in a world, or in the shared pack with no world.
     List {
         /// World name, qualified reference, or path. Without one, the
         /// installation's shared Construct pack is listed on its own.
+        #[arg(add = ArgValueCandidates::new(crate::complete::complete_worlds))]
         world: Option<String>,
     },
 
     /// Write structures out as .mcstructure files.
     Export {
         /// World name, qualified reference, or path.
+        #[arg(add = ArgValueCandidates::new(crate::complete::complete_worlds))]
         world: String,
         /// One or more structure names.
-        #[arg(required = true)]
+        #[arg(required = true, add = ArgValueCandidates::new(crate::complete::complete_structures))]
         structures: Vec<String>,
         /// Output file. Only valid with a single structure.
-        #[arg(short = 'o', long)]
+        #[arg(short = 'o', long, value_hint = clap::ValueHint::FilePath)]
         output: Option<PathBuf>,
         /// Combine the structures into one, reassembled at their saved world
         /// positions. Requires -o.
@@ -109,10 +112,10 @@ pub enum Command {
     /// Copy .mcstructure files into Construct's structures folder.
     Import {
         /// One or more .mcstructure files to import.
-        #[arg(required = true)]
+        #[arg(required = true, value_hint = clap::ValueHint::FilePath)]
         files: Vec<PathBuf>,
         /// Target this world's Construct copy.
-        #[arg(long, value_name = "WORLD")]
+        #[arg(short = 'w', long, value_name = "WORLD", add = ArgValueCandidates::new(crate::complete::complete_worlds))]
         world: Option<String>,
         /// Override the name derived from the file stem. Only valid with a
         /// single file.
@@ -123,26 +126,30 @@ pub enum Command {
     /// Copy structures into another world's Construct.
     Copy {
         /// Source world name, qualified reference, or path.
+        #[arg(add = ArgValueCandidates::new(crate::complete::complete_worlds))]
         src_world: String,
         /// Destination world name, qualified reference, or path.
+        #[arg(add = ArgValueCandidates::new(crate::complete::complete_worlds))]
         dst_world: String,
         /// One or more structure names.
-        #[arg(required = true)]
+        #[arg(required = true, add = ArgValueCandidates::new(crate::complete::complete_structures))]
         structures: Vec<String>,
     },
 
     /// Remove imported structures. `--source world` is not implemented yet.
     Delete {
         /// World name, qualified reference, or path.
+        #[arg(add = ArgValueCandidates::new(crate::complete::complete_worlds))]
         world: String,
         /// One or more structure names.
-        #[arg(required = true)]
+        #[arg(required = true, add = ArgValueCandidates::new(crate::complete::complete_structures))]
         structures: Vec<String>,
     },
 
     /// Read or set a world's experimental toggles.
     Experiment {
         /// World name, qualified reference, or path.
+        #[arg(add = ArgValueCandidates::new(crate::complete::complete_worlds))]
         world: String,
         /// Beta APIs (`gametest`). Omit the value to print the current state.
         #[arg(long, required = true, num_args = 0..=1, value_name = "on|off")]
@@ -155,12 +162,29 @@ pub enum Command {
         #[arg(long, value_name = "VERSION")]
         version: Option<String>,
         /// Also enable Construct in this world and turn Beta APIs on.
-        #[arg(long, value_name = "WORLD")]
+        #[arg(short = 'w', long, value_name = "WORLD", add = ArgValueCandidates::new(crate::complete::complete_worlds))]
         world: Option<String>,
     },
 
     /// Show the installed version, the latest available, and where it's enabled.
     Status,
+
+    /// Generate shell tab-completion scripts.
+    Completions {
+        /// Shell to generate completions for.
+        #[arg(value_enum)]
+        shell: ShellArg,
+    },
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
+pub enum ShellArg {
+    Bash,
+    Elvish,
+    Fish,
+    #[value(name = "powershell", alias = "power-shell")]
+    PowerShell,
+    Zsh,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]

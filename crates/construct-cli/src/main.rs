@@ -1,8 +1,9 @@
 mod cli;
 mod commands;
+mod complete;
 mod output;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use cli::{Cli, Command};
 use construct_core::error::CoreError;
 use construct_core::install::releases;
@@ -11,6 +12,8 @@ use output::Out;
 use std::path::{Path, PathBuf};
 
 fn main() {
+    clap_complete::CompleteEnv::with_factory(Cli::command).complete();
+
     let cli = Cli::parse();
     let mut out = Out::new(cli.json);
 
@@ -104,10 +107,10 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
     };
 
     match &cli.command {
+        Command::Add { path } => commands::add::run(path, out),
         Command::Worlds if installations.is_empty() => Err(no_installations()),
         Command::Worlds => commands::worlds::run(&worlds, out),
         Command::List { world: Some(world) } => {
-        Command::Add { path } => commands::add::run(path, out),
             let w = resolve_world(world)?;
             commands::list::run(
                 &w,
@@ -296,6 +299,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
             let client = github_client();
             commands::status::run(&client, installation, &worlds, out)
         }
+        Command::Completions { shell } => commands::completions::run(*shell),
     }
 }
 

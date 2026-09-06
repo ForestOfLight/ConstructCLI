@@ -20,6 +20,7 @@ serde_json = "1.0"
 toml = "1.0"
 directories = "6.0"
 clap = { version = "4.6", features = ["derive"] }
+clap_complete = { version = "4.6", features = ["unstable-dynamic"] }
 tempfile = "3.27"
 nbtx = "3.0.1"
 # Patched local checkout: the upstream crate does not compile on macOS or on any

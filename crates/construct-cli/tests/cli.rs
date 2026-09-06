@@ -14,7 +14,6 @@ fn bin() -> Command {
     c
 }
 
-#[test]
 fn bin_with_config(config: &std::path::Path) -> Command {
     let mut command = bin();
     command.env("CONSTRUCT_CONFIG", config);
@@ -47,6 +46,13 @@ fn add_classifies_supported_paths_and_rejects_other_directories() {
 
     let out = bin_with_config(&config)
         .args(["add", structures.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("expected a com.mojang directory or a world directory"));
+}
+
+#[test]
 fn help_lists_the_read_commands() {
     let out = bin().arg("--help").output().unwrap();
     assert!(out.status.success());
@@ -4337,4 +4343,120 @@ fn import_with_no_file_named_is_a_usage_error() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn completions_subcommand_generates_shell_scripts() {
+    for shell in ["bash", "zsh", "fish", "elvish", "powershell"] {
+        let out = bin().args(["completions", shell]).output().unwrap();
+        assert!(
+            out.status.success(),
+            "completions {shell} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            text.contains("construct"),
+            "completions {shell} output missing binary name: {text}"
+        );
+    }
+}
+
+#[test]
+fn tab_completion_completes_world_names() {
+    let root = world_with_construct(&[("barn", b"x")]);
+    let out = bin()
+        .env("_CLAP_COMPLETE_INDEX", "4")
+        .env("COMPLETE", "bash")
+        .args([
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+            "--",
+            "construct",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+            "export",
+            "",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Test"), "should suggest world Test:\n{text}");
+}
+
+#[test]
+fn tab_completion_completes_structure_names_for_the_targeted_world() {
+    let (root, world_name) = fixture_world_with_construct(&[], &[("bomber", b"x")]);
+    let out = bin()
+        .env("_CLAP_COMPLETE_INDEX", "5")
+        .env("COMPLETE", "bash")
+        .args([
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+            "--",
+            "construct",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+            "export",
+            world_name,
+            "",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("house"),
+        "should suggest world-db structure house:\n{text}"
+    );
+    assert!(
+        text.contains("bomber"),
+        "should suggest pack structure bomber:\n{text}"
+    );
+}
+
+#[test]
+fn tab_completion_completes_source_world_structures_for_copy() {
+    let root = world_with_construct(&[("barn", b"x")]);
+    destination_with_construct(root.path(), "Other");
+
+    let out = bin()
+        .env("_CLAP_COMPLETE_INDEX", "6")
+        .env("COMPLETE", "bash")
+        .args([
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+            "--",
+            "construct",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+            "copy",
+            "Test",
+            "Other",
+            "",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("barn"),
+        "should suggest source world structure barn:\n{text}"
+    );
 }

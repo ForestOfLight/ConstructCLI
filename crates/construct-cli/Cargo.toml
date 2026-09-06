@@ -12,6 +12,7 @@ path = "src/main.rs"
 construct-core = { path = "../construct-core" }
 anyhow.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 tempfile.workspace = true
@@ -20,7 +21,7 @@ tempfile.workspace = true
 tar.workspace = true
 flate2.workspace = true
 serde_json.workspace = true
-bedrock_level.workspace = true
 toml.workspace = true
+bedrock_level.workspace = true
 nbtx.workspace = true
 zip.workspace = true

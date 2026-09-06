@@ -13,12 +13,13 @@ anchors for editing and a list of the seams where the grammar is inconsistent.
 | `worlds` | — | — |
 | `list` | `[world]` | — |
 | `export` | **`world`** **`structures…`** | `-o/--output v`, `--merge`, `--on-overlap v` (`last`\|`first`\|`error`, default `last`) |
-| `import` | **`files…`** | `--world v`, `--name v` |
+| `import` | **`files…`** | `-w/--world v`, `--name v` |
 | `copy` | **`src_world`** **`dst_world`** **`structures…`** | — |
 | `delete` | **`world`** **`structures…`** | — |
 | `experiment` | **`world`** | **`--beta-apis [v]`** (`on`\|`off`) |
-| `install` | — | `--version v`, `--world v` |
+| `install` | — | `--version v`, `-w/--world v` |
 | `status` | — | — |
+| `completions` | — | **`shell`** (`bash`\|`elvish`\|`fish`\|`powershell`\|`zsh`) |
 
 Globals, declared once on `Cli` (`cli.rs:10`) and therefore *accepted by every
 command* — but only consumed by some:
@@ -51,9 +52,6 @@ command* — but only consumed by some:
   world, ensure a structures home exists, flip Beta APIs on (`install.rs:123`).
   Partial failure exits 5 from inside the command (`install.rs:272`), bypassing
   `exit_code`.
-- **`--force` means two different things**: refuse-overwrite escape for a target
-  file (`export`, `import`, `copy`) vs re-place a pack of the version already
-  installed (`install/mod.rs:66`).
 
 ## Validation hand-rolled in `main.rs`, not expressed in clap
 
