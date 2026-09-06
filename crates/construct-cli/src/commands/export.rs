@@ -153,7 +153,9 @@ pub fn shared(
         entries,
         store: None,
     };
-    run(&view, structures, output, source, force, merge, on_overlap, out)
+    run(
+        &view, structures, output, source, force, merge, on_overlap, out,
+    )
 }
 
 /// `export <names…> --world W` — that world's database and its own pack.
@@ -181,7 +183,9 @@ pub fn for_world(
         entries: loader::world_scoped(loaded.entries),
         store: loaded.store,
     };
-    run(&view, structures, output, source, force, merge, on_overlap, out)
+    run(
+        &view, structures, output, source, force, merge, on_overlap, out,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

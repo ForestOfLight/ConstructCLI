@@ -37,8 +37,7 @@ pub fn root() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("CONSTRUCT_STATE_DIR") {
         return Some(PathBuf::from(dir).join("writemarks"));
     }
-    directories::ProjectDirs::from("", "", "constructcli")
-        .map(|d| d.data_dir().join("writemarks"))
+    directories::ProjectDirs::from("", "", "constructcli").map(|d| d.data_dir().join("writemarks"))
 }
 
 /// One file per world, keyed the way backups are: on the qualified reference
@@ -88,7 +87,9 @@ pub fn left_by_us_in(dir: &Path, world: &World) -> bool {
     let Some(newest) = crate::inuse::newest_write(&world.db_path()) else {
         return false;
     };
-    let Some(text) = stamp(newest) else { return false };
+    let Some(text) = stamp(newest) else {
+        return false;
+    };
     match std::fs::read_to_string(mark_path(dir, world)) {
         Ok(recorded) => recorded.trim() == text,
         Err(_) => false,

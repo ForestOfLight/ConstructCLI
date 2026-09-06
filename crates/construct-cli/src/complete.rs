@@ -25,9 +25,8 @@ pub fn complete_worlds() -> Vec<CompletionCandidate> {
         // Folder name (if different from display name)
         if w.folder != w.display_name && seen.insert(w.folder.clone()) {
             let help_folder = format!("{} ({})", w.installation, w.display_name);
-            candidates.push(
-                CompletionCandidate::new(&w.folder).help(Some(StyledStr::from(help_folder))),
-            );
+            candidates
+                .push(CompletionCandidate::new(&w.folder).help(Some(StyledStr::from(help_folder))));
         }
 
         // Qualified reference (installation/folder or installation/account/folder)

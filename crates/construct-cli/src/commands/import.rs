@@ -111,13 +111,13 @@ fn id_under_directory(root_name: &str, file: &Path, dir: &Path) -> Result<String
             })?;
         segments.push(structures::derive_name(part)?);
     }
-    let stem = file
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| CoreError::BadStructureName {
-            name: file.display().to_string(),
-            reason: "the file has no usable stem".to_string(),
-        })?;
+    let stem =
+        file.file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| CoreError::BadStructureName {
+                name: file.display().to_string(),
+                reason: "the file has no usable stem".to_string(),
+            })?;
     segments.push(structures::derive_name(stem)?);
 
     let (namespace, rest) = segments.split_first().expect("root name is always present");
@@ -143,14 +143,14 @@ fn expand(paths: &[PathBuf], name: Option<&str>) -> Result<Vec<Planned>> {
         // `file_name` is `None` for `.`, `..` and a root, none of which offer
         // a name to file the tree under. Asking for the folder to be named
         // outright beats guessing one from the current directory.
-        let root_name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| CoreError::BadStructureName {
+        let root_name = path.file_name().and_then(|s| s.to_str()).ok_or_else(|| {
+            CoreError::BadStructureName {
                 name: path.display().to_string(),
                 reason: "this folder has no name to import under; \
-                         name the folder by its own path".to_string(),
-            })?;
+                         name the folder by its own path"
+                    .to_string(),
+            }
+        })?;
 
         let files = mcstructures_under(path)?;
         if files.is_empty() {

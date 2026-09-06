@@ -44,9 +44,17 @@ fn roots() -> (tempfile::TempDir, PathBuf, PathBuf) {
 #[test]
 fn a_root_with_no_construct_in_it_is_nothing_to_adopt() {
     let (_tmp, dev, stray) = roots();
-    pack_at(&stray, "SomeoneElsesPack", "11111111-1111-1111-1111-111111111111");
+    pack_at(
+        &stray,
+        "SomeoneElsesPack",
+        "11111111-1111-1111-1111-111111111111",
+    );
 
-    assert!(adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID).unwrap().is_none());
+    assert!(
+        adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID)
+            .unwrap()
+            .is_none()
+    );
     assert!(stray.join("SomeoneElsesPack/manifest.json").is_file());
 }
 
@@ -55,7 +63,11 @@ fn a_missing_stray_root_is_nothing_to_adopt() {
     let (tmp, dev, _stray) = roots();
     let absent = tmp.path().join("no_such_root");
 
-    assert!(adopt::adopt(&dev, &absent, CONSTRUCT_BP_UUID).unwrap().is_none());
+    assert!(
+        adopt::adopt(&dev, &absent, CONSTRUCT_BP_UUID)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -64,7 +76,9 @@ fn a_stray_construct_moves_into_the_development_root() {
     let from = pack_at(&stray, "Construct[BP]", CONSTRUCT_BP_UUID);
     structure(&from, "house.mcstructure", b"the user's house");
 
-    let adopted = adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID).unwrap().unwrap();
+    let adopted = adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID)
+        .unwrap()
+        .unwrap();
 
     assert_eq!(adopted.kind, AdoptKind::Moved);
     assert_eq!(adopted.to, dev.join("Construct[BP]"));
@@ -81,11 +95,17 @@ fn a_moved_pack_takes_a_free_name_when_its_own_is_taken() {
     // would destroy someone else's pack; `place` matches by UUID, so the
     // folder name it lands under does not matter.
     let (_tmp, dev, stray) = roots();
-    let squatter = pack_at(&dev, "Construct[BP]", "11111111-1111-1111-1111-111111111111");
+    let squatter = pack_at(
+        &dev,
+        "Construct[BP]",
+        "11111111-1111-1111-1111-111111111111",
+    );
     let from = pack_at(&stray, "Construct[BP]", CONSTRUCT_BP_UUID);
     structure(&from, "house.mcstructure", b"the user's house");
 
-    let adopted = adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID).unwrap().unwrap();
+    let adopted = adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID)
+        .unwrap()
+        .unwrap();
 
     assert_eq!(adopted.to, dev.join("Construct[BP]-2"));
     assert_eq!(
@@ -93,7 +113,9 @@ fn a_moved_pack_takes_a_free_name_when_its_own_is_taken() {
         b"the user's house"
     );
     assert_eq!(
-        construct_core::pack::manifest::read(&squatter).unwrap().uuid,
+        construct_core::pack::manifest::read(&squatter)
+            .unwrap()
+            .uuid,
         "11111111-1111-1111-1111-111111111111",
         "the unrelated pack is untouched"
     );
@@ -108,7 +130,9 @@ fn a_stray_beside_an_installed_copy_merges_its_unique_structures() {
     structure(&from, "house.mcstructure", b"the user's house");
     structure(&from, "stuff/towers/diamond.mcstructure", b"nested");
 
-    let adopted = adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID).unwrap().unwrap();
+    let adopted = adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID)
+        .unwrap()
+        .unwrap();
 
     assert_eq!(adopted.kind, AdoptKind::Merged);
     assert_eq!(adopted.merged, 2);
@@ -138,7 +162,9 @@ fn a_structure_present_in_both_copies_with_the_same_bytes_is_not_duplicated() {
     let from = pack_at(&stray, "Construct[BP]", CONSTRUCT_BP_UUID);
     structure(&from, "house.mcstructure", b"identical");
 
-    let adopted = adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID).unwrap().unwrap();
+    let adopted = adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID)
+        .unwrap()
+        .unwrap();
 
     assert_eq!(adopted.merged, 0);
     assert!(adopted.rescued.is_empty());
@@ -153,7 +179,9 @@ fn a_structure_that_differs_between_the_copies_is_kept_under_a_free_name() {
     let from = pack_at(&stray, "Construct[BP]", CONSTRUCT_BP_UUID);
     structure(&from, "house.mcstructure", b"a different house");
 
-    let adopted = adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID).unwrap().unwrap();
+    let adopted = adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID)
+        .unwrap()
+        .unwrap();
 
     assert_eq!(
         read(&installed.join("structures/house.mcstructure")),
@@ -184,7 +212,9 @@ fn a_rescue_skips_past_names_that_are_themselves_taken() {
     let from = pack_at(&stray, "Construct[BP]", CONSTRUCT_BP_UUID);
     structure(&from, "house.mcstructure", b"a different house");
 
-    adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID).unwrap().unwrap();
+    adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID)
+        .unwrap()
+        .unwrap();
 
     assert_eq!(
         read(&installed.join("structures/house-1.mcstructure")),
@@ -200,11 +230,17 @@ fn a_rescue_skips_past_names_that_are_themselves_taken() {
 fn a_nested_structure_is_rescued_inside_its_own_namespace_folder() {
     let (_tmp, dev, stray) = roots();
     let installed = pack_at(&dev, "Construct[BP]", CONSTRUCT_BP_UUID);
-    structure(&installed, "stuff/tower.mcstructure", b"the installed tower");
+    structure(
+        &installed,
+        "stuff/tower.mcstructure",
+        b"the installed tower",
+    );
     let from = pack_at(&stray, "Construct[BP]", CONSTRUCT_BP_UUID);
     structure(&from, "stuff/tower.mcstructure", b"a different tower");
 
-    let adopted = adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID).unwrap().unwrap();
+    let adopted = adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID)
+        .unwrap()
+        .unwrap();
 
     assert_eq!(
         read(&installed.join("structures/stuff/tower-1.mcstructure")),
@@ -228,7 +264,9 @@ fn a_stray_with_no_structures_folder_still_merges_and_is_removed() {
     pack_at(&dev, "Construct[RP]", CONSTRUCT_BP_UUID);
     let from = pack_at(&stray, "Construct[RP]", CONSTRUCT_BP_UUID);
 
-    let adopted = adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID).unwrap().unwrap();
+    let adopted = adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID)
+        .unwrap()
+        .unwrap();
 
     assert_eq!(adopted.merged, 0);
     assert!(!from.exists());
@@ -240,8 +278,14 @@ fn adopting_is_a_no_op_the_second_time() {
     let from = pack_at(&stray, "Construct[BP]", CONSTRUCT_BP_UUID);
     structure(&from, "house.mcstructure", b"the user's house");
 
-    adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID).unwrap().unwrap();
-    assert!(adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID).unwrap().is_none());
+    adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID)
+        .unwrap()
+        .unwrap();
+    assert!(
+        adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID)
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
         read(&dev.join("Construct[BP]/structures/house.mcstructure")),
         b"the user's house"
@@ -257,7 +301,9 @@ fn a_dev_root_that_does_not_exist_yet_is_created_for_the_move() {
     let from = pack_at(&stray, "Construct[BP]", CONSTRUCT_BP_UUID);
     structure(&from, "house.mcstructure", b"the user's house");
 
-    adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID).unwrap().unwrap();
+    adopt::adopt(&dev, &stray, CONSTRUCT_BP_UUID)
+        .unwrap()
+        .unwrap();
 
     assert_eq!(
         read(&dev.join("Construct[BP]/structures/house.mcstructure")),

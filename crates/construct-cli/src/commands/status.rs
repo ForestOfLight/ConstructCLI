@@ -15,9 +15,9 @@
 //! opens a world's `db/`.
 
 use crate::output::Out;
+use construct_core::catalog;
 use construct_core::discovery::{Installation, World};
 use construct_core::install::releases::Releases;
-use construct_core::catalog;
 use construct_core::pack::{self, manifest};
 use construct_core::{Result, worldpacks};
 use serde::Serialize;

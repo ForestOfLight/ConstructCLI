@@ -322,7 +322,8 @@ mod tests {
 
     #[test]
     fn a_missing_structure_suggests_near_matches() {
-        let CoreError::StructureNotFound { near, .. } = resolve("hous", &entries(), None).unwrap_err()
+        let CoreError::StructureNotFound { near, .. } =
+            resolve("hous", &entries(), None).unwrap_err()
         else {
             panic!("expected StructureNotFound");
         };

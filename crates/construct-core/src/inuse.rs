@@ -348,7 +348,10 @@ mod tests {
         let t0 = std::time::Instant::now();
         assert!(looks_in_use(&db), "phase one must suspect a live world");
         assert!(confirm_in_use(&db), "phase two must confirm a live world");
-        println!("confirmed live in {:?} (watch cap {CONFIRM_WATCH:?})", t0.elapsed());
+        println!(
+            "confirmed live in {:?} (watch cap {CONFIRM_WATCH:?})",
+            t0.elapsed()
+        );
     }
 
     /// A planted mark must not suppress detection of a world the game really
@@ -381,7 +384,10 @@ mod tests {
             !crate::writemark::left_by_us_in(marks.path(), &world),
             "the game wrote since; the mark must have gone stale"
         );
-        assert!(looks_in_use(&db) && confirm_in_use(&db), "still detected live");
+        assert!(
+            looks_in_use(&db) && confirm_in_use(&db),
+            "still detected live"
+        );
     }
 
     /// The inverse, against a world that is closed.

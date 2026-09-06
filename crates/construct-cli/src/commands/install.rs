@@ -67,7 +67,12 @@ struct Rescued {
 /// A failure is warned about, not returned: the misplaced copy is left
 /// untouched by a failed `adopt`, which is exactly the state the user was
 /// already in, and it is no reason to refuse to install Construct.
-fn migrate_stray(dev_root: &Path, stray_root: &Path, uuid: &str, out: &mut Out) -> Option<Migrated> {
+fn migrate_stray(
+    dev_root: &Path,
+    stray_root: &Path,
+    uuid: &str,
+    out: &mut Out,
+) -> Option<Migrated> {
     let folder = |p: &Path| {
         p.file_name()
             .unwrap_or_default()

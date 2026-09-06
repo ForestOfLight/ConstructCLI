@@ -193,7 +193,10 @@ fn the_structures_pack_is_the_home_when_there_is_one() {
     let home = pack::home(&world).expect("the shell pack is a home");
     assert_eq!(home.kind, pack::HomeKind::WorldStructuresPack);
     assert_eq!(home.dir, created.dir);
-    assert_eq!(home.kind.source(), construct_core::catalog::Source::WorldPack);
+    assert_eq!(
+        home.kind.source(),
+        construct_core::catalog::Source::WorldPack
+    );
 }
 
 #[test]

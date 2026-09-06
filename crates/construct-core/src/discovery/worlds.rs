@@ -65,7 +65,8 @@ pub fn enumerate(installations: &[Installation], extra_worlds: &[PathBuf]) -> Ve
                 continue;
             };
             for entry in entries.flatten() {
-                if let Some(world) = read_world(&entry.path(), &installation.name, root.account.clone())
+                if let Some(world) =
+                    read_world(&entry.path(), &installation.name, root.account.clone())
                 {
                     out.push(world);
                 }
@@ -304,7 +305,10 @@ mod tests {
                 path: root,
             }],
         }];
-        assert_eq!(enumerate(&installs, &[])[0].qualified(), "release/Shared/A=");
+        assert_eq!(
+            enumerate(&installs, &[])[0].qualified(),
+            "release/Shared/A="
+        );
     }
 
     #[test]
@@ -325,7 +329,10 @@ mod tests {
             "Amelix CMP",
         );
         level_dat_with(&dir, 1);
-        assert_eq!(enumerate(&single_root(tmp.path()), &[])[0].folder, "Amelix CMP");
+        assert_eq!(
+            enumerate(&single_root(tmp.path()), &[])[0].folder,
+            "Amelix CMP"
+        );
     }
 
     #[test]

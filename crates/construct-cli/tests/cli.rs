@@ -51,19 +51,32 @@ fn add_classifies_supported_paths_and_rejects_other_directories() {
             .args(["add", path.to_str().unwrap()])
             .output()
             .unwrap();
-        assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     let settings: toml::Value = toml::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
-    assert_eq!(settings["roots"][0]["path"].as_str(), com_mojang.canonicalize().unwrap().to_str());
-    assert_eq!(settings["other_worlds"][0].as_str(), world.canonicalize().unwrap().to_str());
+    assert_eq!(
+        settings["roots"][0]["path"].as_str(),
+        com_mojang.canonicalize().unwrap().to_str()
+    );
+    assert_eq!(
+        settings["other_worlds"][0].as_str(),
+        world.canonicalize().unwrap().to_str()
+    );
 
     let out = bin_with_config(&config)
         .args(["add", structures.to_str().unwrap()])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("expected a com.mojang directory or a world directory"));
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("expected a com.mojang directory or a world directory")
+    );
 }
 
 #[test]
@@ -90,12 +103,7 @@ fn worlds_json_is_exactly_one_document_on_stdout() {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
     let out = bin()
-        .args([
-            "worlds",
-            "--json",
-            "--path",
-            root.path().to_str().unwrap(),
-        ])
+        .args(["worlds", "--json", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     assert!(
@@ -116,12 +124,7 @@ fn warnings_go_to_stderr_and_never_pollute_json_stdout() {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
     let out = bin()
-        .args([
-            "worlds",
-            "--json",
-            "--path",
-            root.path().to_str().unwrap(),
-        ])
+        .args(["worlds", "--json", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     // Whatever is on stderr, stdout must still parse.
@@ -176,8 +179,12 @@ fn bare_world(parent: &std::path::Path, folder: &str, name: &str) -> std::path::
 }
 
 fn listed_worlds(out: &std::process::Output) -> Vec<serde_json::Value> {
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .unwrap_or_else(|e| panic!("stdout was not JSON: {e}\n{}", String::from_utf8_lossy(&out.stdout)));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout was not JSON: {e}\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
     v["worlds"].as_array().cloned().unwrap_or_default()
 }
 
@@ -303,7 +310,10 @@ fn a_malformed_reference_is_exit_2_even_with_no_installations() {
     // The resolve_world closure must not rewrite a MalformedReference into
     // NoInstallations just because installations.is_empty() — the input was
     // ill-formed regardless of how many installations exist.
-    let out = bin().args(["structures", "--world", "a/b/c/d/e/f/g"]).output().unwrap();
+    let out = bin()
+        .args(["structures", "--world", "a/b/c/d/e/f/g"])
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(2));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -339,7 +349,10 @@ fn a_bare_name_with_no_installations_is_genuinely_exit_3() {
     // This one IS the right explanation: nothing was found, and there was
     // nothing to search. Asserted with the message too, so a future
     // over-correction that removes the masking entirely gets caught.
-    let out = bin().args(["structures", "--world", "somename"]).output().unwrap();
+    let out = bin()
+        .args(["structures", "--world", "somename"])
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(3));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -668,7 +681,13 @@ fn exporting_several_structures_writes_one_file_each() {
     let dir = tempfile::tempdir().unwrap();
     let out = bin()
         .current_dir(dir.path())
-        .args(["export", "--world", world.to_str().unwrap(), "house", "barn"])
+        .args([
+            "export",
+            "--world",
+            world.to_str().unwrap(),
+            "house",
+            "barn",
+        ])
         .output()
         .unwrap();
     assert!(
@@ -708,7 +727,13 @@ fn a_multi_export_refuses_before_writing_anything_if_one_target_exists() {
 
     let out = bin()
         .current_dir(dir.path())
-        .args(["export", "--world", world.to_str().unwrap(), "house", "barn"])
+        .args([
+            "export",
+            "--world",
+            world.to_str().unwrap(),
+            "house",
+            "barn",
+        ])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -763,7 +788,12 @@ fn a_traversal_structure_name_is_refused_and_writes_nothing() {
 
     let out = bin()
         .current_dir(dir.path())
-        .args(["export", "--world", world.to_str().unwrap(), "../../../../tmp/PWNED"])
+        .args([
+            "export",
+            "--world",
+            world.to_str().unwrap(),
+            "../../../../tmp/PWNED",
+        ])
         .output()
         .unwrap();
 
@@ -931,7 +961,12 @@ fn a_colon_bearing_name_sanitizes_and_exports() {
     let dir = tempfile::tempdir().unwrap();
     let out = bin()
         .current_dir(dir.path())
-        .args(["export", "--world", world.to_str().unwrap(), "understudy:players"])
+        .args([
+            "export",
+            "--world",
+            world.to_str().unwrap(),
+            "understudy:players",
+        ])
         .output()
         .unwrap();
     assert!(
@@ -1574,10 +1609,8 @@ fn export_of_a_name_in_both_world_and_pack_is_refused_naming_both_sources() {
     // shared pack is no longer two things — it is one, and answering with it is
     // right rather than a guess. The ambiguity that survives is the one inside
     // a single scope, which is what this fixture builds.
-    let (root, world_name) = fixture_world_with_construct(
-        &[("mystructure:collide", b"WORLDBYTES")],
-        &[],
-    );
+    let (root, world_name) =
+        fixture_world_with_construct(&[("mystructure:collide", b"WORLDBYTES")], &[]);
     add_world_construct(
         &root.path().join("minecraftWorlds").join(world_name),
         &[("collide", b"PACKBYTES!")],
@@ -1890,12 +1923,7 @@ fn delete_unlinks_a_pack_structure() {
     assert!(file.exists());
 
     let out = bin_isolated(root.path())
-        .args([
-            "delete",
-            "bomber",
-            "--path",
-            root.path().to_str().unwrap(),
-        ])
+        .args(["delete", "bomber", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     assert!(
@@ -1935,12 +1963,7 @@ fn delete_says_when_it_removed_from_the_shared_construct() {
     // And in the printed output, which is where a person reads it.
     let root = world_with_construct(&[("bomber", b"x")]);
     let out = bin_isolated(root.path())
-        .args([
-            "delete",
-            "bomber",
-            "--path",
-            root.path().to_str().unwrap(),
-        ])
+        .args(["delete", "bomber", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
@@ -2390,12 +2413,7 @@ fn delete_without_a_world_removes_the_shared_copy_and_leaves_the_worlds() {
     // does for `import` and `structures`.
     let root = world_seeing_one_name_in_both_packs();
     let out = bin_isolated(root.path())
-        .args([
-            "delete",
-            "house",
-            "--path",
-            root.path().to_str().unwrap(),
-        ])
+        .args(["delete", "house", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
 
@@ -2445,7 +2463,10 @@ fn delete_with_a_world_cannot_reach_a_structure_only_in_the_shared_copy() {
     assert_eq!(out.status.code(), Some(3));
     assert!(shared.is_file(), "the shared copy must survive");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("Test"), "the miss must name the world: {stderr}");
+    assert!(
+        stderr.contains("Test"),
+        "the miss must name the world: {stderr}"
+    );
 }
 
 #[test]
@@ -2509,12 +2530,7 @@ fn a_read_only_command_refuses_the_force_flag() {
     // refuses it here instead of accepting it and doing nothing.
     let root = world_with_construct(&[]);
     let out = bin()
-        .args([
-            "worlds",
-            "--force",
-            "--path",
-            root.path().to_str().unwrap(),
-        ])
+        .args(["worlds", "--force", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
 
@@ -2560,12 +2576,7 @@ fn export_without_a_world_writes_the_shared_copy() {
     let dir = tempfile::tempdir().unwrap();
     let out = bin()
         .current_dir(dir.path())
-        .args([
-            "export",
-            "house",
-            "--path",
-            root.path().to_str().unwrap(),
-        ])
+        .args(["export", "house", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
 
@@ -2997,7 +3008,10 @@ fn delete_source_world_leaves_the_pack_copy_alone() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    assert!(pack_copy.is_file(), "--source world-db must not touch a pack");
+    assert!(
+        pack_copy.is_file(),
+        "--source world-db must not touch a pack"
+    );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let rows = v["deleted"].as_array().unwrap();
     assert_eq!(rows.len(), 1, "{v}");
@@ -3034,7 +3048,11 @@ fn delete_source_pack_never_opens_the_world_database() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(before, db_fingerprint(&world_dir), "the database was opened");
+    assert_eq!(
+        before,
+        db_fingerprint(&world_dir),
+        "the database was opened"
+    );
 }
 
 #[test]
@@ -3969,7 +3987,11 @@ fn install_moves_a_construct_found_in_behavior_packs_and_keeps_its_structures() 
     let stray = root.path().join("behavior_packs/Construct[BP]");
     write_construct_bp(&stray, [1, 1, 0]);
     std::fs::create_dir_all(stray.join("structures")).unwrap();
-    std::fs::write(stray.join("structures/house.mcstructure"), b"the user's house").unwrap();
+    std::fs::write(
+        stray.join("structures/house.mcstructure"),
+        b"the user's house",
+    )
+    .unwrap();
 
     let (base, _server) = stub_github(build_mcaddon_bytes());
     let out = bin()
@@ -4006,23 +4028,26 @@ fn install_merges_a_behavior_packs_copy_into_the_development_one_without_losing_
     let installed = root.path().join("development_behavior_packs/Construct[BP]");
     write_construct_bp(&installed, [1, 1, 0]);
     std::fs::create_dir_all(installed.join("structures")).unwrap();
-    std::fs::write(installed.join("structures/house.mcstructure"), b"the dev house").unwrap();
+    std::fs::write(
+        installed.join("structures/house.mcstructure"),
+        b"the dev house",
+    )
+    .unwrap();
 
     let stray = root.path().join("behavior_packs/Construct[BP]");
     write_construct_bp(&stray, [1, 0, 0]);
     std::fs::create_dir_all(stray.join("structures")).unwrap();
-    std::fs::write(stray.join("structures/house.mcstructure"), b"a different house").unwrap();
+    std::fs::write(
+        stray.join("structures/house.mcstructure"),
+        b"a different house",
+    )
+    .unwrap();
     std::fs::write(stray.join("structures/barn.mcstructure"), b"the barn").unwrap();
 
     let (base, _server) = stub_github(build_mcaddon_bytes());
     let out = bin()
         .env("CONSTRUCT_GITHUB_API", &base)
-        .args([
-            "install",
-            "--json",
-            "--path",
-            root.path().to_str().unwrap(),
-        ])
+        .args(["install", "--json", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     assert!(
@@ -4143,12 +4168,7 @@ fn status_reports_the_installed_version_and_which_worlds_have_it() {
 
     let out = bin()
         .env("CONSTRUCT_GITHUB_API", "http://127.0.0.1:1")
-        .args([
-            "status",
-            "--json",
-            "--path",
-            root.path().to_str().unwrap(),
-        ])
+        .args(["status", "--json", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     assert!(
@@ -4201,12 +4221,7 @@ fn status_counts_the_structures_in_every_pack_it_can_see() {
 
     let out = bin()
         .env("CONSTRUCT_GITHUB_API", "http://127.0.0.1:1")
-        .args([
-            "status",
-            "--json",
-            "--path",
-            root.path().to_str().unwrap(),
-        ])
+        .args(["status", "--json", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     assert!(
@@ -4258,12 +4273,7 @@ fn a_world_without_construct_enabled_is_not_listed() {
     // No world_behavior_packs.json at all.
     let out = bin()
         .env("CONSTRUCT_GITHUB_API", "http://127.0.0.1:1")
-        .args([
-            "status",
-            "--json",
-            "--path",
-            root.path().to_str().unwrap(),
-        ])
+        .args(["status", "--json", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -4279,12 +4289,7 @@ fn status_reports_up_to_date_when_installed_matches_latest() {
     let (base, _server) = stub_github_release("v1.2.0");
     let out = bin()
         .env("CONSTRUCT_GITHUB_API", &base)
-        .args([
-            "status",
-            "--json",
-            "--path",
-            root.path().to_str().unwrap(),
-        ])
+        .args(["status", "--json", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     assert!(
@@ -4319,12 +4324,7 @@ fn status_reports_an_update_is_available() {
     let (base, _server) = stub_github_release("v1.3.0");
     let out = bin()
         .env("CONSTRUCT_GITHUB_API", &base)
-        .args([
-            "status",
-            "--json",
-            "--path",
-            root.path().to_str().unwrap(),
-        ])
+        .args(["status", "--json", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     assert!(
@@ -5325,7 +5325,10 @@ fn import_refuses_two_files_that_would_derive_one_name() {
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("house"), "must name the collision:\n{stderr}");
+    assert!(
+        stderr.contains("house"),
+        "must name the collision:\n{stderr}"
+    );
     assert!(
         !stderr.contains("unexpected argument"),
         "must be refused for the name collision, not for taking two files:\n{stderr}"
@@ -5677,7 +5680,11 @@ fn import_of_a_directory_mirrors_its_tree_under_the_named_folder() {
         b"q1-bytes"
     );
     assert_eq!(
-        std::fs::read(imported_tree_path(root.path(), "Amelix/sub/tower.mcstructure")).unwrap(),
+        std::fs::read(imported_tree_path(
+            root.path(),
+            "Amelix/sub/tower.mcstructure"
+        ))
+        .unwrap(),
         b"tower-bytes"
     );
 }
@@ -5775,7 +5782,10 @@ fn import_of_a_directory_with_no_structures_in_it_fails() {
         ])
         .output()
         .unwrap();
-    assert!(!out.status.success(), "an empty folder must not report success");
+    assert!(
+        !out.status.success(),
+        "an empty folder must not report success"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("Empty"),
@@ -5886,7 +5896,10 @@ fn import_of_a_directory_writes_nothing_when_one_file_already_exists() {
 
     std::fs::write(src.join("silo.mcstructure"), b"silo-bytes").unwrap();
     let out = bin().args(args(root.path(), &src)).output().unwrap();
-    assert!(!out.status.success(), "the existing barn must refuse the batch");
+    assert!(
+        !out.status.success(),
+        "the existing barn must refuse the batch"
+    );
     assert!(
         !imported_tree_path(root.path(), "Amelix/silo.mcstructure").exists(),
         "no file may land when any file in the folder collides"
@@ -5922,9 +5935,7 @@ fn import_of_a_directory_derives_a_usable_name_for_each_folder() {
     );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["written"][0]["id"], "My_Builds:tall_towers/big_one");
-    assert!(
-        imported_tree_path(root.path(), "My_Builds/tall_towers/big_one.mcstructure").exists()
-    );
+    assert!(imported_tree_path(root.path(), "My_Builds/tall_towers/big_one.mcstructure").exists());
 }
 
 #[test]
@@ -5969,13 +5980,19 @@ fn import_of_a_directory_warns_once_about_the_namespace_not_once_per_file() {
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
-        stdout.lines().filter(|l| l.trim_start().starts_with("into ")).count(),
+        stdout
+            .lines()
+            .filter(|l| l.trim_start().starts_with("into "))
+            .count(),
         1,
         "the destination pack is one answer for the batch:\n{stdout}"
     );
     // The per-structure lines are the ones worth repeating.
     assert_eq!(
-        stdout.lines().filter(|l| l.starts_with("imported ")).count(),
+        stdout
+            .lines()
+            .filter(|l| l.starts_with("imported "))
+            .count(),
         3,
         "{stdout}"
     );

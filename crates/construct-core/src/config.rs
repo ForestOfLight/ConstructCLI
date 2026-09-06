@@ -229,9 +229,7 @@ pub fn add_path(config: &mut Config, path: &Path) -> Result<(AddedPath, bool)> {
 
 /// Loads config, then applies environment overrides on top.
 pub fn load(explicit: Option<&Path>, env: &dyn Fn(&str) -> Option<String>) -> Result<Loaded> {
-    let path = explicit
-        .map(Path::to_path_buf)
-        .or_else(|| self::path(env));
+    let path = explicit.map(Path::to_path_buf).or_else(|| self::path(env));
 
     let (mut config, mut warnings, source) = match &path {
         Some(p) if p.is_file() => {
