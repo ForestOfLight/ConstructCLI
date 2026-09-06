@@ -161,7 +161,7 @@ pub fn for_world(
             )));
         }
         out.line(format!("deleted {}", entry.name));
-        out.line("  from this world's database".to_string());
+        out.line("  from this world's database");
         deleted.push(row(entry, None));
     }
 

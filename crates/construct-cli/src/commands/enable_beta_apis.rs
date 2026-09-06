@@ -38,7 +38,7 @@ pub fn run(world: &World, backups: &Backups, out: &mut Out) -> Result<()> {
     // ordering guarantee below intact — a real flip is still always preceded
     // by its backup — while a non-flip takes none.
     if leveldat::read(&path)?.beta_apis() == Some(true) {
-        out.line("Beta APIs already on; nothing to do".to_string());
+        out.line("Beta APIs already on; nothing to do");
         out.emit(Payload {
             world: world.qualified(),
             beta_apis: true,
@@ -64,7 +64,7 @@ pub fn run(world: &World, backups: &Backups, out: &mut Out) -> Result<()> {
         out.line(format!("Beta APIs: {} → on", describe(change.before)));
         out.line(format!("  backup: {}", backup.display()));
     } else {
-        out.line("Beta APIs already on; nothing to do".to_string());
+        out.line("Beta APIs already on; nothing to do");
     }
     out.emit(Payload {
         world: world.qualified(),
