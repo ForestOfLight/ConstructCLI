@@ -1,6 +1,5 @@
 //! Building a world's structure catalog, for every command that resolves a name.
 
-use crate::commands::worlds::human_size;
 use crate::output::Out;
 use construct_core::Result;
 use construct_core::catalog::{self, Entry, Source};
@@ -36,9 +35,6 @@ pub fn for_world(
         (Vec::new(), None)
     } else {
         let store = store::open_world_store(world)?;
-        if let Some(bytes) = store.via_snapshot {
-            out.warn(format!("reading from a {} snapshot", human_size(bytes)));
-        }
         let entries = catalog::from_world(&store)?;
         (entries, Some(store))
     };
