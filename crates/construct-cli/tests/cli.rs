@@ -107,7 +107,7 @@ fn an_unknown_command_is_a_usage_error() {
 fn worlds_json_is_exactly_one_document_on_stdout() {
     // The GUI contract: stdout parses as JSON with no scanning.
     // Points at a real (empty) com.mojang so an installation exists and a
-    // payload is emitted — the exit-3 case is a different test.
+    // payload is emitted — the no-installations case is a different test.
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
     let out = bin()
@@ -125,6 +125,115 @@ fn worlds_json_is_exactly_one_document_on_stdout() {
     assert_eq!(parsed["schema"], 1);
     assert!(parsed["worlds"].is_array());
     assert!(parsed["warnings"].is_array());
+}
+
+#[test]
+fn a_failure_under_json_emits_one_document_carrying_error_kind() {
+    // The contract that replaces exit codes 3, 4 and 5. The code says only
+    // that it failed; `error.kind` says what failed, and is the only place
+    // that information exists now.
+    let out = bin()
+        .args(["worlds", "--json", "--path", "/nonexistent"])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("a failure must still be one JSON doc: {e}\n{text}"));
+    assert_eq!(v["error"]["kind"], "no-installations");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("no Minecraft installation found")),
+        "the error must carry its human message too: {v}"
+    );
+    // Same envelope as a success payload — a caller parses one shape.
+    assert_eq!(v["schema"], 1);
+    assert!(v["warnings"].is_array());
+}
+
+#[test]
+fn a_failure_without_json_still_prints_nothing_on_stdout() {
+    // The error document is a `--json` feature. Plain output keeps stdout for
+    // results and puts the reason on stderr, exactly as before.
+    let out = bin()
+        .args(["worlds", "--path", "/nonexistent"])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        out.stdout.is_empty(),
+        "stdout should be empty without --json, got: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("error:"));
+}
+
+#[test]
+fn a_usage_error_from_a_core_error_still_carries_its_kind() {
+    // Exit 2 survives the retirement, and a CoreError that exits 2 emits the
+    // document like any other — a caller can tell "you were ambiguous" from
+    // "you mistyped a flag", which is what exit-3-vs-2 used to encode.
+    let out = bin()
+        .args(["structures", "--world", "a/b/c/d/e/f/g", "--json"])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["error"]["kind"], "malformed-reference");
+}
+
+#[test]
+fn a_hand_rolled_usage_error_prints_no_json() {
+    // Deliberately excluded: the hand-rolled checks in main.rs and clap's own
+    // errors are grammar mistakes, not results. Exit 2 already says "fix the
+    // input", so they stay stderr-only. Pinned so the exclusion is a decision
+    // rather than an oversight.
+    let out = bin()
+        .args(["export", "a", "b", "--merge", "--json"])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        out.stdout.is_empty(),
+        "stdout should be empty, got: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn a_clap_usage_error_prints_no_json() {
+    let out = bin().args(["--json", "nonsense"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+}
+
+#[test]
+fn a_missing_world_reports_world_not_found_under_json() {
+    // The other half of the retired exit 3: with an installation present,
+    // a missing world is `world-not-found` rather than `no-installations`.
+    // One number covered both; two kinds tell them apart.
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
+    let out = bin()
+        .args([
+            "structures",
+            "--world",
+            "NoSuchWorld",
+            "--json",
+            "--path",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["error"]["kind"], "world-not-found");
 }
 
 #[test]
@@ -152,7 +261,7 @@ fn a_path_referenced_world_works_with_no_installations_at_all() {
         .output()
         .unwrap();
     // The db is not a real leveldb, so this fails — but it must NOT fail with
-    // exit 3 "no installation found", which would mean the check preempted
+    // "no Minecraft installation found", which would mean the check preempted
     // resolution.
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -162,12 +271,12 @@ fn a_path_referenced_world_works_with_no_installations_at_all() {
 }
 
 #[test]
-fn no_installation_found_exits_3_and_lists_probed_paths() {
+fn no_installation_found_reports_no_installations_and_lists_probed_paths() {
     let out = bin()
         .args(["worlds", "--path", "/nonexistent"])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(out.status.code(), Some(1));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
         err.contains("/nonexistent"),
@@ -353,15 +462,16 @@ fn a_path_looking_reference_that_does_not_exist_is_exit_2_with_no_installations(
 }
 
 #[test]
-fn a_bare_name_with_no_installations_is_genuinely_exit_3() {
+fn a_bare_name_with_no_installations_is_genuinely_no_installations() {
     // This one IS the right explanation: nothing was found, and there was
-    // nothing to search. Asserted with the message too, so a future
-    // over-correction that removes the masking entirely gets caught.
+    // nothing to search. The exit code cannot say which of the two it was any
+    // more — both are 1 — so the message is what discriminates, and asserting
+    // it catches a future over-correction that removes the masking entirely.
     let out = bin()
         .args(["structures", "--world", "somename"])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(out.status.code(), Some(1));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
         err.contains("no Minecraft installation found"),
@@ -371,7 +481,10 @@ fn a_bare_name_with_no_installations_is_genuinely_exit_3() {
 
 #[test]
 #[cfg(unix)]
-fn an_unreadable_world_is_exit_1_not_3_with_no_installations() {
+fn an_unreadable_world_is_not_masked_as_no_installations() {
+    // Both failures exit 1, so the code proves nothing here. The stderr
+    // assertions below are the discriminator; `error.kind` is the machine-
+    // readable equivalent, pinned in the json contract tests.
     use std::os::unix::fs::PermissionsExt;
 
     let tmp = tempfile::tempdir().unwrap();
@@ -550,7 +663,7 @@ fn structures_source_pack_with_no_reachable_construct_is_not_found() {
         ])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(out.status.code(), Some(1));
 }
 
 #[test]
@@ -585,12 +698,12 @@ fn structures_shows_a_long_name_in_full_not_truncated() {
 }
 
 #[test]
-fn structures_of_a_missing_world_exits_3() {
+fn structures_of_a_missing_world_reports_world_not_found() {
     let out = bin()
         .args(["structures", "--world", "definitely-not-a-world"])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(out.status.code(), Some(1));
 }
 
 #[test]
@@ -752,13 +865,13 @@ fn a_multi_export_refuses_before_writing_anything_if_one_target_exists() {
 }
 
 #[test]
-fn exporting_a_missing_structure_exits_3() {
+fn exporting_a_missing_structure_reports_structure_not_found() {
     let (_tmp, world) = fixture_world();
     let out = bin()
         .args(["export", "--world", world.to_str().unwrap(), "nope"])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(out.status.code(), Some(1));
 }
 
 /// Extracts the fixture world, then inserts additional structure keys
@@ -1179,7 +1292,7 @@ fn source_pack_on_a_machine_without_construct_is_not_found() {
         ])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("construct install"));
 }
 
@@ -1603,7 +1716,7 @@ fn copy_of_a_name_that_is_not_there_suggests_near_matches() {
         ])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("barn"));
 }
 
@@ -1918,7 +2031,7 @@ fn import_without_construct_points_at_install() {
         ])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("construct install"));
 }
 
@@ -2129,7 +2242,7 @@ fn structures_with_no_world_and_no_construct_points_at_install() {
         .args(["structures", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("construct install"));
 }
 
@@ -2468,7 +2581,7 @@ fn delete_with_a_world_cannot_reach_a_structure_only_in_the_shared_copy() {
         .output()
         .unwrap();
 
-    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(out.status.code(), Some(1));
     assert!(shared.is_file(), "the shared copy must survive");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -2659,7 +2772,7 @@ fn export_with_a_world_cannot_reach_a_structure_only_in_the_shared_copy() {
         .output()
         .unwrap();
 
-    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(out.status.code(), Some(1));
     assert!(
         !dir.path().join("bomber.mcstructure").exists(),
         "a miss writes nothing"
@@ -3089,7 +3202,7 @@ fn delete_refuses_a_world_that_looks_in_use_and_writes_nothing() {
         .output()
         .unwrap();
 
-    assert_eq!(out.status.code(), Some(4));
+    assert_eq!(out.status.code(), Some(1));
     // The simulator adds a log file of its own, so compare only the files
     // that were there to begin with: opening a leveldb rewrites *those*.
     let after = db_fingerprint(&world_dir);
@@ -3219,7 +3332,7 @@ fn a_mark_from_our_own_write_does_not_wave_through_a_live_world() {
 
     assert_eq!(
         out.status.code(),
-        Some(4),
+        Some(1),
         "a mark must never suppress detection of a live world; stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -3246,7 +3359,7 @@ fn delete_of_a_batch_with_one_bad_name_removes_nothing_from_the_database() {
         ])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(out.status.code(), Some(1));
 
     let listed = bin_isolated(root.path())
         .args([
@@ -3694,7 +3807,7 @@ fn install_reports_rate_limiting_with_the_token_guidance_when_github_returns_403
 }
 
 #[test]
-fn install_exits_3_and_lists_available_assets_when_the_version_is_missing() {
+fn install_reports_asset_not_found_and_lists_available_assets_when_the_version_is_missing() {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
     let (base, _server) = stub_github_status(404, &[], r#"{"message":"Not Found"}"#);
@@ -3711,7 +3824,7 @@ fn install_exits_3_and_lists_available_assets_when_the_version_is_missing() {
         .output()
         .unwrap();
 
-    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(out.status.code(), Some(1));
     assert!(!root.path().join("development_behavior_packs").exists());
 }
 
@@ -3847,12 +3960,13 @@ fn install_verifies_the_addon_is_actually_construct_before_placing_anything() {
 }
 
 #[test]
-fn install_exits_5_with_the_packs_already_placed_when_level_dat_cannot_be_flipped() {
+fn install_reports_partial_with_the_packs_already_placed_when_level_dat_cannot_be_flipped() {
     // §11's distinguishing behaviour: the packs land, but the world's
     // level.dat cannot be read, so the Beta APIs flip never happens. That is
-    // a partial success (exit 5), not a total failure (exit 1) — the
-    // downloaded packs are real work already done and must not be thrown
-    // away just because the last step failed.
+    // a partial install, not a plain failure — the downloaded packs are real
+    // work already done and must not be thrown away just because the last step
+    // failed. It exits 1 like any failure, but the payload survives and
+    // `error.kind` is `partial-install`, which is what tells the two apart.
     //
     // A four-byte level.dat is shorter than the 8-byte header `leveldat::read`
     // requires, so `apply_beta_apis` fails deterministically at its first
@@ -3884,12 +3998,12 @@ fn install_exits_5_with_the_packs_already_placed_when_level_dat_cannot_be_flippe
 
     assert_eq!(
         out.status.code(),
-        Some(5),
+        Some(1),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // The whole point of exit 5, not exit 1: the packs are really there.
+    // The whole point of partial-install: the packs are really there.
     assert!(
         root.path()
             .join("development_behavior_packs/Construct[BP]/manifest.json")
@@ -3901,9 +4015,17 @@ fn install_exits_5_with_the_packs_already_placed_when_level_dat_cannot_be_flippe
             .is_file()
     );
 
-    // Still exactly one JSON document on stdout, carrying the failure.
+    // Still exactly one JSON document on stdout, carrying the failure — and
+    // carrying the payload *and* the error together, which is the property
+    // that keeps "non-zero exit implies error.kind" true without an exception
+    // for this command.
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["schema"], 1);
+    assert_eq!(v["error"]["kind"], "partial-install");
+    assert!(
+        !v["version"].is_null() && !v["behavior"].is_null(),
+        "the payload must survive beside the error, got {v}"
+    );
     assert!(
         v["warnings"].as_array().is_some_and(|w| !w.is_empty()),
         "expected a non-empty warnings array, got {v}"
@@ -3923,9 +4045,9 @@ fn install_exits_5_with_the_packs_already_placed_when_level_dat_cannot_be_flippe
 }
 
 #[test]
-fn install_exits_5_with_the_packs_already_placed_when_the_world_pack_list_is_malformed() {
-    // Mirrors the level.dat exit-5 case above, but for the other partial-
-    // success path: the packs land, but a malformed world_behavior_packs.json
+fn install_reports_partial_with_the_packs_already_placed_when_the_world_pack_list_is_malformed() {
+    // Mirrors the level.dat partial-install case above, but for the other
+    // partial-success path: the packs land, but a malformed world_behavior_packs.json
     // means Construct cannot be enabled in the world. That must not throw
     // away the already-downloaded packs by propagating a bare `?` failure.
     let root = tempfile::tempdir().unwrap();
@@ -3953,12 +4075,12 @@ fn install_exits_5_with_the_packs_already_placed_when_the_world_pack_list_is_mal
 
     assert_eq!(
         out.status.code(),
-        Some(5),
+        Some(1),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // The whole point of exit 5, not exit 1: the packs are really there.
+    // The whole point of partial-install: the packs are really there.
     assert!(
         root.path()
             .join("development_behavior_packs/Construct[BP]/manifest.json")
@@ -3971,9 +4093,14 @@ fn install_exits_5_with_the_packs_already_placed_when_the_world_pack_list_is_mal
     );
 
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["error"]["kind"], "partial-install");
     assert!(
         !v["enable_error"].is_null(),
         "expected the enable failure represented in the payload, got {v}"
+    );
+    assert!(
+        !v["version"].is_null() && !v["behavior"].is_null(),
+        "the payload must survive beside the error, got {v}"
     );
 
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -4276,7 +4403,7 @@ fn status_without_construct_points_at_install() {
         .args(["status", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("construct install"));
 }
 
@@ -4414,7 +4541,7 @@ fn live_world_at(db: &std::path::Path) -> LiveWorld {
 }
 
 #[test]
-fn enable_beta_apis_refuses_with_exit_4_when_minecraft_has_the_world_open() {
+fn enable_beta_apis_refuses_as_in_use_when_minecraft_has_the_world_open() {
     // The bug this guards: Minecraft keeps level.dat in memory for the whole
     // session and rewrites it from memory on every save, so a flip written
     // under a live world verifies correctly and is then silently discarded.
@@ -4444,7 +4571,7 @@ fn enable_beta_apis_refuses_with_exit_4_when_minecraft_has_the_world_open() {
 
     assert_eq!(
         out.status.code(),
-        Some(4),
+        Some(1),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -4465,11 +4592,14 @@ fn enable_beta_apis_refuses_with_exit_4_when_minecraft_has_the_world_open() {
 }
 
 #[test]
-fn install_world_refuses_with_exit_4_before_it_downloads_anything() {
-    // `CONSTRUCT_GITHUB_API` points at a port nothing listens on, so any
-    // attempt to reach the network would fail as exit 1. Getting exit 4
-    // instead is what proves the in-use check runs before the download —
-    // a refused `--world` install must leave nothing half-done.
+fn install_world_refuses_as_in_use_before_it_downloads_anything() {
+    // `CONSTRUCT_GITHUB_API` points at a port nothing listens on, so reaching
+    // the network would fail as `network`. Failing as `world-in-use` instead
+    // is what proves the in-use check runs before the download — a refused
+    // `--world` install must leave nothing half-done.
+    //
+    // The exit code cannot carry this: both are failures, so both exit 1. The
+    // discriminator is `error.kind`, which is why this asks for `--json`.
     let root = world_with_experiments(0);
     let _live = mark_db_active(root.path());
 
@@ -4479,6 +4609,7 @@ fn install_world_refuses_with_exit_4_before_it_downloads_anything() {
             "install",
             "--world",
             "Test",
+            "--json",
             "--path",
             root.path().to_str().unwrap(),
         ])
@@ -4487,8 +4618,15 @@ fn install_world_refuses_with_exit_4_before_it_downloads_anything() {
 
     assert_eq!(
         out.status.code(),
-        Some(4),
+        Some(1),
         "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        v["error"]["kind"],
+        "world-in-use",
+        "the in-use check must preempt the download; stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
@@ -4963,7 +5101,7 @@ fn delete_of_a_batch_with_one_bad_name_removes_nothing() {
         ])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(out.status.code(), Some(1));
 
     assert!(
         dir.join("barn.mcstructure").exists(),
@@ -5115,7 +5253,7 @@ fn copy_of_a_batch_with_one_bad_name_writes_nothing() {
         ])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(out.status.code(), Some(1));
 
     let structures = dst.join("behavior_packs/Construct[BP]/structures");
     assert!(

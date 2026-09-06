@@ -20,6 +20,10 @@ fn main() {
     match run(&cli, &mut out) {
         Ok(()) => {}
         Err(err) => {
+            // stdout before stderr, the same ordering `install` uses: the
+            // machine-readable document lands first, the prose explaining it
+            // second.
+            out.emit_error(&err);
             report(&err);
             std::process::exit(exit_code(&err));
         }
@@ -646,30 +650,26 @@ fn report(err: &CoreError) {
     }
 }
 
-/// 0 success · 1 failure · 2 usage · 3 not found · 4 world in use · 5 partial
-/// success.
+/// 0 success · 1 failure · 2 usage.
 ///
-/// Ambiguity is 2, not 3: the target exists, the reference was underspecified.
-/// A malformed reference is also 2: the input never named anything real, so
-/// it's the user's syntax that's wrong, not a lookup that failed.
+/// The code answers two questions and no more: did it work, and was the input
+/// at fault. *What* went wrong is `error.kind` under `--json`, which is finer
+/// than a number can be — the retired code 3 alone covered six distinct
+/// failures. Without `--json` the reason is the prose `report` prints, and a
+/// shell script genuinely cannot tell a live world from a dead disk. That is
+/// the trade: one honest code instead of a taxonomy nobody could extend.
 ///
-/// 5 never comes from this function: `commands::install::run` exits directly
-/// with it when the packs are installed but the `level.dat` write failed, so
-/// the success payload already printed is not overwritten by an error path.
+/// The 2-arm is the interesting one. Ambiguity is a usage error because the
+/// target exists and the reference was underspecified, and a malformed
+/// reference likewise never named anything real — in both the user's input is
+/// what needs fixing, which is exactly what separates 2 from 1.
 fn exit_code(err: &CoreError) -> i32 {
     match err {
-        CoreError::NoInstallations { .. }
-        | CoreError::WorldNotFound { .. }
-        | CoreError::StructureNotFound { .. }
-        | CoreError::InstallationNotFound { .. }
-        | CoreError::ConstructNotInstalled { .. }
-        | CoreError::AssetNotFound { .. } => 3,
         CoreError::AmbiguousWorld { .. }
         | CoreError::AmbiguousStructure { .. }
         | CoreError::AmbiguousInstallation { .. }
         | CoreError::MalformedReference { .. }
         | CoreError::BadStructureName { .. } => 2,
-        CoreError::WorldInUse { .. } => 4,
         _ => 1,
     }
 }

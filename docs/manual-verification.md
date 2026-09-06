@@ -106,8 +106,8 @@ spec holds the full list.
       folds case there, `structures` would print an id the game does not answer to.
 - [ ] **Does the in-use refusal fire on Minecraft builds other than
       mcpelauncher/macOS?** With a world loaded, run
-      `construct enable-beta-apis <world>` and expect exit 4 and the
-      "Close the world" message; then close the world and expect the flip to
+      `construct enable-beta-apis <world>` and expect a failure with the
+      "Close the world" message (`--json` reports `error.kind: world-in-use`); then close the world and expect the flip to
       succeed. The 10-second window comes from one measured autosave cadence
       (~5s, mcpelauncher/macOS, 2026-09-04). A build that saves less often
       would slip through the window and revert the change silently again —

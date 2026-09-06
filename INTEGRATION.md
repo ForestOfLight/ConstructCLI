@@ -12,9 +12,9 @@ precede the subcommand — every other option must follow it
 - **stdout is exactly one JSON document.** No progress lines or banners. Parse
   it whole.
 - **stderr is human text** — warnings and progress. Never parse it.
-- **A failure prints no JSON.** stdout is empty, the reason is on stderr as
-  `error: <message>`. Branch on the exit code, not on the payload. Exit 5 is
-  the sole exception.
+- **A failure prints JSON too**, carrying an `error` object. The exit code
+  says only *whether* it failed, so branch on `error.kind` for *what* failed.
+  The same reason is on stderr as `error: <message>` for a human.
 
 Every payload carries two injected keys: `schema` (integer, `1` today — check
 it before trusting field names) and `warnings` (array of strings, also printed
@@ -25,23 +25,51 @@ worth showing the user.
 
 ## Exit codes
 
-| Code | Meaning | Retry? |
-| ---- | ------- | ------ |
-| 0 | Success | — |
-| 1 | Failure — I/O, database, network, malformed pack, bad config | Depends |
-| 2 | Usage error — bad flags, or an ambiguous or malformed reference | No, fix the input |
-| 3 | Not found — no installation, world, structure, or release asset | No |
-| 4 | World in use — Minecraft has it open | Yes, once closed |
-| 5 | Partial — `install` placed the packs but a later step failed | Yes, `install` is safe to repeat |
+| Code | Meaning |
+| ---- | ------- |
+| 0 | Success |
+| 1 | Failure |
+| 2 | Usage error |
 
-- **Ambiguity and malformed references are 2, not 3**: the target exists but was
-  underspecified, or never named anything real. stderr lists the qualified
-  references or `--source` values that would disambiguate.
-- **Exit 4 has no `--force`.** Writing to a live world is either silently
-  reverted or corrupts the save.
-- **Exit 5 still prints its JSON**, before the stderr explanation. Its
-  `enable_error`, `level_dat_error`, and `structures_error` fields say which
-  steps failed.
+The code answers two questions and no more: did it work, and was the input at
+fault. **What went wrong, and whether retrying helps, is `error.kind`** (see
+below).
+
+## Errors
+
+Every failure that reaches the library emits one document:
+
+```json
+{ "error": { "kind": "world-in-use",
+  "message": "world is in use: /…/minecraftWorlds/aB3=" },
+  "schema": 1, "warnings": [] }
+```
+
+`kind` is stable and is what you branch on; `message` is the human sentence,
+for logging. Usage errors from the *grammar* — an unknown flag, `--merge`
+without `-n` — print nothing on stdout and exit 2; they are mistakes in the
+command line rather than results.
+
+| `kind` | Meaning | Retry? |
+| ------ | ------- | ------ |
+| `world-in-use` | Minecraft has the world open. There is no `--force`; writing to a live world is either silently reverted or corrupts the save | Yes, once closed |
+| `no-installations` | No Minecraft installation found | No |
+| `world-not-found` · `structure-not-found` · `installation-not-found` · `asset-not-found` | The named thing does not exist | No |
+| `construct-not-installed` | Construct is not installed; run `construct install` | No |
+| `ambiguous-world` · `ambiguous-structure` · `ambiguous-installation` | Underspecified reference (exit 2) | No, qualify it |
+| `malformed-reference` · `bad-structure-name` | The input never named anything real (exit 2) | No, fix it |
+| `partial-install` | `install` placed the packs but a later step failed | Yes, `install` is safe to repeat |
+| `target-exists` | The destination exists; pass `--force` | No |
+| `merge-refused` | `--merge` could not reassemble the pieces | No |
+| `network` · `rate-limited` | GitHub unreachable, or the hourly limit hit | Yes |
+| `db` · `io` · `insufficient-space` | Storage or filesystem failure | Depends |
+| `bad-level-dat` · `unwritable-level-dat` · `unreadable-world` · `bad-config` · `bad-pack` · `bad-structure-file` · `invalid-path` · `incomplete-install` · `no-backup-dir` · `internal` | Malformed input or a broken invariant; `message` has the detail | No |
+
+**`partial-install` is the one failure that also carries a payload.** `install`
+placed the packs and then failed a later step, so the document has the full
+`install` payload *and* the `error` key — the version and pack paths are what
+you need to recover. Its `enable_error`, `level_dat_error`, and
+`structures_error` fields say which steps failed.
 
 ## Payloads
 
@@ -83,7 +111,7 @@ They are equal for an explicitly namespaced structure.
 ```
 `size`/`origin` are `[x, y, z]`. `overlaps` reports blocks claimed by more than
 one piece; `--on-overlap last|first|error` picks the winner, and `error` makes
-an overlap a failure (exit 1) instead of a report.
+an overlap a failure (`merge-refused`) instead of a report.
 
 **`import`**
 ```json
@@ -191,7 +219,7 @@ namespace may not. `..` is refused at any depth.
 Precedence is flag → environment → `config.toml` → discovery. The installation
 is never a flag: it resolves from `CONSTRUCT_INSTALLATION`, then
 `default_installation`, then the sole candidate — with several and no default,
-commands needing one exit 2.
+commands needing one fail as `ambiguous-installation` (exit 2).
 
 `config.toml` keys: `default_installation`, `[[roots]]` with `name`/`path`,
 `[backups]` with `dir`/`keep` (default 10). Add a root non-interactively with
@@ -205,4 +233,4 @@ commands needing one exit 2.
   whatever the count.
 - **Budget for the in-use check.** Confirming a live world watches its database
   for up to 20 seconds, so a write against an open world can take that long to
-  exit 4. Set timeouts above it.
+  fail as `world-in-use`. Set timeouts above it.

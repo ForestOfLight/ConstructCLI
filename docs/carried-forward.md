@@ -74,8 +74,9 @@ three phases: the instant recency test only *suspects*; `writemark::left_by_us` 
 The mark is what removes the wait rather than merely shortening it. An earlier revision
 stopped at two phases, which was correct but paid the full 20s watch in exactly the case that
 was never a problem — this tool's own previous write. Measured end to end: a second `delete`
-straight after the first now takes **0.033s**, against 20s with the watch alone and exit 4
-before any of this.
+straight after the first now takes **0.033s**, against 20s with the watch alone and a
+refusal before any of this. (Written when that refusal was exit 4; it is exit 1 with
+`error.kind: world-in-use` since exit codes 3-5 were retired.)
 
 Verified against a live session on 2026-09-05: a live world is confirmed in 2-3.5s (the watch
 bails the moment it sees a write), a world closed for hours is cleared instantly, and a
@@ -128,7 +129,7 @@ copies" used to share.
 **A real-leveldb fixture that inserts keys looks in use.** `fixture_world_with_construct`
 writes through the leveldb API, which leaves `db/` freshly modified — inside
 `inuse::ACTIVITY_WINDOW` — so any delete test against it must call the `close_world` helper
-first or get a confusing exit 4. The tarball's own mtimes are old enough, so this only bites
+first or get a confusing in-use refusal. The tarball's own mtimes are old enough, so this only bites
 fixtures that pass `extra_world_structures`. A helper that backdated automatically would be
 tidier, but the in-use test needs the un-backdated form.
 
@@ -238,7 +239,7 @@ Two things surfaced after the fix wave, judged not worth another round.
 ## The pack-enable step is still unguarded against a live world
 
 `install --world` now refuses up front when Minecraft appears to have the
-world open (`construct_core::inuse`, exit 4), which covers the `level.dat`
+world open (`construct_core::inuse`, `error.kind: world-in-use`), which covers the `level.dat`
 flip that prompted it. The pack-enable step writes
 `world_behavior_packs.json` / `world_resource_packs.json`, and the game
 rewrites *those* from memory on world exit too — observed directly on
@@ -248,8 +249,8 @@ Deliberately not guarded, on the grounds that `install --world` refuses
 before it does anything, so the only way to reach the unguarded write is to
 open the world during the seconds the command is running. If that turns out
 to matter, the fix is to re-check `inuse::looks_in_use` immediately before
-`worldpacks::upsert` and treat a positive as a partial failure (exit 5), not
-to move the up-front check.
+`worldpacks::upsert` and treat a positive as a partial install
+(`error.kind: partial-install`), not to move the up-front check.
 
 ## The in-use window now rests on two measurements, and they disagreed
 

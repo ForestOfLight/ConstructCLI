@@ -353,13 +353,23 @@ pub fn run(
     // at all while the world is open (the check at the top of this function),
     // so by the time it succeeds there is no live session to reload — the user
     // opens the world and Construct is already there. That also disposes of
-    // the exit-5 branch below, which only `--world` can reach: what is left
-    // there is finishing the enable and/or the flip, not reloading.
+    // the partial-install branch below, which only `--world` can reach: what is
+    // left there is finishing the enable and/or the flip, not reloading.
     if world.is_none() {
         out.line("Reload the world before Construct appears.");
     }
 
-    out.emit(Payload {
+    // §11: the packs installed but a later step failing is partial, not total,
+    // success. It is still a failure — `install --world` was asked to do three
+    // things and did not do them all — so it exits non-zero, but the payload is
+    // worth keeping: the version and the pack paths are what a caller needs to
+    // recover, and returning an error here would throw them away.
+    //
+    // stdout is exactly one document, so the `error` is merged into that
+    // payload rather than emitted beside it. That keeps "non-zero exit implies
+    // `error.kind`" true everywhere, with no exception for a caller to learn.
+    let partial = enable_error.is_some() || level_dat_error.is_some() || structures_error.is_some();
+    let payload = Payload {
         version: manifest::version_string(bp.to),
         tag: release.tag,
         behavior: bp.dir.display().to_string(),
@@ -372,38 +382,44 @@ pub fn run(
         enable_error: enable_error.clone(),
         level_dat_error: level_dat_error.clone(),
         structures_error: structures_error.clone(),
-    });
-
-    // §11: the packs installed but a later step failing is partial, not
-    // total, success — exit 5 and name the remaining manual step(s). Exiting
-    // here rather than returning an error keeps the success payload above
-    // intact, the same way main.rs already handles the `-n` usage error.
-    if enable_error.is_some() || level_dat_error.is_some() || structures_error.is_some() {
-        let world_name = world.map(|w| w.display_name.as_str()).unwrap_or("<world>");
-        eprintln!("\nThe packs are installed.");
-        if enable_error.is_some() {
-            eprintln!(
-                "Re-run to finish enabling Construct in the world — install is safe to \
-                 repeat; already-placed packs are left alone:\n  construct install --world {world_name}{}",
-                version
-                    .map(|v| format!(" --version {v}"))
-                    .unwrap_or_default()
-            );
-        }
-        if level_dat_error.is_some() {
-            eprintln!(
-                "Turn Beta APIs on yourself, in the world's settings under Experiments, \
-                 or with:\n  construct enable-beta-apis {world_name}"
-            );
-        }
-        if structures_error.is_some() {
-            eprintln!(
-                "The world has nowhere of its own to keep structures. Re-run to try again \
-                 — `import` and `copy` also create it when they need it:\n  \
-                 construct install --world {world_name}"
-            );
-        }
-        std::process::exit(5);
+    };
+    if !partial {
+        out.emit(payload);
+        return Ok(());
     }
-    Ok(())
+
+    out.emit_with_error(
+        payload,
+        "partial-install",
+        "the packs are installed, but a later step did not finish",
+    );
+
+    let world_name = world.map(|w| w.display_name.as_str()).unwrap_or("<world>");
+    eprintln!("\nThe packs are installed.");
+    if enable_error.is_some() {
+        eprintln!(
+            "Re-run to finish enabling Construct in the world — install is safe to \
+             repeat; already-placed packs are left alone:\n  construct install --world {world_name}{}",
+            version
+                .map(|v| format!(" --version {v}"))
+                .unwrap_or_default()
+        );
+    }
+    if level_dat_error.is_some() {
+        eprintln!(
+            "Turn Beta APIs on yourself, in the world's settings under Experiments, \
+             or with:\n  construct enable-beta-apis {world_name}"
+        );
+    }
+    if structures_error.is_some() {
+        eprintln!(
+            "The world has nowhere of its own to keep structures. Re-run to try again \
+             — `import` and `copy` also create it when they need it:\n  \
+             construct install --world {world_name}"
+        );
+    }
+    // Exiting rather than returning keeps the payload above intact: an `Err`
+    // would take main.rs's error arm, which emits a document of its own, and
+    // stdout may carry only one.
+    std::process::exit(1);
 }

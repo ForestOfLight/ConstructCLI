@@ -119,8 +119,10 @@ has since been retired outright — see the next section.
   reserved name `path` instead and are not numbered.
 - **`install --world` does three separate things**: enable both packs in the
   world, ensure a structures home exists, flip Beta APIs on (`install.rs:123`).
-  Partial failure exits 5 from inside the command (`install.rs:272`), bypassing
-  `exit_code`.
+  Partial failure exits 1 from inside the command rather than returning `Err`,
+  bypassing `exit_code`: the success payload is already on stdout and stdout
+  carries exactly one document, so `error` is merged into that payload
+  (`out.emit_with_error`, kind `partial-install`) instead of replacing it.
 - **`install` rescues a Construct in the wrong folder first.** Before placing
   anything it folds a copy sitting in `com.mojang/behavior_packs` /
   `resource_packs` into the `development_*` sibling beside it
@@ -183,9 +185,12 @@ candidates for clap-native expression (`conflicts_with`, `requires`,
    for its one toggle, so another would be another verb command
    (`enable-<toggle>`), and there is still no way to turn any of them off.
 7. **Shorts are uneven.** `-w`, `-n` exist; `import --name` has no short.
-8. **Exit 5 escapes the error taxonomy** — emitted directly so the success JSON
-   already printed isn't clobbered. Any restructure of partial-success reporting
-   has to keep that ordering property.
+8. ~~**Exit 5 escapes the error taxonomy**~~ — closed, by retiring the code.
+   Partial install is now exit 1 with `error.kind: partial-install` merged into
+   the payload it already printed. The direct `std::process::exit` remains,
+   because the ordering property is what forces it — stdout carries one
+   document and the payload is written before the failure is known — but it no
+   longer carries a meaning the taxonomy cannot express.
 
 ## Contracts a rename would break
 
@@ -209,10 +214,18 @@ candidates for clap-native expression (`conflicts_with`, `requires`,
   Since stage 4 a `delete` row is one *copy removed*, not one name: deleting a
   name that lives in the database and in a pack emits two rows sharing a
   `name`, told apart by `source`. A `world-db` row carries `path: null`.
-- **Exit codes** (`main.rs:483`): 0 ok · 1 fail · 2 usage/ambiguous/malformed ·
-  3 not-found · 4 world in use · 5 partial install. `NotImplemented` was
-  removed in stage 4 — `delete` was its only producer — and `CoreError::Internal`
-  took its slot in the enum, exiting 1.
+- **Exit codes**: 0 ok · 1 fail · 2 usage/ambiguous/malformed. Codes 3
+  (not-found), 4 (world in use) and 5 (partial install) were retired; what they
+  said now lives in `error.kind` under `--json`, which is finer — code 3 alone
+  covered six distinct failures. `NotImplemented` was removed in stage 4 —
+  `delete` was its only producer — and `CoreError::Internal` took its slot in
+  the enum, exiting 1.
+- **`error.kind`** (`CoreError::kind`, `construct-core/src/error.rs`): the
+  kebab-case variant name, one per variant, matched exhaustively with no
+  wildcard so a new variant must name itself. These strings are the public
+  failure vocabulary — renaming a `CoreError` variant renames a contract.
+  `partial-install` is the one kind with no variant behind it, emitted by
+  `install.rs`.
 - **Error hints in `report`** hard-code command syntax in prose:
   `construct worlds --path <path>`, `construct <command> ... --source
   world-pack`, `construct import <file> --name <name>`, `construct
