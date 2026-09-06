@@ -134,11 +134,11 @@ fn a_missing_root_yields_no_packs() {
 fn the_pack_roots_are_the_documented_folder_names() {
     let base = Path::new("/com.mojang");
     assert_eq!(
-        pack::behavior_root(base),
+        pack::shared_behavior_root(base),
         Path::new("/com.mojang/development_behavior_packs")
     );
     assert_eq!(
-        pack::resource_root(base),
+        pack::shared_resource_root(base),
         Path::new("/com.mojang/development_resource_packs")
     );
 }
@@ -170,7 +170,7 @@ fn world_in(com_mojang: &Path, folder: &str) -> World {
 
 #[test]
 fn a_world_with_no_pack_of_its_own_has_no_home_yet() {
-    // Not an error and not the shared pack: the shared copy serves every
+    // Not an error and not the shared copy: the shared copy serves every
     // world, so it can never be where one world's structures are written.
     let root = tempfile::tempdir().unwrap();
     make_pack(
@@ -191,9 +191,9 @@ fn the_structures_pack_is_the_home_when_there_is_one() {
     let created = pack::shell::create(&world, None).unwrap();
 
     let home = pack::home(&world).expect("the shell pack is a home");
-    assert_eq!(home.kind, pack::HomeKind::StructuresPack);
+    assert_eq!(home.kind, pack::HomeKind::WorldStructuresPack);
     assert_eq!(home.dir, created.dir);
-    assert_eq!(home.kind.scope(), pack::Scope::WorldLocal);
+    assert_eq!(home.kind.scope(), pack::Scope::World);
 }
 
 #[test]
@@ -212,7 +212,7 @@ fn a_worlds_own_construct_outranks_a_structures_pack() {
     );
 
     let home = pack::home(&world).expect("home");
-    assert_eq!(home.kind, pack::HomeKind::ConstructInWorld);
+    assert_eq!(home.kind, pack::HomeKind::WorldConstruct);
     assert_eq!(home.dir, local);
 }
 
@@ -234,7 +234,7 @@ fn a_world_on_the_shared_construct_is_served_by_it_and_by_its_own_pack() {
         serving.iter().map(|h| h.kind).collect::<Vec<_>>(),
         vec![
             pack::HomeKind::SharedConstruct,
-            pack::HomeKind::StructuresPack
+            pack::HomeKind::WorldStructuresPack
         ]
     );
     assert_eq!(serving[0].dir, shared);
@@ -266,7 +266,7 @@ fn a_worlds_own_construct_hides_the_shared_one_from_that_world() {
     let serving = pack::serving(&world, &test_installation(root.path()));
     assert_eq!(
         serving.iter().map(|h| h.kind).collect::<Vec<_>>(),
-        vec![pack::HomeKind::ConstructInWorld]
+        vec![pack::HomeKind::WorldConstruct]
     );
     assert_eq!(serving[0].dir, local);
 }
@@ -510,7 +510,7 @@ fn pack_entries_carry_their_file_path() {
     let pack = root.path().join("Construct[BP]");
     touch(&pack.join("structures/bomber.mcstructure"), b"12345");
 
-    let entries = catalog::from_pack(&pack, construct_core::pack::Scope::WorldLocal);
+    let entries = catalog::from_pack(&pack, construct_core::pack::Scope::World);
     assert_eq!(entries[0].source, Source::Pack);
     assert_eq!(entries[0].id, "mystructure:bomber");
     assert_eq!(
@@ -581,13 +581,13 @@ fn a_worlds_own_copy_of_construct_wins_over_the_shared_one() {
     let installation = test_installation(&com_mojang);
 
     let target = pack::for_world(&world, &installation).unwrap();
-    assert_eq!(target.scope, pack::Scope::WorldLocal);
+    assert_eq!(target.scope, pack::Scope::World);
     assert_eq!(target.pack.manifest.version, [1, 1, 0]);
     assert_eq!(target.also_at, Some(shared.join("Construct[BP]")));
 }
 
 #[test]
-fn without_a_local_copy_the_shared_installation_pack_is_used() {
+fn without_a_world_copy_the_shared_copy_is_used() {
     let base = tempfile::tempdir().unwrap();
     let com_mojang = base.path().join("com.mojang");
     make_pack(

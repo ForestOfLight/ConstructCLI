@@ -28,7 +28,7 @@ struct Payload {
     from: String,
     to: String,
     /// Which copy of Construct took the writes: the destination world's own,
-    /// or the installation's shared one. `import` has reported this since
+    /// or the shared copy of Construct. `import` has reported this since
     /// stage 2; `copy` writes into exactly the same two places. One
     /// destination home is chosen per invocation, so this describes the
     /// command rather than any one row.

@@ -72,7 +72,7 @@ construct copy <src-world> <dst-world> house barn     # several at once
 construct delete <world> house --source pack          # remove an imported structure
 construct delete <world> house barn --source pack     # several at once
 construct delete <world> house --pack world          # ...when both packs have that name
-construct list                            # just the shared pack: what every world using it gets
+construct list                            # just the shared copy: what every world using it gets
 construct status                          # installed version, latest available, where it's enabled, and where structures live
 construct experiment <world> --beta-apis         # show the current toggle
 construct experiment <world> --beta-apis on      # turn it on
@@ -101,8 +101,8 @@ imported_tower           pack:world    31.0 KB
 shared_prefab            pack:shared    8.0 KB
 ```
 
-Structures already in the shared pack stay there and keep working; nothing is
-moved for you. Importing a name a world already sees from the shared pack
+Structures already in the shared copy stay there and keep working; nothing is
+moved for you. Importing a name a world already sees from the shared copy
 warns, because the game will load both and log a conflict. `delete` currently only removes an imported structure
 (`--source pack`); removing one from a world's *database* is stage 4, the
 only leveldb write this tool will ever make, and `--source world` refuses

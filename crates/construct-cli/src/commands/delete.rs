@@ -82,7 +82,7 @@ pub fn run(
 
         out.line(format!("deleted {}", entry.name));
         // Which pack lost the file matters as much here as it does on the way
-        // in: removing a structure from the shared Construct takes it away
+        // in: removing a structure from the shared copy of Construct takes it away
         // from every world using that pack, not just the one named on the
         // command line. The pack is found by the path the entry came from
         // rather than by asking for the world's home — a world can see more

@@ -968,7 +968,7 @@ fn fixture_world_with_construct(
 }
 
 /// Extracts a *second* copy of the real-leveldb fixture world into `worlds_dir`
-/// under `folder`, with its own world-local Construct copy (empty `structures/`).
+/// under `folder`, with its own copy of Construct (empty `structures/`).
 /// Pairs with `fixture_world_with_construct`'s primary world to give `copy` a
 /// destination that is a real, openable world — unlike `world_with_construct`,
 /// whose `db/` is a stub directory that cannot be opened as a real LevelDB (see
@@ -1098,7 +1098,7 @@ fn a_name_in_both_world_and_pack_survives_unshadowed_in_list() {
 #[test]
 fn copy_writes_bytes_into_the_destination_worlds_own_construct() {
     // Two worlds under one root, so one --com-mojang covers both. `Other`
-    // gets its own world-local Construct copy (see
+    // gets its own copy of Construct (see
     // copy_refuses_an_existing_target_unless_forced below) so the write
     // lands somewhere distinct from the source: a shared-copy version of
     // this test cannot prove `copy` writes into the *destination's* Construct
@@ -1508,7 +1508,9 @@ fn import_says_when_it_wrote_into_the_shared_construct() {
 
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
-        text.contains("development_behavior_packs") && text.contains("shared by every world"),
+        text.contains("development_behavior_packs")
+            && text.contains("shared copy of Construct")
+            && text.contains("every world using it"),
         "stdout:\n{text}"
     );
     assert!(
@@ -1553,7 +1555,7 @@ fn import_says_when_it_wrote_into_a_worlds_own_construct() {
         "stdout:\n{text}"
     );
     assert!(
-        !text.contains("shared by every world"),
+        !text.contains("shared copy of Construct"),
         "the world's own copy won, so the shared wording must not appear: {text}"
     );
 }
@@ -1633,7 +1635,7 @@ fn delete_unlinks_a_pack_structure() {
 
 #[test]
 fn delete_says_when_it_removed_from_the_shared_construct() {
-    // Removing from the shared pack takes the structure away from every world
+    // Removing from the shared copy takes the structure away from every world
     // using it, not just the one named on the command line — the same
     // distinction `import` and `copy` state on the way in.
     let root = world_with_construct(&[("bomber", b"x")]);
@@ -1675,7 +1677,9 @@ fn delete_says_when_it_removed_from_the_shared_construct() {
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
-        text.contains("development_behavior_packs") && text.contains("shared by every world"),
+        text.contains("development_behavior_packs")
+            && text.contains("shared copy of Construct")
+            && text.contains("every world using it"),
         "stdout:\n{text}"
     );
 }
@@ -1722,7 +1726,7 @@ fn delete_says_when_it_removed_from_a_worlds_own_construct() {
         "stdout:\n{text}"
     );
     assert!(
-        !text.contains("shared by every world"),
+        !text.contains("shared copy of Construct"),
         "the shared copy was not touched: {text}"
     );
     assert!(
@@ -1741,7 +1745,7 @@ fn delete_says_when_it_removed_from_a_worlds_own_construct() {
 }
 
 #[test]
-fn list_with_no_world_shows_only_the_shared_pack() {
+fn list_with_no_world_shows_only_the_shared_copy() {
     // The installation's own view: what every world using this pack gets.
     // A world's own structures are not part of that answer, and no database
     // is opened to produce it.
@@ -1825,7 +1829,7 @@ fn list_with_no_world_and_no_construct_points_at_install() {
 #[test]
 fn list_says_which_pack_each_structure_is_in() {
     // The question this whole split exists to answer: is this structure mine
-    // alone, or does every world using the shared install have it? Both packs
+    // alone, or does every world using the shared copy have it? Both packs
     // serve this world, so both appear, distinguished.
     let root = world_with_construct(&[("shared_prefab", b"x")]);
     let src = root.path().join("mine.mcstructure");
@@ -2032,7 +2036,7 @@ fn install_world_gives_no_structures_pack_to_a_world_that_has_its_own_construct(
 
 /// A world that sees `house` twice: once in the shared Construct, once in its
 /// own structures pack. The state every user reaches by giving a world its own
-/// copy of something the shared pack already had.
+/// copy of something the shared copy already had.
 fn world_seeing_one_name_in_both_packs() -> tempfile::TempDir {
     let root = world_with_construct(&[("house", b"shared-copy")]);
     let src = root.path().join("house.mcstructure");
@@ -2160,7 +2164,10 @@ fn delete_pack_shared_removes_the_shared_copy_and_leaves_the_worlds() {
         "the world's copy is untouched"
     );
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("shared by every world"), "stdout:\n{text}");
+    assert!(
+        text.contains("shared copy of Construct") && text.contains("every world using it"),
+        "stdout:\n{text}"
+    );
 }
 
 #[test]
@@ -3076,8 +3083,8 @@ fn write_construct_bp(dir: &std::path::Path, version: [u32; 3]) {
 }
 
 #[test]
-fn install_world_warns_when_a_world_local_construct_copy_shadows_the_shared_install() {
-    // `install --world` always places into the installation's shared
+fn install_world_warns_when_a_world_construct_copy_shadows_the_shared_copy() {
+    // `install --world` always places into the shared
     // dev-pack root, but `pack::for_world` (and every structure command
     // through it) prefers a world's own `behavior_packs/Construct[BP]` copy
     // when it has one. Without a warning, this world would keep silently
@@ -3121,7 +3128,7 @@ fn install_world_warns_when_a_world_local_construct_copy_shadows_the_shared_inst
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("shadows") && stderr.contains(&local_bp.display().to_string()),
-        "expected a warning naming the shadowing world-local copy: {stderr}"
+        "expected a warning naming the shadowing world copy: {stderr}"
     );
 
     // The shared copy really was upgraded...
@@ -3131,7 +3138,7 @@ fn install_world_warns_when_a_world_local_construct_copy_shadows_the_shared_inst
     )
     .unwrap();
     assert!(shared_manifest.contains("1, 2, 0") || shared_manifest.contains("[1,2,0]"));
-    // ...but the world-local copy install never touches is still 1.1.0.
+    // ...but the world's own copy install never touches is still 1.1.0.
     let local_manifest = std::fs::read_to_string(local_bp.join("manifest.json")).unwrap();
     assert!(local_manifest.contains("1.1.0"));
 }
@@ -3179,7 +3186,7 @@ fn status_reports_the_installed_version_and_which_worlds_have_it() {
 #[test]
 fn status_counts_the_structures_in_every_pack_it_can_see() {
     // The cross-world view: `list` answers one world at a time, and a
-    // structure in the shared pack is in every world using it. Only this
+    // structure in the shared copy is in every world using it. Only this
     // shows both at once.
     let root = world_with_construct(&[("shared_prefab", b"x")]);
     let src = root.path().join("mine.mcstructure");
@@ -3238,7 +3245,8 @@ fn status_counts_the_structures_in_every_pack_it_can_see() {
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
-        text.contains("1 in the shared pack") && text.contains("2 in Test's structures pack"),
+        text.contains("1 in the shared copy of Construct")
+            && text.contains("2 in Test's structures pack"),
         "stdout:\n{text}"
     );
 }
