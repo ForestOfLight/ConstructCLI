@@ -16,7 +16,6 @@ fn bin() -> Command {
     // of relying on the fallback. Tests that care where backups land set
     // `[backups] dir`, which still wins over this.
     c.env("CONSTRUCT_DATA_DIR", &empty);
-    c.env_remove("CONSTRUCT_INSTALLATION");
     c.env("CONSTRUCT_CONFIG", empty.join("no-such-config.toml"));
     c
 }
@@ -6315,4 +6314,60 @@ fn a_world_added_by_path_is_then_listed_without_repeating_the_path() {
         "add must make the world discoverable: {worlds:?}"
     );
     assert_eq!(worlds[0]["display_name"], "Added Once");
+}
+
+#[test]
+fn no_environment_variable_can_choose_the_installation() {
+    // `CONSTRUCT_INSTALLATION` used to settle this. It no longer does: with
+    // two installations and no `default_installation`, the run is ambiguous
+    // however the environment is set. `install` writes into the chosen
+    // installation's pack root, so nothing invisible on the command line gets
+    // to point it somewhere.
+    let tmp = tempfile::tempdir().unwrap();
+    for (dir, folder, name) in [("a", "W1", "Alpha"), ("b", "W2", "Beta")] {
+        let root = tmp.path().join(dir).join("com.mojang");
+        std::fs::create_dir_all(root.join("minecraftWorlds")).unwrap();
+        bare_world(&root.join("minecraftWorlds"), folder, name);
+    }
+    let config = tmp.path().join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[[roots]]\nname = \"alpha\"\npath = {:?}\n\n[[roots]]\nname = \"beta\"\npath = {:?}\n",
+            tmp.path().join("a/com.mojang"),
+            tmp.path().join("b/com.mojang"),
+        ),
+    )
+    .unwrap();
+
+    let out = bin()
+        .env("CONSTRUCT_INSTALLATION", "beta")
+        .args(["structures", "--json", "--config", config.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        v["error"]["kind"], "ambiguous-installation",
+        "the environment must not settle it: {v}"
+    );
+
+    // The config file still does, and that is the only thing that does.
+    std::fs::write(
+        &config,
+        format!(
+            "default_installation = \"beta\"\n\n[[roots]]\nname = \"alpha\"\npath = {:?}\n\n[[roots]]\nname = \"beta\"\npath = {:?}\n",
+            tmp.path().join("a/com.mojang"),
+            tmp.path().join("b/com.mojang"),
+        ),
+    )
+    .unwrap();
+    let out = bin()
+        .args(["structures", "--json", "--config", config.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_ne!(
+        v["error"]["kind"], "ambiguous-installation",
+        "default_installation must still settle it: {v}"
+    );
 }

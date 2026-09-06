@@ -110,10 +110,14 @@ has since been retired outright — see the next section.
   the world's own database and pack under `--world`, and everything `copy`'s
   source world sees — so a completed name is never one the command then
   refuses.
-- **Installation is never a flag.** `structures` (no world), `import` (no
-  `--world`), `export` (no `--world`), `delete` (no `--world`),
-  `install` (no `--world`), and `status` resolve it from
-  `CONSTRUCT_INSTALLATION` → `default_installation` → sole candidate.
+- **Installation is never a flag, and never an environment variable.**
+  `structures` (no world), `import` (no `--world`), `export` (no `--world`),
+  `delete` (no `--world`), `install` (no `--world`), and `status` resolve it
+  from `default_installation` → sole candidate → error listing the candidates.
+  Config is the only thing that names one: `install` writes into the
+  installation's pack root, so a value left set in a shell must not be able to
+  redirect where that lands. Per-run selection is a second config file and
+  `--config`.
   `--path` roots get synthetic names
   `flag1`, `flag2`, … (`main.rs:44`); world folders given to `--path` wear the
   reserved name `path` instead and are not numbered.
@@ -263,7 +267,7 @@ candidates for clap-native expression (`conflicts_with`, `requires`,
   `a:b`, and `path_for` refuses it rather than file it under another namespace.
   A *derived* name — a file stem, or `--name` — is still one segment, so depth
   only ever comes from real directories.
-- **Env**: `CONSTRUCT_CONFIG` (beaten by `--config`), `CONSTRUCT_INSTALLATION`,
+- **Env**: `CONSTRUCT_CONFIG` (beaten by `--config`),
   `CONSTRUCT_GITHUB_TOKEN`/`GITHUB_TOKEN`, `CONSTRUCT_DATA_DIR` (stands in for
   the platform data directory, under which `backups/` and `writemarks/` sit;
   exists so tests do not write into the real data directory, loses to

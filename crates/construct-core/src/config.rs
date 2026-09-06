@@ -251,11 +251,16 @@ pub fn add_path(config: &mut Config, path: &Path) -> Result<(AddedPath, bool)> {
     })
 }
 
-/// Loads config, then applies environment overrides on top.
+/// Loads the config file, whichever one is in force.
+///
+/// The environment's only say is *which* file that is — `CONSTRUCT_CONFIG`,
+/// resolved by [`path`]. Nothing in the environment overrides a setting once
+/// the file is read: a run's settings are the file's settings, and the file is
+/// named by `--config`, then `CONSTRUCT_CONFIG`, then the platform directory.
 pub fn load(explicit: Option<&Path>, env: &dyn Fn(&str) -> Option<String>) -> Result<Loaded> {
     let path = explicit.map(Path::to_path_buf).or_else(|| self::path(env));
 
-    let (mut config, mut warnings, source) = match &path {
+    let (config, mut warnings, source) = match &path {
         Some(p) if p.is_file() => {
             let (c, w) = load_file(p)?;
             (c, w, Some(p.clone()))
@@ -263,10 +268,6 @@ pub fn load(explicit: Option<&Path>, env: &dyn Fn(&str) -> Option<String>) -> Re
         // An absent file is not an error.
         _ => (Config::default(), Vec::new(), None),
     };
-
-    if let Some(v) = env("CONSTRUCT_INSTALLATION") {
-        config.default_installation = Some(v);
-    }
 
     warnings.shrink_to_fit();
     Ok(Loaded {
@@ -366,7 +367,10 @@ keep = 3
     }
 
     #[test]
-    fn the_env_var_overrides_the_config_file() {
+    fn no_environment_variable_can_redirect_the_installation() {
+        // The file in force is the whole story. `CONSTRUCT_INSTALLATION` used
+        // to override this, which meant a stale value in a shell profile could
+        // silently send `install` at another installation's pack root.
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "default_installation = \"release\"\n").unwrap();
@@ -375,7 +379,7 @@ keep = 3
         let loaded = load(Some(&path), &env).unwrap();
         assert_eq!(
             loaded.config.default_installation.as_deref(),
-            Some("preview")
+            Some("release")
         );
     }
 

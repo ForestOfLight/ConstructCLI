@@ -4,10 +4,11 @@
 //! the configured default, failing that the sole installation, failing that an
 //! error listing the candidates.
 //!
-//! There is one name to consider rather than two because `CONSTRUCT_INSTALLATION`
-//! reaches here as the default: `config::load` folds the environment into
-//! `default_installation` before anything asks. Installation is deliberately
-//! never a flag, so nothing else can name one.
+//! There is one name to consider because `default_installation` is the only
+//! thing that can name an installation. It is deliberately neither a flag nor
+//! an environment variable: `install` writes into the installation's pack root
+//! and `enable-beta-apis` edits its worlds, so the target is not something a
+//! value left lying around in a shell should be able to redirect.
 
 use crate::discovery::{Installation, World};
 use crate::error::{CoreError, Result};
