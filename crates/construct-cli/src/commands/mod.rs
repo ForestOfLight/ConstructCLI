@@ -11,6 +11,7 @@ use std::path::Path;
 pub mod catalog;
 pub mod copy;
 pub mod delete;
+pub mod add;
 pub mod experiment;
 pub mod export;
 pub mod import;

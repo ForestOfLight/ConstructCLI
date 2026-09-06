@@ -107,6 +107,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
         Command::Worlds if installations.is_empty() => Err(no_installations()),
         Command::Worlds => commands::worlds::run(&worlds, out),
         Command::List { world: Some(world) } => {
+        Command::Add { path } => commands::add::run(path, out),
             let w = resolve_world(world)?;
             commands::list::run(
                 &w,

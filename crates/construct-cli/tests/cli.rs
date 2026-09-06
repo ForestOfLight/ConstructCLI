@@ -15,6 +15,38 @@ fn bin() -> Command {
 }
 
 #[test]
+fn bin_with_config(config: &std::path::Path) -> Command {
+    let mut command = bin();
+    command.env("CONSTRUCT_CONFIG", config);
+    command
+}
+
+#[test]
+fn add_classifies_supported_paths_and_rejects_other_directories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let com_mojang = tmp.path().join("games/com.mojang");
+    let world = tmp.path().join("world");
+    let structures = tmp.path().join("structures");
+    std::fs::create_dir_all(com_mojang.join("minecraftWorlds")).unwrap();
+    std::fs::create_dir_all(world.join("db")).unwrap();
+    std::fs::write(world.join("level.dat"), b"stub").unwrap();
+    std::fs::create_dir_all(&structures).unwrap();
+
+    for path in [&com_mojang, &world] {
+        let out = bin_with_config(&config)
+            .args(["add", path.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    let settings: toml::Value = toml::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    assert_eq!(settings["roots"][0]["path"].as_str(), com_mojang.canonicalize().unwrap().to_str());
+    assert_eq!(settings["other_worlds"][0].as_str(), world.canonicalize().unwrap().to_str());
+
+    let out = bin_with_config(&config)
+        .args(["add", structures.to_str().unwrap()])
 fn help_lists_the_read_commands() {
     let out = bin().arg("--help").output().unwrap();
     assert!(out.status.success());

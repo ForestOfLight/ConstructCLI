@@ -21,5 +21,6 @@ tar.workspace = true
 flate2.workspace = true
 serde_json.workspace = true
 bedrock_level.workspace = true
+toml.workspace = true
 nbtx.workspace = true
 zip.workspace = true

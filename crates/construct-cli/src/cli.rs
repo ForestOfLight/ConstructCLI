@@ -72,6 +72,13 @@ impl From<SourceArg> for construct_core::catalog::Source {
 pub enum Command {
     /// List discovered worlds.
     Worlds,
+    /// Add a com.mojang or world folder to the automatic search.
+    Add {
+        /// Directory to add to the appropriate configuration list.
+        #[arg(value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
+        path: PathBuf,
+    },
+
 
     /// List the structures in a world, or in the shared pack with no world.
     List {
