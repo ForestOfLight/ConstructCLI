@@ -55,8 +55,6 @@ All usage is displayed in the help.
 construct help
 ```
 
-If you're interested in how ConstructCLI can be integrated in an application, please read the full integration guide here: [INTEGRATION.md](INTEGRATION.md)
-
 ### Tab Autocompletion
 
 ConstructCLI supports dynamic tab autocompletion for subcommands, options, world names, and structure names. For example, to enable completions in bash:
@@ -67,20 +65,9 @@ source <(construct completions bash)
 
 Completions are also available for zsh, fish, powershell, and elvish.
 
-### Exit codes
-
-| Code | Meaning |
-| ---- | ------- |
-| 0 | success |
-| 1 | failure |
-| 2 | usage error |
-| 3 | not found |
-| 4 | world in use |
-| 5 | partial success - `install` placed the packs but could not flip Beta APIs on |
-
 ### Building with ConstructCLI
 
-The `--json` flag can be added to any command to output formatted in JSON instead of human-readable output.
+If you're interested in how ConstructCLI can be integrated in an application, please read the full integration guide here: [INTEGRATION.md](INTEGRATION.md)
 
 ## Contributing
 
