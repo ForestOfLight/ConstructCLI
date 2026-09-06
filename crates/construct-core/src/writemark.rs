@@ -25,19 +25,15 @@ use crate::discovery::World;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Where marks live: the platform data directory, or `CONSTRUCT_STATE_DIR`.
+/// Where marks live: `writemarks/` under [`crate::config::data_dir`].
 ///
-/// Deliberately not `[backups] dir`. A mark is not a backup — it is disposable
-/// bookkeeping, and pointing the two at one directory would mean a user who
-/// redirects backups to external storage silently moves this too.
-///
-/// The environment override exists so tests never write into the real user's
-/// data directory. It is not a documented user knob.
+/// Deliberately not `[backups] dir`, and deliberately not the backup
+/// directory either. A mark is not a backup — it is disposable bookkeeping,
+/// and a user who redirects backups to external storage must not silently
+/// move this too. The shared root is the platform data directory, which the
+/// user does not redirect; the two subdirectories under it stay distinct.
 pub fn root() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("CONSTRUCT_STATE_DIR") {
-        return Some(PathBuf::from(dir).join("writemarks"));
-    }
-    directories::ProjectDirs::from("", "", "constructcli").map(|d| d.data_dir().join("writemarks"))
+    crate::config::data_dir(&|k| std::env::var(k).ok()).map(|d| d.join("writemarks"))
 }
 
 /// One file per world, keyed the way backups are: on the qualified reference

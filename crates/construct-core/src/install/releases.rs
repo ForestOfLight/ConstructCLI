@@ -5,6 +5,9 @@ use serde::Deserialize;
 use std::path::Path;
 
 pub const REPO: &str = "ForestOfLight/Construct";
+/// The only release source. Fixed rather than configurable: see
+/// `main.rs::github_client` for why nothing at runtime may redirect it.
+pub const API_BASE: &str = "https://api.github.com";
 /// GitHub's unauthenticated limit, named in the error §11 asks for.
 pub const UNAUTHENTICATED_LIMIT: u32 = 60;
 
@@ -89,13 +92,17 @@ pub struct GitHub {
 impl GitHub {
     pub fn new(token: Option<String>) -> Self {
         Self {
-            base: "https://api.github.com".to_string(),
+            base: API_BASE.to_string(),
             token,
         }
     }
 
-    /// Points the client somewhere else. Exists so a test can serve canned
-    /// responses without reaching the network.
+    /// Points the client somewhere else, so a test can serve canned responses
+    /// without reaching the network.
+    ///
+    /// Debug builds only. A release build has no way to reach a base other
+    /// than [`API_BASE`], which is the point — see `main.rs::github_client`.
+    #[cfg(debug_assertions)]
     pub fn with_base(base: impl Into<String>, token: Option<String>) -> Self {
         Self {
             base: base.into(),

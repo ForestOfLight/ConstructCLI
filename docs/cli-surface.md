@@ -263,12 +263,17 @@ candidates for clap-native expression (`conflicts_with`, `requires`,
   `a:b`, and `path_for` refuses it rather than file it under another namespace.
   A *derived* name — a file stem, or `--name` — is still one segment, so depth
   only ever comes from real directories.
-- **Env**: `CONSTRUCT_CONFIG`, `CONSTRUCT_INSTALLATION`, `CONSTRUCT_COM_MOJANG`
-  (root named `env`), `CONSTRUCT_GITHUB_TOKEN`/`GITHUB_TOKEN`,
-  `CONSTRUCT_GITHUB_API`, `CONSTRUCT_STATE_DIR` (where `writemark` keeps its
-  per-world records; exists so tests do not write into the real data
-  directory, not a documented user knob), `CONSTRUCT_BACKUPS_DIR` (the same
-  for backups — it stands in for the platform data directory and loses to
-  `[backups] dir`; also not a documented user knob).
-- **Config**: `default_installation`, `[[roots]] name/path`,
-  `[backups] dir/keep` (default 10). Precedence: flag → env → file → discovery.
+- **Env**: `CONSTRUCT_CONFIG` (beaten by `--config`), `CONSTRUCT_INSTALLATION`,
+  `CONSTRUCT_GITHUB_TOKEN`/`GITHUB_TOKEN`, `CONSTRUCT_DATA_DIR` (stands in for
+  the platform data directory, under which `backups/` and `writemarks/` sit;
+  exists so tests do not write into the real data directory, loses to
+  `[backups] dir`, and is not a documented user knob). An extra `com.mojang`
+  root comes from `--path` or `[[roots]]`, never the environment. The GitHub
+  API base is a constant (`releases::API_BASE`); `CONSTRUCT_GITHUB_API`
+  redirects it in debug builds only, for the test stub, and is `cfg`'d out of
+  release builds so a shipped binary cannot be pointed elsewhere.
+- **Config**: `default_installation`, `[[roots]] name/path`, `other_worlds`
+  (save folders outside any root, discovered under `path` just as `--path`
+  places them), `[backups] dir/keep` (default 10). Precedence: flag → env →
+  file → discovery, and `--config` is the flag layer for the config path
+  itself.

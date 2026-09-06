@@ -85,7 +85,7 @@ world. That last one is the corrupting direction and has both a unit test and an
 `#[ignore]`d test against the real game.
 
 **What the mark costs.** `delete` is now stateful: it writes one small file per world under
-the platform data directory (or `CONSTRUCT_STATE_DIR`). State can be stale or wrong in ways a
+`writemarks/` in the platform data directory (or `CONSTRUCT_DATA_DIR`). State can be stale or wrong in ways a
 pure observation cannot, which is why phase 3 stays underneath it rather than being replaced
 — every way the mark can fail falls through to the watch. The file is written
 atomically (write-then-rename, pid-tagged temporary) because two processes marking one world

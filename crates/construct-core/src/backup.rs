@@ -11,21 +11,12 @@ use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// The directory backups go in: configured, else `CONSTRUCT_BACKUPS_DIR`, else
-/// the platform data directory.
+/// The directory backups go in: `[backups] dir`, else `backups/` under
+/// [`crate::config::data_dir`].
 ///
-/// The environment override sits *below* `[backups] dir` because that is the
-/// documented user knob; this one stands in for the platform lookup, so that
-/// tests never write into the real user's data directory. It is not a
-/// documented user knob, and it is separate from `CONSTRUCT_STATE_DIR` for the
-/// reason given on [`crate::writemark::root`]: a mark is not a backup.
-///
-/// Tests need it because a harness that points `HOME`/`USERPROFILE` at a
-/// scratch directory has no platform data directory at all on Windows, where
-/// the lookup resolves the *real* known folder and fails when it is missing —
-/// unlike Unix, where it is built from the environment and always yields a
-/// path. Without the override the failure surfaces as a spurious "could not
-/// turn Beta APIs on" and a partial-success exit.
+/// The data-directory override sits *below* `[backups] dir` because that is
+/// the documented user knob; the other one only stands in for the platform
+/// lookup. See [`crate::config::data_dir`] for why it exists.
 pub fn root(backups: &Backups) -> Result<PathBuf> {
     root_from(backups, &|k| std::env::var(k).ok())
 }
@@ -36,11 +27,8 @@ fn root_from(backups: &Backups, env: &dyn Fn(&str) -> Option<String>) -> Result<
     if let Some(dir) = &backups.dir {
         return Ok(dir.clone());
     }
-    if let Some(dir) = env("CONSTRUCT_BACKUPS_DIR") {
-        return Ok(PathBuf::from(dir));
-    }
-    directories::ProjectDirs::from("", "", "constructcli")
-        .map(|d| d.data_dir().join("backups"))
+    crate::config::data_dir(env)
+        .map(|d| d.join("backups"))
         .ok_or(CoreError::NoBackupDir)
 }
 
@@ -169,7 +157,7 @@ mod tests {
     #[test]
     fn the_configured_directory_wins_over_the_environment() {
         let configured = backups(Path::new("/configured"), 5);
-        let env = |k: &str| (k == "CONSTRUCT_BACKUPS_DIR").then(|| "/from-env".to_string());
+        let env = |k: &str| (k == "CONSTRUCT_DATA_DIR").then(|| "/from-env".to_string());
         assert_eq!(
             root_from(&configured, &env).unwrap(),
             PathBuf::from("/configured")
@@ -179,8 +167,11 @@ mod tests {
     #[test]
     fn the_environment_stands_in_for_the_platform_directory() {
         let unset = Backups { dir: None, keep: 5 };
-        let env = |k: &str| (k == "CONSTRUCT_BACKUPS_DIR").then(|| "/from-env".to_string());
-        assert_eq!(root_from(&unset, &env).unwrap(), PathBuf::from("/from-env"));
+        let env = |k: &str| (k == "CONSTRUCT_DATA_DIR").then(|| "/from-env".to_string());
+        assert_eq!(
+            root_from(&unset, &env).unwrap(),
+            PathBuf::from("/from-env/backups")
+        );
     }
 
     #[test]

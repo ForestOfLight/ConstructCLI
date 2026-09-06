@@ -1,15 +1,19 @@
 //! Which Minecraft, when no world names one.
 //!
 //! §10's rule, and the same never-guess rule §6 applies to world references:
-//! an explicit request, failing that the configured default, failing that the
-//! sole installation, failing that an error listing the candidates.
+//! the configured default, failing that the sole installation, failing that an
+//! error listing the candidates.
+//!
+//! There is one name to consider rather than two because `CONSTRUCT_INSTALLATION`
+//! reaches here as the default: `config::load` folds the environment into
+//! `default_installation` before anything asks. Installation is deliberately
+//! never a flag, so nothing else can name one.
 
 use crate::discovery::{Installation, World};
 use crate::error::{CoreError, Result};
 
 pub fn choose<'a>(
     installations: &'a [Installation],
-    requested: Option<&str>,
     default: Option<&str>,
 ) -> Result<&'a Installation> {
     if installations.is_empty() {
@@ -24,7 +28,7 @@ pub fn choose<'a>(
 
     // A name that was asked for and does not exist is an error even when there
     // is only one installation: silently using it would ignore the request.
-    if let Some(name) = requested.or(default) {
+    if let Some(name) = default {
         return installations
             .iter()
             .find(|i| i.name == name)
@@ -71,13 +75,13 @@ mod tests {
     #[test]
     fn a_sole_installation_needs_no_configuration() {
         let all = vec![inst("mcpelauncher")];
-        assert_eq!(choose(&all, None, None).unwrap().name, "mcpelauncher");
+        assert_eq!(choose(&all, None).unwrap().name, "mcpelauncher");
     }
 
     #[test]
     fn two_installations_and_no_default_is_ambiguous_not_a_guess() {
         let all = vec![inst("release"), inst("preview")];
-        let CoreError::AmbiguousInstallation { candidates } = choose(&all, None, None).unwrap_err()
+        let CoreError::AmbiguousInstallation { candidates } = choose(&all, None).unwrap_err()
         else {
             panic!("expected AmbiguousInstallation");
         };
@@ -90,23 +94,14 @@ mod tests {
     #[test]
     fn the_configured_default_settles_it() {
         let all = vec![inst("release"), inst("preview")];
-        assert_eq!(choose(&all, None, Some("preview")).unwrap().name, "preview");
+        assert_eq!(choose(&all, Some("preview")).unwrap().name, "preview");
     }
 
     #[test]
-    fn an_explicit_request_beats_the_configured_default() {
-        let all = vec![inst("release"), inst("preview")];
-        assert_eq!(
-            choose(&all, Some("release"), Some("preview")).unwrap().name,
-            "release"
-        );
-    }
-
-    #[test]
-    fn a_request_naming_nothing_is_an_error_listing_what_exists() {
+    fn a_name_matching_nothing_is_an_error_listing_what_exists() {
         let all = vec![inst("release")];
         let CoreError::InstallationNotFound { name, available } =
-            choose(&all, Some("nope"), None).unwrap_err()
+            choose(&all, Some("nope")).unwrap_err()
         else {
             panic!("expected InstallationNotFound");
         };
@@ -120,7 +115,7 @@ mod tests {
         // user configured, which is exactly the "never guess" case.
         let all = vec![inst("release")];
         assert!(matches!(
-            choose(&all, None, Some("preview")),
+            choose(&all, Some("preview")),
             Err(CoreError::InstallationNotFound { .. })
         ));
     }
@@ -128,7 +123,7 @@ mod tests {
     #[test]
     fn no_installations_at_all_says_so() {
         assert!(matches!(
-            choose(&[], None, None),
+            choose(&[], None),
             Err(CoreError::NoInstallations { .. })
         ));
     }

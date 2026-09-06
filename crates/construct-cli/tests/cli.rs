@@ -15,24 +15,23 @@ fn bin() -> Command {
     // Beta APIs, say — failed there and only there. Name the directory instead
     // of relying on the fallback. Tests that care where backups land set
     // `[backups] dir`, which still wins over this.
-    c.env("CONSTRUCT_BACKUPS_DIR", empty.join("backups"));
-    c.env_remove("CONSTRUCT_COM_MOJANG")
-        .env_remove("CONSTRUCT_INSTALLATION");
+    c.env("CONSTRUCT_DATA_DIR", &empty);
+    c.env_remove("CONSTRUCT_INSTALLATION");
     c.env("CONSTRUCT_CONFIG", empty.join("no-such-config.toml"));
     c
 }
 
-/// `bin()` with a `writemark` state directory of its own.
+/// `bin()` with a data directory of its own, so its writemarks are its own.
 ///
 /// Every CLI test shares one temp `HOME`, and `writemark` keys a world on its
 /// qualified reference — which for the real-leveldb fixture is `flag1/test_level`
 /// in *every* test that uses it. Running in parallel they overwrite each other's
 /// marks, and a test that depends on its own mark surviving then falls through
-/// to the full in-use watch and blows its timing assertion. One state directory
+/// to the full in-use watch and blows its timing assertion. One data directory
 /// per test root removes the sharing.
 fn bin_isolated(root: &std::path::Path) -> Command {
     let mut c = bin();
-    c.env("CONSTRUCT_STATE_DIR", root.join("state"));
+    c.env("CONSTRUCT_DATA_DIR", root.join("state"));
     c
 }
 
@@ -6147,4 +6146,173 @@ fn import_of_a_directory_warns_once_about_the_namespace_not_once_per_file() {
         3,
         "{stdout}"
     );
+}
+
+#[test]
+fn the_config_flag_names_the_file_that_is_read() {
+    // The flag layer of "flag → env → file → discovery". Before it existed the
+    // only way to name a config file was the environment.
+    let tmp = tempfile::tempdir().unwrap();
+    let com_mojang = tmp.path().join("games/com.mojang");
+    std::fs::create_dir_all(com_mojang.join("minecraftWorlds")).unwrap();
+    bare_world(&com_mojang.join("minecraftWorlds"), "AAAA", "Named By Flag");
+
+    let config = tmp.path().join("elsewhere.toml");
+    std::fs::write(
+        &config,
+        format!("[[roots]]\nname = \"cfg\"\npath = {:?}\n", com_mojang),
+    )
+    .unwrap();
+
+    let out = bin()
+        .args(["worlds", "--json", "--config", config.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let worlds = listed_worlds(&out);
+    assert_eq!(worlds.len(), 1, "{worlds:?}");
+    assert_eq!(worlds[0]["display_name"], "Named By Flag");
+    assert_eq!(worlds[0]["qualified"], "cfg/AAAA");
+}
+
+#[test]
+fn the_config_flag_beats_the_environment_variable() {
+    // Precedence, checked in the one direction that can regress silently: both
+    // are set, and each names a different root.
+    let tmp = tempfile::tempdir().unwrap();
+
+    let from_env = tmp.path().join("env/com.mojang");
+    std::fs::create_dir_all(from_env.join("minecraftWorlds")).unwrap();
+    bare_world(&from_env.join("minecraftWorlds"), "EEEE", "From The Env");
+    let env_config = tmp.path().join("env.toml");
+    std::fs::write(
+        &env_config,
+        format!("[[roots]]\nname = \"viaenv\"\npath = {:?}\n", from_env),
+    )
+    .unwrap();
+
+    let from_flag = tmp.path().join("flag/com.mojang");
+    std::fs::create_dir_all(from_flag.join("minecraftWorlds")).unwrap();
+    bare_world(&from_flag.join("minecraftWorlds"), "FFFF", "From The Flag");
+    let flag_config = tmp.path().join("flag.toml");
+    std::fs::write(
+        &flag_config,
+        format!("[[roots]]\nname = \"viaflag\"\npath = {:?}\n", from_flag),
+    )
+    .unwrap();
+
+    let out = bin()
+        .env("CONSTRUCT_CONFIG", &env_config)
+        .args([
+            "worlds",
+            "--json",
+            "--config",
+            flag_config.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let worlds = listed_worlds(&out);
+    assert_eq!(
+        worlds.len(),
+        1,
+        "the env config must not also be read: {worlds:?}"
+    );
+    assert_eq!(worlds[0]["display_name"], "From The Flag");
+    assert_eq!(worlds[0]["qualified"], "viaflag/FFFF");
+}
+
+#[test]
+fn add_writes_to_the_file_the_config_flag_names() {
+    // `add` writes the file every other command reads, so it has to resolve it
+    // the same way. Writing to the default location under `--config` would
+    // record a root nothing later reads.
+    let tmp = tempfile::tempdir().unwrap();
+    let com_mojang = tmp.path().join("games/com.mojang");
+    std::fs::create_dir_all(&com_mojang).unwrap();
+    let config = tmp.path().join("named.toml");
+
+    let out = bin()
+        .args([
+            "add",
+            com_mojang.to_str().unwrap(),
+            "--config",
+            config.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let settings: toml::Value = toml::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    assert_eq!(
+        settings["roots"][0]["path"].as_str(),
+        com_mojang.canonicalize().unwrap().to_str()
+    );
+}
+
+#[test]
+fn a_world_recorded_in_other_worlds_is_discovered() {
+    // `add` files a lone save folder under `other_worlds`. That key is only
+    // worth writing if discovery reads it back.
+    let tmp = tempfile::tempdir().unwrap();
+    let world = bare_world(tmp.path(), "Loose", "Loose World");
+    let config = tmp.path().join("config.toml");
+    std::fs::write(&config, format!("other_worlds = [{:?}]\n", world)).unwrap();
+
+    let out = bin()
+        .args(["worlds", "--json", "--config", config.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let worlds = listed_worlds(&out);
+    assert_eq!(worlds.len(), 1, "{worlds:?}");
+    assert_eq!(worlds[0]["display_name"], "Loose World");
+    assert_eq!(worlds[0]["qualified"], "path/Loose");
+}
+
+#[test]
+fn a_world_added_by_path_is_then_listed_without_repeating_the_path() {
+    // The whole point of `construct add`: name the world once, and every later
+    // command sees it. This is the round trip, `add` through to `worlds`.
+    let tmp = tempfile::tempdir().unwrap();
+    let world = bare_world(tmp.path(), "Saved", "Added Once");
+    let config = tmp.path().join("config.toml");
+
+    let out = bin()
+        .args([
+            "add",
+            world.to_str().unwrap(),
+            "--config",
+            config.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = bin()
+        .args(["worlds", "--json", "--config", config.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let worlds = listed_worlds(&out);
+    assert_eq!(
+        worlds.len(),
+        1,
+        "add must make the world discoverable: {worlds:?}"
+    );
+    assert_eq!(worlds[0]["display_name"], "Added Once");
 }

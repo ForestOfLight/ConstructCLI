@@ -113,10 +113,10 @@ pub fn complete_structures() -> Vec<CompletionCandidate> {
 /// precedence `main.rs` uses. Completion must not exit, so every failure here
 /// is simply "no suggestions".
 fn choose_installation(installations: &[Installation]) -> Option<&Installation> {
-    let loaded = config::load(None, &|k| std::env::var(k).ok()).ok();
+    let explicit = extract_config_from_args();
+    let loaded = config::load(explicit.as_deref(), &|k| std::env::var(k).ok()).ok();
     discovery::installation::choose(
         installations,
-        std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
         loaded
             .as_ref()
             .and_then(|l| l.config.default_installation.as_deref()),
@@ -127,7 +127,8 @@ fn choose_installation(installations: &[Installation]) -> Option<&Installation> 
 /// Helper to discover installations and worlds safely without throwing or exiting.
 fn discover_environment() -> (Vec<Installation>, Vec<World>) {
     let extra_paths = extract_paths_from_args();
-    let loaded = config::load(None, &|k| std::env::var(k).ok()).ok();
+    let explicit = extract_config_from_args();
+    let loaded = config::load(explicit.as_deref(), &|k| std::env::var(k).ok()).ok();
 
     let mut extra_roots: Vec<(String, PathBuf)> = loaded
         .as_ref()
@@ -141,7 +142,11 @@ fn discover_environment() -> (Vec<Installation>, Vec<World>) {
         .unwrap_or_default();
 
     // Same split `main` makes: a world folder is a world, anything else a root.
-    let mut extra_worlds: Vec<PathBuf> = Vec::new();
+    // Worlds recorded by `add` start the list, exactly as they do there.
+    let mut extra_worlds: Vec<PathBuf> = loaded
+        .as_ref()
+        .map(|l| l.config.other_worlds.clone())
+        .unwrap_or_default();
     let mut flag_roots = 0;
     for path in &extra_paths {
         match discovery::classify(path) {
@@ -180,6 +185,25 @@ fn discover_environment() -> (Vec<Installation>, Vec<World>) {
 }
 
 /// Extract `--path <path>` arguments from the invoking command line args.
+/// The `--config` on the line being completed, if there is one.
+///
+/// Completion must resolve the same file the command would, or it offers
+/// candidates from a config the run will not use.
+fn extract_config_from_args() -> Option<PathBuf> {
+    let args: Vec<String> = get_command_words();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--config" && i + 1 < args.len() {
+            return Some(PathBuf::from(&args[i + 1]));
+        }
+        if let Some(stripped) = args[i].strip_prefix("--config=") {
+            return Some(PathBuf::from(stripped));
+        }
+        i += 1;
+    }
+    None
+}
+
 fn extract_paths_from_args() -> Vec<PathBuf> {
     let args: Vec<String> = get_command_words();
     let mut paths = Vec::new();

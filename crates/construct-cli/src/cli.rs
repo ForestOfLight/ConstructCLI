@@ -13,6 +13,13 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// Read settings from this file instead of the default location.
+    ///
+    /// The flag layer of the documented precedence: it beats
+    /// `CONSTRUCT_CONFIG`, which beats the platform config directory.
+    #[arg(long, global = true, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
+    pub config: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Command,
 }

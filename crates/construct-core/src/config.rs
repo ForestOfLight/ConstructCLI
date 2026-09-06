@@ -50,14 +50,12 @@ pub const DEFAULT_KEEP: usize = 10;
 /// - `release`, `preview`, `legacy`, `mcpelauncher`: built-in installations (discovery layer, Task 6)
 /// - `path`: reserved for filesystem-path references (Task 6), and worn by
 ///   worlds named via `--path` — see `discovery::PATH_INSTALLATION`
-/// - `env`: reserved for the CONSTRUCT_COM_MOJANG environment variable root
 const RESERVED_NAMES: &[&str] = &[
     "release",
     "preview",
     "legacy",
     "mcpelauncher",
     crate::discovery::PATH_INSTALLATION,
-    "env",
 ];
 
 #[derive(Debug)]
@@ -97,6 +95,32 @@ struct WireBackups {
 pub fn default_path() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "constructcli")
         .map(|d| d.config_dir().join("config.toml"))
+}
+
+/// The platform data directory, or `CONSTRUCT_DATA_DIR`.
+///
+/// Everything this tool keeps outside a world hangs off here in a
+/// subdirectory of its own — `backups/` for [`crate::backup`], `writemarks/`
+/// for [`crate::writemark`]. They share a root but never a directory: a mark
+/// is disposable bookkeeping and a backup is not, so nothing here lets one be
+/// mistaken for the other.
+///
+/// The override stands in for the platform lookup so that tests never write
+/// into the real user's data directory. It is not a documented user knob —
+/// the documented one is `[backups] dir`, which names the backup directory
+/// outright and wins over this.
+///
+/// Tests need it because a harness that points `HOME`/`USERPROFILE` at a
+/// scratch directory has no platform data directory at all on Windows, where
+/// the lookup resolves the *real* known folder and fails when it is missing —
+/// unlike Unix, where it is built from the environment and always yields a
+/// path. Without the override the failure surfaces as a spurious "could not
+/// turn Beta APIs on" and a partial-success exit.
+pub fn data_dir(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    if let Some(dir) = env("CONSTRUCT_DATA_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    directories::ProjectDirs::from("", "", "constructcli").map(|d| d.data_dir().to_path_buf())
 }
 
 pub fn parse(text: &str, path: &Path) -> Result<(Config, Vec<String>)> {
@@ -243,12 +267,6 @@ pub fn load(explicit: Option<&Path>, env: &dyn Fn(&str) -> Option<String>) -> Re
     if let Some(v) = env("CONSTRUCT_INSTALLATION") {
         config.default_installation = Some(v);
     }
-    if let Some(v) = env("CONSTRUCT_COM_MOJANG") {
-        config.roots.push(ExtraRoot {
-            name: "env".to_string(),
-            path: PathBuf::from(v),
-        });
-    }
 
     warnings.shrink_to_fit();
     Ok(Loaded {
@@ -362,15 +380,6 @@ keep = 3
     }
 
     #[test]
-    fn construct_com_mojang_env_var_becomes_an_extra_root() {
-        let env = |k: &str| (k == "CONSTRUCT_COM_MOJANG").then(|| "/tmp/env-root".to_string());
-        let loaded = load(Some(Path::new("/nonexistent")), &env).unwrap();
-        assert_eq!(loaded.config.roots.len(), 1);
-        assert_eq!(loaded.config.roots[0].path, PathBuf::from("/tmp/env-root"));
-        assert_eq!(loaded.config.roots[0].name, "env");
-    }
-
-    #[test]
     fn two_roots_with_the_same_name_are_rejected() {
         let text = r#"
 [[roots]]
@@ -423,24 +432,6 @@ path = "/tmp/x"
             assert!(
                 reason.contains("reserved") && reason.contains("path"),
                 "error should mention reserved and path: {}",
-                reason
-            );
-        }
-    }
-
-    #[test]
-    fn a_root_named_env_is_rejected_as_reserved() {
-        let text = r#"
-[[roots]]
-name = "env"
-path = "/tmp/x"
-"#;
-        let result = parse(text, Path::new("c.toml"));
-        assert!(matches!(result, Err(CoreError::BadConfig { .. })));
-        if let Err(CoreError::BadConfig { reason, .. }) = result {
-            assert!(
-                reason.contains("reserved") && reason.contains("env"),
-                "error should mention reserved and env: {}",
                 reason
             );
         }

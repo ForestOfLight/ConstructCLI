@@ -2,12 +2,20 @@ use crate::output::Out;
 use construct_core::{CoreError, Result, config};
 use std::path::{Path, PathBuf};
 
-pub fn run(path: &Path, out: &mut Out) -> Result<()> {
-    let config_path =
-        config::path(&|key| std::env::var(key).ok()).ok_or_else(|| CoreError::BadConfig {
-            path: PathBuf::from("config.toml"),
-            reason: "could not determine a configuration directory".to_string(),
-        })?;
+pub fn run(path: &Path, explicit_config: Option<&Path>, out: &mut Out) -> Result<()> {
+    // `add` writes the same file every other command reads, so it resolves it
+    // the same way — `--config`, then `CONSTRUCT_CONFIG`, then the platform
+    // directory. Writing elsewhere than the file in force would record a root
+    // nothing later reads.
+    let config_path = match explicit_config {
+        Some(p) => p.to_path_buf(),
+        None => {
+            config::path(&|key| std::env::var(key).ok()).ok_or_else(|| CoreError::BadConfig {
+                path: PathBuf::from("config.toml"),
+                reason: "could not determine a configuration directory".to_string(),
+            })?
+        }
+    };
     let (mut settings, warnings) = config::load_file(&config_path)?;
     for warning in warnings {
         out.warn(warning);

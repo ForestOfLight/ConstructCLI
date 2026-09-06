@@ -31,7 +31,7 @@ fn main() {
 }
 
 fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
-    let loaded = config::load(None, &|k| std::env::var(k).ok())?;
+    let loaded = config::load(cli.config.as_deref(), &|k| std::env::var(k).ok())?;
     for w in &loaded.warnings {
         out.warn(w.clone());
     }
@@ -51,7 +51,9 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
     // `--path` takes either kind of directory, so sort each one before use: a
     // world folder joins discovery directly under the `path` installation,
     // anything else is probed as a com.mojang root.
-    let mut extra_worlds: Vec<std::path::PathBuf> = Vec::new();
+    // Worlds `construct add` recorded. They are extra worlds in exactly the
+    // sense `--path` means, so they join the same list rather than a second one.
+    let mut extra_worlds: Vec<std::path::PathBuf> = loaded.config.other_worlds.clone();
     let mut flag_roots = 0;
     for path in cli.command.paths() {
         match discovery::classify(path) {
@@ -127,7 +129,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
     };
 
     match &cli.command {
-        Command::Add { path } => commands::add::run(path, out),
+        Command::Add { path } => commands::add::run(path, cli.config.as_deref(), out),
         Command::Worlds { .. } if nothing_to_search => Err(no_installations()),
         Command::Worlds { .. } => commands::worlds::run(&worlds, out),
         Command::Structures { world, source, .. } => {
@@ -140,7 +142,6 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 None => {
                     let installation = discovery::installation::choose(
                         &installations,
-                        std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
                         loaded.config.default_installation.as_deref(),
                     )?;
                     commands::structures::shared(installation, out)
@@ -227,7 +228,6 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 None => {
                     let installation = discovery::installation::choose(
                         &installations,
-                        std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
                         loaded.config.default_installation.as_deref(),
                     )?;
                     commands::export::shared(
@@ -280,7 +280,6 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 Some(w) => discovery::installation::for_world(&installations, w)?,
                 None => discovery::installation::choose(
                     &installations,
-                    std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
                     loaded.config.default_installation.as_deref(),
                 )?,
             };
@@ -343,7 +342,6 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 None => {
                     let installation = discovery::installation::choose(
                         &installations,
-                        std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
                         loaded.config.default_installation.as_deref(),
                     )?;
                     commands::delete::shared(installation, structures, source.map(Into::into), out)
@@ -365,7 +363,6 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 Some(w) => discovery::installation::for_world(&installations, w)?,
                 None => discovery::installation::choose(
                     &installations,
-                    std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
                     loaded.config.default_installation.as_deref(),
                 )?,
             };
@@ -383,7 +380,6 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
         Command::Status { .. } => {
             let installation = discovery::installation::choose(
                 &installations,
-                std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
                 loaded.config.default_installation.as_deref(),
             )?;
             let client = github_client();
@@ -459,16 +455,25 @@ fn mcstructure_path(path: &Path) -> std::result::Result<PathBuf, String> {
     }
 }
 
-/// The GitHub releases client `install` and `status` both need, pointed at a
-/// stub server under `CONSTRUCT_GITHUB_API` in tests, the real API otherwise.
+/// The GitHub releases client `install` and `status` both need.
+///
+/// The API base is fixed at [`releases::API_BASE`]. GitHub is the only release
+/// source there will be, and a runtime override would let anything able to set
+/// an environment variable point `install` at a server of its choosing — an
+/// unsigned download, run as the user, from wherever that variable said.
+///
+/// Debug builds still honour `CONSTRUCT_GITHUB_API`, which is how the test
+/// suite serves canned responses without reaching the network. Release builds
+/// do not: the branch is `cfg`'d out, so a shipped binary has no such seam.
 fn github_client() -> releases::GitHub {
     let token = std::env::var("CONSTRUCT_GITHUB_TOKEN")
         .or_else(|_| std::env::var("GITHUB_TOKEN"))
         .ok();
-    match std::env::var("CONSTRUCT_GITHUB_API") {
-        Ok(base) => releases::GitHub::with_base(base, token),
-        Err(_) => releases::GitHub::new(token),
+    #[cfg(debug_assertions)]
+    if let Ok(base) = std::env::var("CONSTRUCT_GITHUB_API") {
+        return releases::GitHub::with_base(base, token);
     }
+    releases::GitHub::new(token)
 }
 
 /// Every message names the thing, says why, and gives the next action.
