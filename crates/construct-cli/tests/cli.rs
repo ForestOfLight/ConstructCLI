@@ -4111,12 +4111,17 @@ fn install_world_warns_when_a_world_construct_copy_shadows_the_shared_copy() {
     // when it has one. Without a warning, this world would keep silently
     // running the untouched 1.1.0 copy after `install` reports 1.2.0.
     let root = tempfile::tempdir().unwrap();
-    let world = root.path().join("minecraftWorlds/Test");
+    // Joined a component at a time, not as "minecraftWorlds/Test". A `/` inside
+    // a join argument survives verbatim on Windows, so `local_bp` would render
+    // with mixed separators and never match the all-backslash path the warning
+    // below prints — which is the only assertion here that compares a path as
+    // text.
+    let world = root.path().join("minecraftWorlds").join("Test");
     std::fs::create_dir_all(world.join("db")).unwrap();
     std::fs::write(world.join("levelname.txt"), "Test").unwrap();
     write_level_dat(&world.join("level.dat"), 0);
 
-    let local_bp = world.join("behavior_packs/Construct[BP]");
+    let local_bp = world.join("behavior_packs").join("Construct[BP]");
     std::fs::create_dir_all(&local_bp).unwrap();
     std::fs::write(
         local_bp.join("manifest.json"),
