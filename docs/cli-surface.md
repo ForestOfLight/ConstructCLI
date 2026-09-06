@@ -52,6 +52,15 @@ command* — but only consumed by some:
   world, ensure a structures home exists, flip Beta APIs on (`install.rs:123`).
   Partial failure exits 5 from inside the command (`install.rs:272`), bypassing
   `exit_code`.
+- **`install` rescues a Construct in the wrong folder first.** Before placing
+  anything it folds a copy sitting in `com.mojang/behavior_packs` /
+  `resource_packs` into the `development_*` sibling beside it
+  (`install.rs:migrate_stray` → `install::adopt`), because the game loads both
+  roots and no command here looks in the non-development one. With no copy in
+  the development root the pack is moved whole; with one already there only
+  its `structures/` is folded in, and a structure that clashes by name but
+  differs by content is kept as `<name>-1.mcstructure` rather than dropped.
+  Reported in the human output and in `migrated[]` under `-o json`.
 
 ## Validation hand-rolled in `main.rs`, not expressed in clap
 

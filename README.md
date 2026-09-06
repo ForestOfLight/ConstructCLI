@@ -25,6 +25,10 @@ construct install --world "My Survival"
 construct import house.mcstructure --world "My Survival"
 ```
 
+If you already moved `Construct[BP]` into `behavior_packs` rather than
+`development_behavior_packs` — they sit next to each other and the game reads
+both — `install` moves it across for you and keeps every structure in it.
+
 ## Install
 
 No binaries are published yet; building from source is currently the only

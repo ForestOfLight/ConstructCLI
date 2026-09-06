@@ -1,5 +1,6 @@
 //! Installing Construct: place the packs, keep the user's structures.
 
+pub mod adopt;
 pub mod mcaddon;
 pub mod releases;
 

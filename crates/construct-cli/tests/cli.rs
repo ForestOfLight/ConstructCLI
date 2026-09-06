@@ -2928,6 +2928,119 @@ fn install_exits_5_with_the_packs_already_placed_when_the_world_pack_list_is_mal
 }
 
 #[test]
+fn install_moves_a_construct_found_in_behavior_packs_and_keeps_its_structures() {
+    // The README's by-hand route puts Construct in `development_behavior_packs`,
+    // but `behavior_packs` is the folder right next to it and an easy miss.
+    // The game loads both, so the misplaced copy is not inert — and every
+    // command here looks only in the development root, so the structures in
+    // it are unreachable until install moves them.
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
+    let stray = root.path().join("behavior_packs/Construct[BP]");
+    write_construct_bp(&stray, [1, 1, 0]);
+    std::fs::create_dir_all(stray.join("structures")).unwrap();
+    std::fs::write(stray.join("structures/house.mcstructure"), b"the user's house").unwrap();
+
+    let (base, _server) = stub_github(build_mcaddon_bytes());
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args(["install", "--com-mojang", root.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let installed = root.path().join("development_behavior_packs/Construct[BP]");
+    assert_eq!(
+        std::fs::read(installed.join("structures/house.mcstructure")).unwrap(),
+        b"the user's house",
+        "the misplaced copy's structure survived both the move and the upgrade"
+    );
+    assert!(!stray.exists(), "the misplaced copy is gone");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("behavior_packs") && stdout.contains("development_behavior_packs"),
+        "expected install to say the pack was moved: {stdout}"
+    );
+}
+
+#[test]
+fn install_merges_a_behavior_packs_copy_into_the_development_one_without_losing_structures() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
+
+    let installed = root.path().join("development_behavior_packs/Construct[BP]");
+    write_construct_bp(&installed, [1, 1, 0]);
+    std::fs::create_dir_all(installed.join("structures")).unwrap();
+    std::fs::write(installed.join("structures/house.mcstructure"), b"the dev house").unwrap();
+
+    let stray = root.path().join("behavior_packs/Construct[BP]");
+    write_construct_bp(&stray, [1, 0, 0]);
+    std::fs::create_dir_all(stray.join("structures")).unwrap();
+    std::fs::write(stray.join("structures/house.mcstructure"), b"a different house").unwrap();
+    std::fs::write(stray.join("structures/barn.mcstructure"), b"the barn").unwrap();
+
+    let (base, _server) = stub_github(build_mcaddon_bytes());
+    let out = bin()
+        .env("CONSTRUCT_GITHUB_API", &base)
+        .args([
+            "install",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let structures = installed.join("structures");
+    assert_eq!(
+        std::fs::read(structures.join("house.mcstructure")).unwrap(),
+        b"the dev house",
+        "the development copy keeps its own structure at its own id"
+    );
+    assert_eq!(
+        std::fs::read(structures.join("house-1.mcstructure")).unwrap(),
+        b"a different house",
+        "and the misplaced copy's clashing structure is rescued beside it"
+    );
+    assert_eq!(
+        std::fs::read(structures.join("barn.mcstructure")).unwrap(),
+        b"the barn"
+    );
+    assert!(!stray.exists(), "the misplaced copy is gone");
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["migrated"][0]["merged"], 2);
+    assert_eq!(v["migrated"][0]["rescued"][0]["from"], "house.mcstructure");
+    assert_eq!(v["migrated"][0]["rescued"][0]["to"], "house-1.mcstructure");
+}
+
+/// A Construct behaviour pack on disk at `dir`, the way a by-hand install
+/// leaves one.
+fn write_construct_bp(dir: &std::path::Path, version: [u32; 3]) {
+    let [a, b, c] = version;
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(
+        dir.join("manifest.json"),
+        format!(
+            r#"{{"format_version":2,
+                "header":{{"name":"Construct [BP] v{a}.{b}.{c}","uuid":"8c0c0153-d8b9-482a-889f-aef922b8fe58","version":[{a},{b},{c}]}},
+                "modules":[{{"type":"data","uuid":"f4d52ae1-2c26-4938-b8c2-7e455d495620","version":[1,0,0]}}]}}"#
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
 fn install_world_warns_when_a_world_local_construct_copy_shadows_the_shared_install() {
     // `install --world` always places into the installation's shared
     // dev-pack root, but `pack::for_world` (and every structure command
