@@ -10,17 +10,14 @@ use construct_core::store::{self, OpenedStore};
 
 pub struct Loaded {
     pub entries: Vec<Entry>,
-    /// Held open so `catalog::read_entry` can fetch world-source bytes.
+    /// Held open so `catalog::read_entry` can fetch world-database bytes.
     pub store: Option<OpenedStore>,
-    /// The packs the pack half came from, for a caller that has to tell the
-    /// world's own copy from the shared one. See [`world_scoped`].
-    pub packs: Vec<pack::Home>,
 }
 
 /// Builds the unified catalog `structures`, `copy`, and `export` all resolve names
 /// against.
 ///
-/// The `--source pack` short-circuit (never open the world's database) is a
+/// The pack-source short-circuit (never open the world's database) is a
 /// correctness property, not an optimisation: opening a leveldb runs recovery
 /// and rewrites it, which is why reads copy `db/` first.
 pub fn for_world(
@@ -29,7 +26,7 @@ pub fn for_world(
     source: Option<Source>,
     out: &mut Out,
 ) -> Result<Loaded> {
-    let (world_entries, store) = if source == Some(Source::Pack) {
+    let (world_entries, store) = if source.is_some_and(|s| s.is_pack()) {
         (Vec::new(), None)
     } else {
         let store = store::open_world_store(world)?;
@@ -37,14 +34,10 @@ pub fn for_world(
         (entries, Some(store))
     };
 
-    let (pack_entries, packs) = packs_for_world(world, installations, source, out)?;
+    let (pack_entries, _packs) = packs_for_world(world, installations, source, out)?;
 
     let entries = catalog::unify(world_entries, pack_entries);
-    Ok(Loaded {
-        entries,
-        store,
-        packs,
-    })
+    Ok(Loaded { entries, store })
 }
 
 /// Drops the shared copy's rows from a world-scoped catalog.
@@ -57,25 +50,16 @@ pub fn for_world(
 /// from under every other world using that copy.
 ///
 /// `pack::serving` reports the shared copy for a world that has no copy of its
-/// own, so the rows are filtered out rather than assumed absent. World-database
-/// rows have no path and always survive.
-pub fn world_scoped(entries: Vec<Entry>, packs: &[pack::Home]) -> Vec<Entry> {
-    let shared_dirs: Vec<_> = packs
-        .iter()
-        .filter(|h| h.kind.scope() == pack::Scope::Shared)
-        .map(|h| h.dir.clone())
-        .collect();
+/// own, so the rows are filtered out rather than assumed absent. Since every
+/// row carries its own [`Source`], that is now a one-field test.
+pub fn world_scoped(entries: Vec<Entry>) -> Vec<Entry> {
     entries
         .into_iter()
-        .filter(|e| {
-            e.path
-                .as_ref()
-                .is_none_or(|p| !shared_dirs.iter().any(|d| p.starts_with(d)))
-        })
+        .filter(|e| e.source != Source::SharedPack)
         .collect()
 }
 
-/// Points a miss at the scope that was actually searched.
+/// Points a miss at the world that was actually searched.
 ///
 /// Without this, `delete house --world W` — or `export house --world W` — for a
 /// structure that lives only in the shared copy reports a bare "not found",
@@ -105,7 +89,7 @@ pub fn packs_for_world(
     out: &mut Out,
 ) -> Result<(Vec<Entry>, Vec<pack::Home>)> {
     let mut packs = Vec::new();
-    let pack_entries = if source == Some(Source::World) {
+    let pack_entries = if source == Some(Source::WorldDb) {
         Vec::new()
     } else {
         // Every pack serving this world, not just one: a world running the
@@ -125,14 +109,14 @@ pub fn packs_for_world(
             Ok(serving) => {
                 let mut entries = Vec::new();
                 for home in &serving {
-                    entries.extend(catalog::from_pack(&home.dir, home.kind.scope()));
+                    entries.extend(catalog::from_pack(&home.dir, home.kind.source()));
                 }
                 packs = serving;
                 entries
             }
             // Asking for pack structures on a machine with no Construct is an
             // error; a plain `structures` just says so and shows the world.
-            Err(e) if source == Some(Source::Pack) => return Err(e),
+            Err(e) if source.is_some_and(|s| s.is_pack()) => return Err(e),
             Err(e) => {
                 // Distinguish the reason: `InstallationNotFound` (a
                 // path-referenced world with no installations to search) is

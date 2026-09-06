@@ -96,12 +96,10 @@ pub fn pack_short(kind: pack::HomeKind, world: &str) -> String {
     }
 }
 
-/// The `scope` field `import`, `copy`, and `delete` all carry in JSON.
-pub fn scope_field(kind: pack::HomeKind) -> &'static str {
-    match kind.scope() {
-        pack::Scope::World => "world",
-        pack::Scope::Shared => "shared",
-    }
+/// The `target` field `import` and `copy` carry in JSON: which pack took the
+/// writes, spelled as the `--source` value that reads it back.
+pub fn target_field(kind: pack::HomeKind) -> &'static str {
+    kind.source().as_str()
 }
 
 /// The pack a write for `world` belongs in, creating the world's structures

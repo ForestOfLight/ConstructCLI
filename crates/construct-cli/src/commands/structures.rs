@@ -19,11 +19,11 @@ struct Payload<'a> {
 struct Row<'a> {
     name: &'a str,
     id: &'a str,
+    /// Where this copy lives: `world-db`, `world-pack`, or `shared-pack` —
+    /// the same three values `--source` takes, so a row can be fed straight
+    /// back to the CLI. It also says how far the structure reaches: a
+    /// `shared-pack` row is in every world using the shared copy of Construct.
     source: &'static str,
-    /// `world` or `shared` for a pack row — which worlds this structure
-    /// reaches. Null for a world-database row, which reaches one world by
-    /// construction.
-    scope: Option<&'static str>,
     size_bytes: u64,
 }
 
@@ -35,9 +35,21 @@ pub fn run(
 ) -> Result<()> {
     let loaded = catalog::for_world(world, installations, source, out)?;
     // Everything the world sees, both packs included: `--world` names the
-    // world, and a world's view is what this listing is for. The SOURCE column
-    // says which pack each row is in, so nothing needs narrowing here.
-    render(Some(world.qualified()), &loaded.entries, out);
+    // world, and a world's view is what this listing is for, so the default is
+    // the whole view and the SOURCE column says which of the three places each
+    // row is in.
+    //
+    // `--source` then narrows it to one of them. The load above already skips
+    // whichever half cannot match — a pack source never opens the database at
+    // all, which is a correctness property and not an optimisation — but
+    // `world-pack` and `shared-pack` both load packs, so the row filter is
+    // what separates those two.
+    let entries: Vec<Entry> = loaded
+        .entries
+        .into_iter()
+        .filter(|e| source.is_none_or(|s| e.source == s))
+        .collect();
+    render(Some(world.qualified()), &entries, out);
     Ok(())
 }
 
@@ -49,7 +61,7 @@ pub fn run(
 /// neither is any world's database — nothing here opens one.
 pub fn shared(installation: &Installation, out: &mut Out) -> Result<()> {
     let pack = pack::for_installation(installation)?.pack;
-    let entries = construct_core::catalog::from_pack(&pack.dir, pack::Scope::Shared);
+    let entries = construct_core::catalog::from_pack(&pack.dir, Source::SharedPack);
     out.line(format!("{}", pack.dir.display()));
     render(None, &entries, out);
     Ok(())
@@ -70,13 +82,15 @@ fn render(world: Option<String>, entries: &[Entry], out: &mut Out) {
                 // name that doesn't exist. A ragged column is cosmetic; a
                 // dead-end copy-paste is functional, so full name wins.
                 //
-                // `pack` alone stopped being an answer once a world could see
-                // two packs at once: `pack:world` belongs to this world,
-                // `pack:shared` is in every world using the shared copy.
+                // The SOURCE column is the whole answer to "which of the
+                // three places is this in", and it is spelled as the
+                // `--source` value that selects it — so reading a row tells
+                // you what to type to narrow to it. Sized for `shared-pack`,
+                // the longest of the three.
                 out.line(format!(
                     "{:<24} {:<12} {:>9}",
                     e.name,
-                    e.source_label(),
+                    e.source.as_str(),
                     human_size(e.size_bytes)
                 ));
             }
@@ -91,10 +105,6 @@ fn render(world: Option<String>, entries: &[Entry], out: &mut Out) {
                 name: &e.name,
                 id: &e.id,
                 source: e.source.as_str(),
-                scope: e.scope.map(|s| match s {
-                    pack::Scope::World => "world",
-                    pack::Scope::Shared => "shared",
-                }),
                 size_bytes: e.size_bytes,
             })
             .collect(),

@@ -3,7 +3,10 @@
 //! A reference is a display name, a folder name, a qualified
 //! `<installation>/<account>/<world>` with each segment optional from the left,
 //! or a filesystem path. The filesystem is checked first so resolution is
-//! deterministic. Ambiguity is always an error, never a silent pick.
+//! deterministic. Because a name may contain slashes itself, the whole input is
+//! tried as a name as well as split into segments; a qualified reading wins only
+//! where it is the one that matches. Ambiguity is always an error, never a
+//! silent pick.
 
 use crate::discovery::worlds::{LastPlayedSource, World};
 use crate::error::{CoreError, Result};
@@ -68,42 +71,49 @@ pub fn resolve(input: &str, worlds: &[World]) -> Result<World> {
 
     let r = parse(input);
 
-    // Reject references with too many segments.
-    if r.extra_segments {
-        // Detect if this looks like a filesystem path
-        let looks_like_path = input.starts_with('/') || input.contains(':');
-        return Err(CoreError::MalformedReference {
-            reference: input.to_string(),
-            looks_like_path,
-        });
-    }
-
+    // A name may contain slashes of its own: Minecraft's default level name
+    // embeds a date, as in "Advanced Automation 10/13/21 23:33:18". So the whole
+    // input is always tried as a name, alongside the segmented reading. A world
+    // matched either way is still matched only once, so this cannot manufacture
+    // ambiguity with itself.
     let matches_segments = |w: &World| {
-        r.installation.as_ref().is_none_or(|i| &w.installation == i)
+        !r.extra_segments
+            && r.installation.as_ref().is_none_or(|i| &w.installation == i)
             && r.account
                 .as_ref()
                 .is_none_or(|a| w.account.as_ref() == Some(a))
     };
-
-    // Folder names are matched before display names.
-    let by_folder: Vec<&World> = worlds
-        .iter()
-        .filter(|w| w.folder == r.world && matches_segments(w))
-        .collect();
-    let candidates = if by_folder.is_empty() {
+    let tier = |field: fn(&World) -> &str| -> Vec<&World> {
         worlds
             .iter()
-            .filter(|w| w.display_name == r.world && matches_segments(w))
-            .collect::<Vec<_>>()
+            .filter(|w| field(w) == input || (field(w) == r.world && matches_segments(w)))
+            .collect()
+    };
+
+    // Folder names are matched before display names.
+    let by_folder = tier(|w| &w.folder);
+    let candidates = if by_folder.is_empty() {
+        tier(|w| &w.display_name)
     } else {
         by_folder
     };
 
     match candidates.as_slice() {
         [one] => Ok((*one).clone()),
+        // Only once nothing matched by name is an over-long reference wrong:
+        // until then it may have been a name that simply contains slashes.
+        [] if r.extra_segments => Err(CoreError::MalformedReference {
+            reference: input.to_string(),
+            looks_like_path: input.starts_with('/') || input.contains(':'),
+        }),
         [] => Err(CoreError::WorldNotFound {
             reference: input.to_string(),
-            near: near_matches(&r.world, worlds),
+            // The whole input is the better needle when it finds anything —
+            // a half-typed slashed name only ever matches as a whole.
+            near: match near_matches(input, worlds) {
+                n if n.is_empty() => near_matches(&r.world, worlds),
+                n => n,
+            },
         }),
         many => Err(CoreError::AmbiguousWorld {
             reference: input.to_string(),
@@ -312,6 +322,38 @@ mod tests {
             w("mcpelauncher", None, "other", "target"),
         ];
         assert_eq!(resolve("target", &worlds).unwrap().folder, "target");
+    }
+
+    #[test]
+    fn a_display_name_containing_slashes_resolves() {
+        // Minecraft's default level names embed a date: "10/13/21". The slashes
+        // are part of the name, not reference segments.
+        let worlds = vec![w(
+            "release",
+            Some("Shared"),
+            "AdvancedAutomation-3-5-2024",
+            "Advanced Automation 10/13/21 23:33:18",
+        )];
+        assert_eq!(
+            resolve("Advanced Automation 10/13/21 23:33:18", &worlds)
+                .unwrap()
+                .folder,
+            "AdvancedAutomation-3-5-2024"
+        );
+    }
+
+    #[test]
+    fn a_display_name_with_four_or_more_segments_resolves() {
+        // More slashes than the grammar's three segments must not be rejected
+        // as malformed before the name itself is tried.
+        let worlds = vec![w("release", Some("Shared"), "abc=", "a/b/c/d/e")];
+        assert_eq!(resolve("a/b/c/d/e", &worlds).unwrap().folder, "abc=");
+    }
+
+    #[test]
+    fn a_folder_name_containing_slashes_resolves() {
+        let worlds = vec![w("release", Some("Shared"), "odd/folder", "Some World")];
+        assert_eq!(resolve("odd/folder", &worlds).unwrap().folder, "odd/folder");
     }
 
     #[test]

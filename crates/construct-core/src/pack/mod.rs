@@ -146,13 +146,15 @@ pub enum HomeKind {
 }
 
 impl HomeKind {
-    /// Whether structures here belong to one world or to every world the
-    /// shared copy of Construct serves. This is the distinction commands
-    /// report.
-    pub fn scope(self) -> Scope {
+    /// Which `--source` this home's structures answer to: a pack serving one
+    /// world, or the shared copy serving every world using it. This is the
+    /// distinction commands report.
+    pub fn source(self) -> crate::catalog::Source {
         match self {
-            HomeKind::WorldConstruct | HomeKind::WorldStructuresPack => Scope::World,
-            HomeKind::SharedConstruct => Scope::Shared,
+            HomeKind::WorldConstruct | HomeKind::WorldStructuresPack => {
+                crate::catalog::Source::WorldPack
+            }
+            HomeKind::SharedConstruct => crate::catalog::Source::SharedPack,
         }
     }
 }

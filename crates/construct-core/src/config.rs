@@ -48,14 +48,15 @@ pub const DEFAULT_KEEP: usize = 10;
 /// Reserved installation/root names that cannot be used for extra roots.
 /// These come from:
 /// - `release`, `preview`, `legacy`, `mcpelauncher`: built-in installations (discovery layer, Task 6)
-/// - `path`: reserved for filesystem-path references (Task 6)
+/// - `path`: reserved for filesystem-path references (Task 6), and worn by
+///   worlds named via `--path` — see `discovery::PATH_INSTALLATION`
 /// - `env`: reserved for the CONSTRUCT_COM_MOJANG environment variable root
 const RESERVED_NAMES: &[&str] = &[
     "release",
     "preview",
     "legacy",
     "mcpelauncher",
-    "path",
+    crate::discovery::PATH_INSTALLATION,
     "env",
 ];
 

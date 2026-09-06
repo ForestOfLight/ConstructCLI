@@ -21,13 +21,8 @@ too: move `Construct[BP]` into `development_behavior_packs` by hand, drop the
 replaces that with:
 
 ```
-construct install --world "My Survival"
 construct import house.mcstructure --world "My Survival"
 ```
-
-If you already moved `Construct[BP]` into `behavior_packs` rather than
-`development_behavior_packs` — they sit next to each other and the game reads
-both — `install` moves it across for you and keeps every structure in it.
 
 ## Install
 
@@ -57,6 +52,7 @@ See `third_party/README.md` for what each patch fixes.
 ```
 construct worlds                          # every world this machine can see
 construct structures --world <world>      # structures in a world
+construct structures --world <world> --source shared-pack   # ...only the ones from the shared Construct
 construct export <structure>              # write <structure>.mcstructure out of the shared Construct
 construct export <s1> <s2>                # one file each
 construct export <structure> --world <world>           # out of that world's database or its own Construct copy
@@ -66,6 +62,7 @@ construct install --version 1.2.0         # a specific release
 construct install --world <world>         # also enable it in a world and turn Beta APIs on
 construct import house.mcstructure                    # copy into Construct's structures/
 construct import house.mcstructure barn.mcstructure   # several at once
+construct import ~/Structures/Amelix                  # a whole folder, tree kept: Amelix:house
 construct import house.mcstructure --world <world>    # into that world's own Construct copy
 construct import house.mcstructure --name my_house    # override the derived name (one file only)
 construct copy <src-world> <dst-world> house          # read from one world, write into another's Construct
@@ -73,12 +70,21 @@ construct copy <src-world> <dst-world> house barn     # several at once
 construct delete house                                # from the shared Construct (every world using it)
 construct delete house barn                          # several at once
 construct delete house --world <world>               # that world only: its database and its own pack
-construct delete house --world <world> --source world  # ...just the database
-construct delete house --world <world> --source pack   # ...just that world's pack file
+construct delete house --world <world> --source world-db    # ...just the database
+construct delete house --world <world> --source world-pack  # ...just that world's pack file
 construct structures                      # just the shared copy: what every world using it gets
 construct status                          # installed version, latest available, where it's enabled, and where structures live
 construct enable-beta-apis <world>        # turn a world's Beta APIs experiment on
 ```
+
+**A folder imports as a folder.** `construct import <dir>` takes every
+`.mcstructure` beneath a directory and mirrors its tree into `structures/`,
+which means the folder's own name becomes the namespace: `Amelix/house` imports
+as `Amelix:house`. That groups a library and keeps it addressable by
+`/structure`, but a namespaced structure is one Construct's in-game list does
+not show — the list is `mystructure:` only. To import the same files flat and
+listed, name them instead of the folder and let the shell expand the wildcard:
+`construct import ~/Structures/Amelix/*.mcstructure`.
 
 `import` and `copy` only ever write within a `BP/structures/` folder, never into a
 world's database. `delete` is the exception and the only leveldb write this tool
@@ -100,9 +106,9 @@ difference between a structure being yours and being everyone's:
 ```console
 $ construct structures --world "My Survival"
 NAME                     SOURCE          SIZE
-house                    world         12.0 KB
-imported_tower           pack:world    31.0 KB
-shared_prefab            pack:shared    8.0 KB
+house                    world-db     12.0 KB
+imported_tower           world-pack   31.0 KB
+shared_prefab            shared-pack   8.0 KB
 ```
 
 Structures already in the shared copy stay there and keep working; nothing is
@@ -123,8 +129,8 @@ Within a world a name can still be in two places at once — the database and
 that world's own pack — and `delete --world` removes both, because "remove this
 name from this world" leaves nothing to guess at. Every other command refuses a
 name living in two places and makes you say which you meant; `delete` does not
-need to. `--source world|pack` narrows it when you want one gone and the other
-kept.
+need to. `--source world-db|world-pack` narrows it when you want one gone and
+the other kept.
 
 There is no undo: run `export` first if you might want the structure back.
 
@@ -174,30 +180,46 @@ one flag every command takes, before or after the subcommand.
 The rest are declared only on the commands that read them, so a command refuses
 a flag it would otherwise have ignored, and they go **after** the subcommand:
 
-- `--com-mojang <PATH>` — probe an extra `com.mojang` root, in addition to the
-  ones discovered automatically. Repeatable. Taken by every command that
-  searches for Minecraft, which is all of them but `add` and `completions`.
+- `--path <PATH>` — probe an extra directory, in addition to the ones
+  discovered automatically. It takes either kind: a `com.mojang` root, whose
+  `minecraftWorlds` and development packs are searched as usual, or a single
+  world folder sitting anywhere at all, which joins the list under the
+  installation name `path`. A directory holding a `level.dat` is a world;
+  anything else is treated as a root. Repeatable, and the two kinds mix freely.
+  Taken by every command that searches for Minecraft, which is all of them but
+  `add` and `completions`.
 - `--force` — overwrite what is already there: `export`'s output file,
   `import`'s and `copy`'s structure of the same name in the target pack, and
   the version `install` would otherwise leave alone. It never relaxes the
   world-in-use refusal, and `structures`, `worlds`, `delete`, `status` and
   `enable-beta-apis` do not take it at all.
 
-`structures`, `export`, `copy`, and `delete` also take `--source <world|pack>` to
-disambiguate a structure name that exists in both a world and a behavior pack.
-`copy` takes `--pack <world|shared>` to pick between the two packs its source
-world can see. Neither applies to `import`, which writes files and never reads a
-name back out of a world.
+`structures`, `export`, `copy`, and `delete` also take `--source
+<world-db|world-pack|shared-pack>`, which names one of the three places a
+structure can live: the world's own database, a pack serving that world alone,
+or the shared copy of Construct that every world using it sees. It narrows a
+name that exists in more than one of them, and it filters a listing down to
+one. It does not apply to `import`, which writes files and never reads a name
+back out of a world.
 
-`export` and `delete` do not take `--pack`, because `--world` already says which
-copy is meant: without it they read and write the shared Construct, and with it
-they are confined to that world and cannot reach the shared copy at all.
-`structures` does not take it either: `--world` asks what that world sees, which
-is every pack serving it, and the SOURCE column says which pack each row is in.
+These are the same three words the SOURCE column prints and the `source` field
+in `--json` carries, so a row can be handed straight back to the next command.
 
-On `copy`, both flags describe the **source** world — they pick which copy to
+`--world` and `--source shared-pack` contradict each other on `export` and
+`delete`: without `--world` those two read and write the shared Construct, and
+with it they are confined to that world and cannot reach the shared copy at
+all, so asking for both is refused rather than guessed at. `structures` allows
+the pair, because a world listing really does show the shared copy's rows when
+that is what the world runs — and naming a pack is also the way to list a
+world's structures without opening its database. In the other direction,
+`--source world-db` and `--source world-pack` name places inside a world, so
+they need a `--world` to be given.
+
+On `copy` the flag describes the **source** world — it picks which copy to
 read. Nothing selects the destination: a copy always lands in the destination
-world's own structures home.
+world's own structures home. It is also the one command where all three values
+are live at once, since it names its worlds as arguments rather than with
+`--world`.
 
 `--json` prints exactly one JSON document on stdout carrying `"schema": 1`;
 warnings are printed both to stderr and in a `warnings` array in that

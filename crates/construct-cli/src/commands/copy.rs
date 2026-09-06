@@ -27,12 +27,14 @@ struct Payload {
     // friendly name.
     from: String,
     to: String,
-    /// Which copy of Construct took the writes: the destination world's own,
-    /// or the shared copy of Construct. `import` has reported this since
-    /// stage 2; `copy` writes into exactly the same two places. One
-    /// destination home is chosen per invocation, so this describes the
-    /// command rather than any one row.
-    scope: &'static str,
+    /// Which pack took the writes: the destination world's own, or the shared
+    /// copy of Construct. Spelled as a `--source` value — `world-pack` or
+    /// `shared-pack` — so a reader can name the same place back to
+    /// `structures` or `export`. `import` reports it the same way; `copy`
+    /// writes into exactly the same two places. One destination home is
+    /// chosen per invocation, so this describes the command rather than any
+    /// one row.
+    target: &'static str,
     written: Vec<Written>,
 }
 
@@ -51,7 +53,6 @@ pub fn run(
     names: &[String],
     installations: &[Installation],
     source: Option<Source>,
-    pack_scope: Option<construct_core::pack::Scope>,
     force: bool,
     out: &mut Out,
 ) -> Result<()> {
@@ -64,7 +65,7 @@ pub fn run(
     // structure must not leave one behind.
     let mut sources = Vec::new();
     for name in names {
-        let entry = catalog::resolve(name, &loaded.entries, source, pack_scope)?;
+        let entry = catalog::resolve(name, &loaded.entries, source)?;
         let bytes = catalog::read_entry(&entry, store)?;
         sources.push((entry, bytes));
     }
@@ -125,7 +126,7 @@ pub fn run(
     out.emit(Payload {
         from: src.qualified(),
         to: dst.qualified(),
-        scope: crate::commands::scope_field(home.kind),
+        target: crate::commands::target_field(home.kind),
         written,
     });
     Ok(())

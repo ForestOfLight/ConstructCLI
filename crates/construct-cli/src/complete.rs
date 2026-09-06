@@ -1,6 +1,6 @@
 use clap::builder::StyledStr;
 use clap_complete::engine::CompletionCandidate;
-use construct_core::catalog;
+use construct_core::catalog::{self, Source};
 use construct_core::config;
 use construct_core::discovery::{self, Installation, World};
 use construct_core::pack;
@@ -67,7 +67,7 @@ pub fn complete_structures() -> Vec<CompletionCandidate> {
             let Ok(home) = pack::for_installation(inst) else {
                 return Vec::new();
             };
-            for entry in catalog::from_pack(&home.pack.dir, pack::Scope::Shared) {
+            for entry in catalog::from_pack(&home.pack.dir, Source::SharedPack) {
                 push(entry.name, "shared Construct structure");
             }
         }
@@ -90,15 +90,16 @@ pub fn complete_structures() -> Vec<CompletionCandidate> {
                 for home in pack::serving(&world, inst) {
                     // A world-scoped command cannot reach the shared copy, so
                     // its names are not on offer for one.
-                    if scoped && home.kind.scope() == pack::Scope::Shared {
+                    let source = home.kind.source();
+                    if scoped && source == Source::SharedPack {
                         continue;
                     }
-                    let scope_help = match home.kind.scope() {
-                        pack::Scope::World => "world pack structure",
-                        pack::Scope::Shared => "shared Construct structure",
+                    let help = match source {
+                        Source::SharedPack => "shared Construct structure",
+                        _ => "world pack structure",
                     };
-                    for entry in catalog::from_pack(&home.dir, home.kind.scope()) {
-                        push(entry.name, scope_help);
+                    for entry in catalog::from_pack(&home.dir, source) {
+                        push(entry.name, help);
                     }
                 }
             }
@@ -126,7 +127,7 @@ fn choose_installation(installations: &[Installation]) -> Option<&Installation> 
 
 /// Helper to discover installations and worlds safely without throwing or exiting.
 fn discover_environment() -> (Vec<Installation>, Vec<World>) {
-    let extra_com_mojang = extract_com_mojang_from_args();
+    let extra_paths = extract_paths_from_args();
     let loaded = config::load(None, &|k| std::env::var(k).ok()).ok();
 
     let mut extra_roots: Vec<(String, PathBuf)> = loaded
@@ -140,8 +141,17 @@ fn discover_environment() -> (Vec<Installation>, Vec<World>) {
         })
         .unwrap_or_default();
 
-    for (i, path) in extra_com_mojang.iter().enumerate() {
-        extra_roots.push((format!("flag{}", i + 1), path.clone()));
+    // Same split `main` makes: a world folder is a world, anything else a root.
+    let mut extra_worlds: Vec<PathBuf> = Vec::new();
+    let mut flag_roots = 0;
+    for path in &extra_paths {
+        match discovery::classify(path) {
+            discovery::PathKind::World => extra_worlds.push(path.clone()),
+            discovery::PathKind::Root => {
+                flag_roots += 1;
+                extra_roots.push((format!("flag{flag_roots}"), path.clone()));
+            }
+        }
     }
 
     let home = std::env::var("HOME")
@@ -166,27 +176,27 @@ fn discover_environment() -> (Vec<Installation>, Vec<World>) {
     }
 
     let installations = discovery::platform::resolve(candidates);
-    let worlds = discovery::enumerate(&installations);
+    let worlds = discovery::enumerate(&installations, &extra_worlds);
     (installations, worlds)
 }
 
-/// Extract `--com-mojang <path>` arguments from the invoking command line args.
-fn extract_com_mojang_from_args() -> Vec<PathBuf> {
+/// Extract `--path <path>` arguments from the invoking command line args.
+fn extract_paths_from_args() -> Vec<PathBuf> {
     let args: Vec<String> = get_command_words();
-    let mut roots = Vec::new();
+    let mut paths = Vec::new();
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--com-mojang" && i + 1 < args.len() {
-            roots.push(PathBuf::from(&args[i + 1]));
+        if args[i] == "--path" && i + 1 < args.len() {
+            paths.push(PathBuf::from(&args[i + 1]));
             i += 2;
-        } else if let Some(stripped) = args[i].strip_prefix("--com-mojang=") {
-            roots.push(PathBuf::from(stripped));
+        } else if let Some(stripped) = args[i].strip_prefix("--path=") {
+            paths.push(PathBuf::from(stripped));
             i += 1;
         } else {
             i += 1;
         }
     }
-    roots
+    paths
 }
 
 /// Which structures the word being completed could name.
@@ -196,7 +206,7 @@ enum Target {
         /// `true` when the command reads that world and nothing else, so the
         /// shared copy of Construct is not on offer. `export` and `delete` under
         /// `--world`; never `copy`, whose source world sees both packs and has
-        /// `--pack` to choose between them.
+        /// `--source shared-pack` to name the far one.
         scoped: bool,
     },
     /// `export`/`delete` with no `--world`: the shared copy of Construct.
@@ -262,8 +272,7 @@ fn extract_target_from_args() -> Target {
                 || word == "--output"
                 || word == "--on-overlap"
                 || word == "--source"
-                || word == "--pack"
-                || word == "--com-mojang"
+                || word == "--path"
             {
                 // Options that take an argument
                 skip_next = true;

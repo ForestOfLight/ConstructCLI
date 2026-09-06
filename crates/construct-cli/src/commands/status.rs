@@ -17,6 +17,7 @@
 use crate::output::Out;
 use construct_core::discovery::{Installation, World};
 use construct_core::install::releases::Releases;
+use construct_core::catalog;
 use construct_core::pack::{self, manifest};
 use construct_core::{Result, worldpacks};
 use serde::Serialize;
@@ -37,8 +38,9 @@ struct PackRow {
     /// The world this pack belongs to, or null for the shared copy of
     /// Construct, which belongs to every world using it.
     world: Option<String>,
-    /// `shared`, or `world` for a pack only one world sees.
-    scope: &'static str,
+    /// Which place this pack is, spelled as the `--source` value that names
+    /// it: `shared-pack`, or `world-pack` for a pack only one world sees.
+    source: &'static str,
     path: String,
     count: usize,
 }
@@ -81,7 +83,7 @@ pub fn run(
     // already says what that world sees.
     let mut structures = vec![PackRow {
         world: None,
-        scope: "shared",
+        source: catalog::Source::SharedPack.as_str(),
         path: installed.dir.display().to_string(),
         count: pack::structures::list(&installed.dir).len(),
     }];
@@ -98,7 +100,7 @@ pub fn run(
         };
         structures.push(PackRow {
             world: Some(world.display_name.clone()),
-            scope: "world",
+            source: home.kind.source().as_str(),
             path: home.dir.display().to_string(),
             count: pack::structures::list(&home.dir).len(),
         });

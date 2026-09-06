@@ -142,15 +142,42 @@ pub fn path_for(pack_dir: &Path, id: &str) -> Result<PathBuf> {
         });
     }
     safe_segment(namespace, id)?;
-    safe_segment(name, id)?;
+    // A name may carry `/` to address a nested file, exactly as `collect`
+    // reports one: `stuff:towers/diamond` is `structures/stuff/towers/diamond`.
+    // Depth is not an escape hatch — every segment faces the same check the
+    // single-segment name always did, so `..` is refused at any depth and an
+    // empty segment (from `a//b` or a trailing `/`) is refused too.
+    //
+    // The default namespace is the exception, and not a stylistic one: it is
+    // the one namespace with no folder of its own, so `mystructure:a/b` would
+    // write `structures/a/b`, which `collect` reads back as `a:b`. A name that
+    // cannot round-trip is refused rather than written under a different id.
+    if namespace == key::DEFAULT_NAMESPACE && name.contains('/') {
+        return Err(CoreError::BadStructureName {
+            name: id.to_string(),
+            reason: "the mystructure namespace has no folder of its own, so a \
+                     nested name there would be read back under a different \
+                     namespace"
+                .to_string(),
+        });
+    }
+    let segments: Vec<&str> = name.split('/').collect();
+    for segment in &segments {
+        safe_segment(segment, id)?;
+    }
 
     let root = dir(pack_dir);
-    let file = format!("{name}.{EXTENSION}");
-    Ok(if namespace == key::DEFAULT_NAMESPACE {
-        root.join(file)
+    let mut path = if namespace == key::DEFAULT_NAMESPACE {
+        root
     } else {
-        root.join(namespace).join(file)
-    })
+        root.join(namespace)
+    };
+    let (file, parents) = segments.split_last().expect("split always yields one");
+    for parent in parents {
+        path.push(parent);
+    }
+    path.push(format!("{file}.{EXTENSION}"));
+    Ok(path)
 }
 
 /// Writes a structure into a pack, refusing an existing file unless forced.

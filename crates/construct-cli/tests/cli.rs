@@ -93,7 +93,7 @@ fn worlds_json_is_exactly_one_document_on_stdout() {
         .args([
             "worlds",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -119,7 +119,7 @@ fn warnings_go_to_stderr_and_never_pollute_json_stdout() {
         .args([
             "worlds",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -153,7 +153,7 @@ fn a_path_referenced_world_works_with_no_installations_at_all() {
 #[test]
 fn no_installation_found_exits_3_and_lists_probed_paths() {
     let out = bin()
-        .args(["worlds", "--com-mojang", "/nonexistent"])
+        .args(["worlds", "--path", "/nonexistent"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(3));
@@ -162,6 +162,140 @@ fn no_installation_found_exits_3_and_lists_probed_paths() {
         err.contains("/nonexistent"),
         "should name what it probed:\n{err}"
     );
+}
+
+/// A world folder with a fake `level.dat` — enough for enumeration, which only
+/// needs the file to exist. Tests that actually open the database use
+/// `fixture_world`.
+fn bare_world(parent: &std::path::Path, folder: &str, name: &str) -> std::path::PathBuf {
+    let dir = parent.join(folder);
+    std::fs::create_dir_all(dir.join("db")).unwrap();
+    std::fs::write(dir.join("level.dat"), b"x").unwrap();
+    std::fs::write(dir.join("levelname.txt"), name).unwrap();
+    dir
+}
+
+fn listed_worlds(out: &std::process::Output) -> Vec<serde_json::Value> {
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("stdout was not JSON: {e}\n{}", String::from_utf8_lossy(&out.stdout)));
+    v["worlds"].as_array().cloned().unwrap_or_default()
+}
+
+#[test]
+fn path_lists_a_bare_world_folder_under_the_path_installation() {
+    // A save folder outside any com.mojang is a first-class world: `--path`
+    // takes it directly rather than requiring a root that contains it.
+    let tmp = tempfile::tempdir().unwrap();
+    let world = bare_world(tmp.path(), "Standalone", "My Save");
+
+    let out = bin()
+        .args(["worlds", "--json", "--path", world.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let worlds = listed_worlds(&out);
+    assert_eq!(worlds.len(), 1, "{worlds:?}");
+    assert_eq!(worlds[0]["installation"], "path");
+    assert_eq!(worlds[0]["folder"], "Standalone");
+    assert_eq!(worlds[0]["display_name"], "My Save");
+    assert_eq!(worlds[0]["qualified"], "path/Standalone");
+}
+
+#[test]
+fn path_takes_a_com_mojang_root_and_a_world_folder_in_one_invocation() {
+    // The whole point of the rename: one flag, either kind of directory, mixed
+    // freely and repeated.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("games/com.mojang");
+    bare_world(&root.join("minecraftWorlds"), "InRoot", "In Root");
+    let loose = bare_world(tmp.path(), "Loose", "Loose");
+
+    let out = bin()
+        .args([
+            "worlds",
+            "--json",
+            "--path",
+            root.to_str().unwrap(),
+            "--path",
+            loose.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let worlds = listed_worlds(&out);
+    let mut qualified: Vec<&str> = worlds
+        .iter()
+        .map(|w| w["qualified"].as_str().unwrap())
+        .collect();
+    qualified.sort_unstable();
+    assert_eq!(qualified, ["flag1/InRoot", "path/Loose"]);
+}
+
+#[test]
+fn a_world_under_a_given_root_is_not_listed_twice_when_also_named_directly() {
+    // Naming both the root and one of its worlds is an easy thing to type. The
+    // world keeps the identity discovery gave it — `flag1/`, not `path/`.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("games/com.mojang");
+    let world = bare_world(&root.join("minecraftWorlds"), "Both", "Both");
+
+    let out = bin()
+        .args([
+            "worlds",
+            "--json",
+            "--path",
+            root.to_str().unwrap(),
+            "--path",
+            world.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    let worlds = listed_worlds(&out);
+    assert_eq!(worlds.len(), 1, "{worlds:?}");
+    assert_eq!(worlds[0]["qualified"], "flag1/Both");
+}
+
+#[test]
+fn a_world_folder_given_by_path_is_then_addressable_by_name() {
+    // Folding the world into discovery is what makes this work: the reference
+    // `test_level` is a folder name, resolved against the discovered set, not a
+    // filesystem path.
+    let (tmp, world) = fixture_world();
+    let out = bin_isolated(tmp.path())
+        .args([
+            "structures",
+            "--world",
+            "test_level",
+            "--path",
+            world.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let names: Vec<&str> = v["structures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"house"), "{names:?}");
 }
 
 #[test]
@@ -266,6 +400,71 @@ fn fixture_world() -> (tempfile::TempDir, std::path::PathBuf) {
 }
 
 #[test]
+fn a_world_is_addressable_by_a_level_name_containing_slashes() {
+    // Minecraft's default level name embeds a date — "Advanced Automation
+    // 10/13/21 23:33:18". Those slashes are part of the name, not the
+    // `<installation>/<account>/<world>` separators, so the name must resolve
+    // rather than being read as segments or rejected as malformed.
+    let (tmp, world) = fixture_world();
+    let level_name = "Advanced Automation 10/13/21 23:33:18";
+    std::fs::write(world.join("levelname.txt"), level_name).unwrap();
+
+    let out = bin_isolated(tmp.path())
+        .args([
+            "structures",
+            "--world",
+            level_name,
+            "--path",
+            world.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "a level name with slashes should resolve; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let names: Vec<&str> = v["structures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"house"), "{names:?}");
+}
+
+#[test]
+fn the_folder_name_still_resolves_a_world_with_a_slashed_level_name() {
+    // The reported bug had the folder name working and the level name failing.
+    // Fixing the level name must not cost the folder name.
+    let (tmp, world) = fixture_world();
+    std::fs::write(
+        world.join("levelname.txt"),
+        "Advanced Automation 10/13/21 23:33:18",
+    )
+    .unwrap();
+
+    let out = bin_isolated(tmp.path())
+        .args([
+            "structures",
+            "--world",
+            "test_level",
+            "--path",
+            world.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn structures_by_path_shows_structures_with_their_source() {
     let (_tmp, world) = fixture_world();
     let out = bin()
@@ -281,8 +480,8 @@ fn structures_by_path_shows_structures_with_their_source() {
     assert!(text.contains("house"), "{text}");
     assert!(text.contains("barn"), "{text}");
     assert!(
-        text.contains("world"),
-        "source column should say world:\n{text}"
+        text.contains("world-db"),
+        "source column should say world-db:\n{text}"
     );
 }
 
@@ -310,12 +509,12 @@ fn structures_json_carries_schema_and_entries() {
 
 #[test]
 fn structures_source_pack_with_no_reachable_construct_is_not_found() {
-    // Superseded by stage 2: `--source pack` used to just filter to an empty
+    // Superseded by stage 2: `--source world-pack` used to just filter to an empty
     // list, since nothing populated Source::Pack yet. Now that it does, an
-    // explicit `--source pack` with no reachable Construct is the thing the
+    // explicit `--source world-pack` with no reachable Construct is the thing the
     // brief calls out explicitly: "then the user asked for exactly the thing
     // that is not there" — so it errors rather than silently returning empty.
-    // (This world is path-referenced and no `--com-mojang` is given, so there
+    // (This world is path-referenced and no `--path` is given, so there
     // is no installation to search either — a stronger case for "not there"
     // than a merely-uninstalled Construct.)
     let (_tmp, world) = fixture_world();
@@ -325,7 +524,7 @@ fn structures_source_pack_with_no_reachable_construct_is_not_found() {
             "--world",
             world.to_str().unwrap(),
             "--source",
-            "pack",
+            "world-pack",
             "--json",
         ])
         .output()
@@ -689,7 +888,7 @@ fn a_merge_target_without_an_extension_gets_mcstructure_too() {
             "--merge",
             "-o",
             dir.path().join("both").to_str().unwrap(),
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -888,6 +1087,11 @@ fn world_with_construct(structures: &[(&str, &[u8])]) -> tempfile::TempDir {
 
 #[test]
 fn structures_shows_pack_structures_without_touching_the_world_database() {
+    // This fixture's world has no pack of its own, so the shared copy of
+    // Construct is what serves it — and `--source shared-pack` is legal under
+    // `--world` precisely because a world listing does show those rows. Only
+    // `export` and `delete` refuse the pair, since for them `--world` is the
+    // grammar's way of staying out of the shared copy.
     let root = world_with_construct(&[("bomber", b"12345")]);
     let out = bin()
         .args([
@@ -895,9 +1099,9 @@ fn structures_shows_pack_structures_without_touching_the_world_database() {
             "--world",
             "Test",
             "--source",
-            "pack",
+            "shared-pack",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -909,7 +1113,7 @@ fn structures_shows_pack_structures_without_touching_the_world_database() {
     );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["structures"][0]["name"], "bomber");
-    assert_eq!(v["structures"][0]["source"], "pack");
+    assert_eq!(v["structures"][0]["source"], "shared-pack");
     assert_eq!(v["structures"][0]["size_bytes"], 5);
 }
 
@@ -926,8 +1130,8 @@ fn source_pack_on_a_machine_without_construct_is_not_found() {
             "--world",
             "Test",
             "--source",
-            "pack",
-            "--com-mojang",
+            "world-pack",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -937,13 +1141,13 @@ fn source_pack_on_a_machine_without_construct_is_not_found() {
 }
 
 /// Like `fixture_world_with_extra_structures`, but extracts the real-leveldb
-/// fixture world under a `--com-mojang` root's `minecraftWorlds/`, and
+/// fixture world under a `--path` root's `minecraftWorlds/`, and
 /// installs Construct beside it. This is what `structures` needs to see a name
 /// collision between sources: `discovery::installation::for_world` looks an
 /// installation up by name, and a bare-path reference (as used by
 /// `fixture_world`) always carries the synthetic installation name `"path"`,
 /// which never matches a real installation — so a path-referenced world can
-/// never reach `pack::for_world`. Routing through `--com-mojang` instead gives
+/// never reach `pack::for_world`. Routing through `--path` instead gives
 /// the world a real installation name and makes the pack reachable.
 fn fixture_world_with_construct(
     extra_world_structures: &[(&str, &[u8])],
@@ -1053,7 +1257,7 @@ fn add_destination_world(worlds_dir: &std::path::Path, folder: &str) -> std::pat
 
 #[test]
 fn copy_reads_from_a_real_world_database_into_the_destinations_pack() {
-    // The three `copy` tests above all pass `--source pack`, because
+    // The three `copy` tests above all pass `--source world-pack`, because
     // `world_with_construct`'s stub `db/` cannot be opened as real LevelDB
     // (see the comments there). None of them exercises `copy`'s primary use:
     // reading a structure out of an actual world database. This test does,
@@ -1070,7 +1274,7 @@ fn copy_reads_from_a_real_world_database_into_the_destinations_pack() {
             "RealDestination",
             "house",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1115,7 +1319,7 @@ fn a_name_in_both_world_and_pack_survives_unshadowed_in_the_structures_listing()
             "--world",
             world_name,
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1141,12 +1345,15 @@ fn a_name_in_both_world_and_pack_survives_unshadowed_in_the_structures_listing()
         .iter()
         .map(|e| e["source"].as_str().unwrap())
         .collect();
-    assert_eq!(sources, ["pack", "world"].into_iter().collect());
+    // This fixture installs Construct in the shared root, so the pack copy is
+    // a `shared-pack` row: one axis now says both "a pack, not the database"
+    // and "which pack", where it used to take two fields to say it.
+    assert_eq!(sources, ["shared-pack", "world-db"].into_iter().collect());
 }
 
 #[test]
 fn copy_writes_bytes_into_the_destination_worlds_own_construct() {
-    // Two worlds under one root, so one --com-mojang covers both. `Other`
+    // Two worlds under one root, so one --path covers both. `Other`
     // gets its own copy of Construct (see
     // copy_refuses_an_existing_target_unless_forced below) so the write
     // lands somewhere distinct from the source: a shared-copy version of
@@ -1168,7 +1375,7 @@ fn copy_writes_bytes_into_the_destination_worlds_own_construct() {
     )
     .unwrap();
 
-    // `--source pack` is required here, not merely convenient: `world_with_construct`'s
+    // `--source shared-pack` is required here, not merely convenient: `world_with_construct`'s
     // `db/` is an empty stub directory, never a real LevelDB, and this backend's FFI
     // hardcodes `create_if_missing = false` (confirmed against
     // third_party/checkouts/leveldb-sys/ffi/ffi.cpp and db_impl.cc) — so opening it
@@ -1182,9 +1389,9 @@ fn copy_writes_bytes_into_the_destination_worlds_own_construct() {
             "Other",
             "barn",
             "--source",
-            "pack",
+            "shared-pack",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1197,7 +1404,7 @@ fn copy_writes_bytes_into_the_destination_worlds_own_construct() {
 
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["written"][0]["name"], "barn");
-    // Qualified, not display_name: `--com-mojang` roots with no config name
+    // Qualified, not display_name: `--path` roots with no config name
     // are numbered `flag1`, `flag2`, ... (see `main.rs`), and both worlds sit
     // under the one root this test passes, with no account segment (a single
     // world root carries none). §6 supports cross-root copies, where two
@@ -1205,10 +1412,11 @@ fn copy_writes_bytes_into_the_destination_worlds_own_construct() {
     // is what disambiguates that case, so the payload must carry it.
     assert_eq!(v["from"], "flag1/Test");
     assert_eq!(v["to"], "flag1/Other");
-    // Which copy took the write, in the payload as well as in the printed
-    // line — `import` has reported this since stage 2 and `copy` writes into
-    // the same two places.
-    assert_eq!(v["scope"], "world");
+    // Which pack took the write, in the payload as well as in the printed
+    // line — `import` reports it the same way and `copy` writes into the same
+    // two places. Spelled as a `--source` value, so the answer names a place
+    // the reader can point the next command at.
+    assert_eq!(v["target"], "world-pack");
 
     let written = bp.join("structures/barn.mcstructure");
     assert_eq!(std::fs::read(&written).unwrap(), b"barn-bytes");
@@ -1245,8 +1453,11 @@ fn copy_creates_the_destination_worlds_structures_pack() {
     std::fs::write(other.join("levelname.txt"), "Other").unwrap();
     std::fs::write(other.join("level.dat"), b"x").unwrap();
 
-    // `--source pack` for the same reason as the test above: this fixture's
-    // `db/` is a stub directory, not a real LevelDB.
+    // A pack `--source` for the same reason as the test above: this fixture's
+    // `db/` is a stub directory, not a real LevelDB. `world-pack` and not
+    // `shared-pack` because `Test` was just given its own copy of Construct
+    // above, which shadows the shared one — the distinction the merged flag
+    // now carries on its own.
     let out = bin()
         .args([
             "copy",
@@ -1254,8 +1465,8 @@ fn copy_creates_the_destination_worlds_structures_pack() {
             "Other",
             "barn",
             "--source",
-            "pack",
-            "--com-mojang",
+            "world-pack",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1295,7 +1506,7 @@ fn copy_refuses_an_existing_target_unless_forced() {
     .unwrap();
     std::fs::write(bp.join("structures/barn.mcstructure"), b"theirs").unwrap();
 
-    // `--source pack`: see the comment in
+    // `--source shared-pack`: see the comment in
     // copy_writes_bytes_into_the_destination_worlds_own_construct above —
     // `world_with_construct`'s `db/` cannot be opened as a real LevelDB.
     let args = [
@@ -1304,8 +1515,8 @@ fn copy_refuses_an_existing_target_unless_forced() {
         "Other",
         "barn",
         "--source",
-        "pack",
-        "--com-mojang",
+        "shared-pack",
+        "--path",
     ];
     let out = bin().args(args).arg(root.path()).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -1333,7 +1544,7 @@ fn copy_of_a_name_that_is_not_there_suggests_near_matches() {
     let other = root.path().join("minecraftWorlds/Other");
     std::fs::create_dir_all(other.join("db")).unwrap();
     std::fs::write(other.join("level.dat"), b"x").unwrap();
-    // `--source pack`: see the comment in
+    // `--source shared-pack`: see the comment in
     // copy_writes_bytes_into_the_destination_worlds_own_construct above —
     // `world_with_construct`'s `db/` cannot be opened as a real LevelDB.
     let out = bin()
@@ -1343,8 +1554,8 @@ fn copy_of_a_name_that_is_not_there_suggests_near_matches() {
             "Other",
             "bar",
             "--source",
-            "pack",
-            "--com-mojang",
+            "shared-pack",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1379,7 +1590,7 @@ fn export_of_a_name_in_both_world_and_pack_is_refused_naming_both_sources() {
             "--world",
             world_name,
             "collide",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1387,10 +1598,19 @@ fn export_of_a_name_in_both_world_and_pack_is_refused_naming_both_sources() {
     assert_eq!(out.status.code(), Some(2));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        err.contains("world"),
-        "should name the world source:\n{err}"
+        err.contains("world-db"),
+        "should name the database source:\n{err}"
     );
-    assert!(err.contains("pack"), "should name the pack source:\n{err}");
+    assert!(
+        err.contains("world-pack"),
+        "should name the pack source:\n{err}"
+    );
+    // One axis, so the hint is the matched places read back as flag values —
+    // there is no second flag left to send the user to.
+    assert!(
+        err.contains("--source world-db") && err.contains("--source world-pack"),
+        "the hint must offer each matched place as a --source value:\n{err}"
+    );
 }
 
 #[test]
@@ -1406,7 +1626,7 @@ fn import_derives_a_name_from_the_file_stem_and_reports_it() {
             "--world",
             "Test",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1448,7 +1668,7 @@ fn import_accepts_a_name_with_capitals() {
             "--world",
             "Test",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1479,7 +1699,7 @@ fn import_refuses_an_unusable_name_instead_of_mangling_it() {
             src.to_str().unwrap(),
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1510,7 +1730,7 @@ fn import_refuses_to_overwrite_without_force() {
                 "house",
                 "--world",
                 "Test",
-                "--com-mojang",
+                "--path",
                 root.path().to_str().unwrap(),
             ])
             .output()
@@ -1526,7 +1746,7 @@ fn import_refuses_to_overwrite_without_force() {
         src.to_str().unwrap(),
         "--world",
         "Test",
-        "--com-mojang",
+        "--path",
         root.path().to_str().unwrap(),
     ];
 
@@ -1556,7 +1776,7 @@ fn import_says_when_it_wrote_into_the_shared_construct() {
         .args([
             "import",
             src.to_str().unwrap(),
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1599,7 +1819,7 @@ fn import_says_when_it_wrote_into_a_worlds_own_construct() {
             src.to_str().unwrap(),
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1627,7 +1847,7 @@ fn import_says_the_world_must_be_reloaded() {
             src.to_str().unwrap(),
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1652,7 +1872,7 @@ fn import_without_construct_points_at_install() {
             src.to_str().unwrap(),
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1673,7 +1893,7 @@ fn delete_unlinks_a_pack_structure() {
         .args([
             "delete",
             "bomber",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1698,7 +1918,7 @@ fn delete_says_when_it_removed_from_the_shared_construct() {
             "delete",
             "bomber",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1709,7 +1929,8 @@ fn delete_says_when_it_removed_from_the_shared_construct() {
         String::from_utf8_lossy(&out.stderr)
     );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["scope"], "shared");
+    assert!(v["world"].is_null(), "{v}");
+    assert_eq!(v["deleted"][0]["source"], "shared-pack");
 
     // And in the printed output, which is where a person reads it.
     let root = world_with_construct(&[("bomber", b"x")]);
@@ -1717,7 +1938,7 @@ fn delete_says_when_it_removed_from_the_shared_construct() {
         .args([
             "delete",
             "bomber",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1754,10 +1975,10 @@ fn delete_says_when_it_removed_from_a_worlds_own_construct() {
             "delete",
             "bomber",
             "--source",
-            "pack",
+            "world-pack",
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1807,7 +2028,7 @@ fn structures_with_no_world_shows_only_the_shared_copy() {
                 src.to_str().unwrap(),
                 "--world",
                 "Test",
-                "--com-mojang",
+                "--path",
                 root.path().to_str().unwrap(),
             ])
             .output()
@@ -1820,7 +2041,7 @@ fn structures_with_no_world_shows_only_the_shared_copy() {
         .args([
             "structures",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1840,26 +2061,33 @@ fn structures_with_no_world_shows_only_the_shared_copy() {
         .map(|r| r["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, vec!["shared_prefab"], "{v}");
-    assert_eq!(v["structures"][0]["scope"], "shared");
+    assert_eq!(v["structures"][0]["source"], "shared-pack");
 }
 
 #[test]
-fn structures_with_no_world_refuses_source_world() {
-    // A world's structures live in a world's database, and none was named.
+fn structures_with_no_world_refuses_the_sources_that_need_one() {
+    // Both `world-db` and `world-pack` name a place inside a world, and none
+    // was named. `shared-pack` is the one value a bare `structures` can serve,
+    // and it is what the command already does by default.
     let root = world_with_construct(&[]);
-    let out = bin()
-        .args([
-            "structures",
-            "--source",
-            "world",
-            "--com-mojang",
-            root.path().to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("--source world"), "stderr:\n{stderr}");
+    for source in ["world-db", "world-pack"] {
+        let out = bin()
+            .args([
+                "structures",
+                "--source",
+                source,
+                "--path",
+                root.path().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "--source {source}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(&format!("--source {source} needs a world")),
+            "stderr:\n{stderr}"
+        );
+    }
 }
 
 #[test]
@@ -1867,7 +2095,7 @@ fn structures_with_no_world_and_no_construct_points_at_install() {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
     let out = bin()
-        .args(["structures", "--com-mojang", root.path().to_str().unwrap()])
+        .args(["structures", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(3));
@@ -1878,8 +2106,14 @@ fn structures_with_no_world_and_no_construct_points_at_install() {
 fn structures_says_which_pack_each_structure_is_in() {
     // The question this whole split exists to answer: is this structure mine
     // alone, or does every world using the shared copy have it? Both packs
-    // serve this world, so both appear, distinguished.
-    let root = world_with_construct(&[("shared_prefab", b"x")]);
+    // serve this world, so both appear in one listing, distinguished by the
+    // single SOURCE column — `world-pack` against `shared-pack`, where it
+    // used to take a `source` and a `scope` together to say the same thing.
+    //
+    // The real-leveldb fixture, so no `--source` is needed to keep the
+    // command off an unopenable stub `db/`: the point here is the whole view,
+    // and narrowing it to one pack would defeat that.
+    let (root, world) = fixture_world_with_construct(&[], &[("shared_prefab", b"x")]);
     let src = root.path().join("mine.mcstructure");
     std::fs::write(&src, b"y").unwrap();
     assert!(
@@ -1888,8 +2122,8 @@ fn structures_says_which_pack_each_structure_is_in() {
                 "import",
                 src.to_str().unwrap(),
                 "--world",
-                "Test",
-                "--com-mojang",
+                world,
+                "--path",
                 root.path().to_str().unwrap(),
             ])
             .output()
@@ -1902,10 +2136,8 @@ fn structures_says_which_pack_each_structure_is_in() {
         .args([
             "structures",
             "--world",
-            "Test",
-            "--source",
-            "pack",
-            "--com-mojang",
+            world,
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -1913,12 +2145,12 @@ fn structures_says_which_pack_each_structure_is_in() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         text.lines()
-            .any(|l| l.starts_with("mine") && l.contains("pack:world")),
+            .any(|l| l.starts_with("mine") && l.contains("world-pack")),
         "stdout:\n{text}"
     );
     assert!(
         text.lines()
-            .any(|l| l.starts_with("shared_prefab") && l.contains("pack:shared")),
+            .any(|l| l.starts_with("shared_prefab") && l.contains("shared-pack")),
         "stdout:\n{text}"
     );
 }
@@ -1940,7 +2172,7 @@ fn a_second_import_uses_the_structures_pack_the_first_one_created() {
                 name,
                 "--world",
                 "Test",
-                "--com-mojang",
+                "--path",
                 root.path().to_str().unwrap(),
             ])
             .output()
@@ -1985,7 +2217,7 @@ fn a_name_in_two_packs_serving_one_world_warns() {
             src.to_str().unwrap(),
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2018,7 +2250,7 @@ fn install_world_gives_the_world_its_own_structures_pack() {
             "install",
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2067,7 +2299,7 @@ fn install_world_gives_no_structures_pack_to_a_world_that_has_its_own_construct(
             "install",
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2097,7 +2329,7 @@ fn world_seeing_one_name_in_both_packs() -> tempfile::TempDir {
                 src.to_str().unwrap(),
                 "--world",
                 "Test",
-                "--com-mojang",
+                "--path",
                 root.path().to_str().unwrap(),
             ])
             .output()
@@ -2124,7 +2356,7 @@ fn delete_with_a_world_removes_that_worlds_copy_and_leaves_the_shared_one() {
     // --world means this world, and the shared copy serves worlds this command
     // never named, so it must come through untouched.
     let root = world_seeing_one_name_in_both_packs();
-    // --source pack because this fixture's `db/` is a stub that cannot be
+    // --source world-pack because this fixture's `db/` is a stub that cannot be
     // opened; the property under test is pack scoping, not the database.
     let out = bin_isolated(root.path())
         .args([
@@ -2133,8 +2365,8 @@ fn delete_with_a_world_removes_that_worlds_copy_and_leaves_the_shared_one() {
             "--world",
             "Test",
             "--source",
-            "pack",
-            "--com-mojang",
+            "world-pack",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2161,7 +2393,7 @@ fn delete_without_a_world_removes_the_shared_copy_and_leaves_the_worlds() {
         .args([
             "delete",
             "house",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2203,8 +2435,8 @@ fn delete_with_a_world_cannot_reach_a_structure_only_in_the_shared_copy() {
             "--world",
             "Test",
             "--source",
-            "pack",
-            "--com-mojang",
+            "world-pack",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2217,13 +2449,14 @@ fn delete_with_a_world_cannot_reach_a_structure_only_in_the_shared_copy() {
 }
 
 #[test]
-fn delete_refuses_the_pack_flag() {
-    // --world is the scope selector now, and --pack is a second overlapping one
-    // that can contradict it outright (`--world W --pack shared` asks to delete
-    // from the copy that --world exists to protect). Refusing beats guessing,
-    // and since --pack is declared only on the commands that read it, clap is
-    // the one doing the refusing.
+fn delete_refuses_the_pack_flag_and_the_shared_source_under_a_world() {
+    // `--pack` is gone: `--source` names the pack directly now, so the two
+    // overlapping selectors became one. What survives is the contradiction
+    // they used to make possible — `--world W` with the shared copy named —
+    // and `delete` refuses it rather than guessing, because the shared copy is
+    // exactly what `--world` exists to protect.
     let root = world_seeing_one_name_in_both_packs();
+
     let out = bin_isolated(root.path())
         .args([
             "delete",
@@ -2232,20 +2465,38 @@ fn delete_refuses_the_pack_flag() {
             "Test",
             "--pack",
             "shared",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
         .unwrap();
-
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("unexpected argument '--pack'"),
         "stderr:\n{stderr}"
     );
-    assert!(stderr.contains("--world"), "it must point at the replacement");
-    // Refused means nothing was touched.
+
+    let out = bin_isolated(root.path())
+        .args([
+            "delete",
+            "house",
+            "--world",
+            "Test",
+            "--source",
+            "shared-pack",
+            "--path",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--source shared-pack cannot be combined with --world"),
+        "stderr:\n{stderr}"
+    );
+    // Refused means nothing was unlinked, in either copy.
     assert!(shared_house(root.path()).is_file());
     assert!(world_house(root.path()).is_file());
 }
@@ -2261,7 +2512,7 @@ fn a_read_only_command_refuses_the_force_flag() {
         .args([
             "worlds",
             "--force",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2276,8 +2527,8 @@ fn a_read_only_command_refuses_the_force_flag() {
 }
 
 #[test]
-fn add_refuses_the_com_mojang_flag() {
-    // --com-mojang widens the search, and `add` does not search: it writes the
+fn add_refuses_the_path_flag() {
+    // --path widens the search, and `add` does not search: it writes the
     // path it was given into the config file. Declared only on the commands
     // that run discovery, so clap refuses it rather than letting it look like
     // a second way to name the root being added.
@@ -2286,7 +2537,7 @@ fn add_refuses_the_com_mojang_flag() {
         .args([
             "add",
             dir.path().to_str().unwrap(),
-            "--com-mojang",
+            "--path",
             dir.path().to_str().unwrap(),
         ])
         .output()
@@ -2295,7 +2546,7 @@ fn add_refuses_the_com_mojang_flag() {
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("unexpected argument '--com-mojang'"),
+        stderr.contains("unexpected argument '--path'"),
         "stderr:\n{stderr}"
     );
 }
@@ -2312,7 +2563,7 @@ fn export_without_a_world_writes_the_shared_copy() {
         .args([
             "export",
             "house",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2337,7 +2588,7 @@ fn export_with_a_world_writes_that_worlds_copy_not_the_shared_one() {
     // has to.
     let root = world_seeing_one_name_in_both_packs();
     let dir = tempfile::tempdir().unwrap();
-    // --source pack because this fixture's `db/` is a stub that cannot be
+    // --source world-pack because this fixture's `db/` is a stub that cannot be
     // opened; the property under test is pack scoping, not the database.
     let out = bin_isolated(root.path())
         .current_dir(dir.path())
@@ -2347,8 +2598,8 @@ fn export_with_a_world_writes_that_worlds_copy_not_the_shared_one() {
             "--world",
             "Test",
             "--source",
-            "pack",
-            "--com-mojang",
+            "world-pack",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2382,8 +2633,8 @@ fn export_with_a_world_cannot_reach_a_structure_only_in_the_shared_copy() {
             "--world",
             "Test",
             "--source",
-            "pack",
-            "--com-mojang",
+            "world-pack",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2402,13 +2653,14 @@ fn export_with_a_world_cannot_reach_a_structure_only_in_the_shared_copy() {
 }
 
 #[test]
-fn export_refuses_the_pack_flag() {
-    // --world is the scope selector now, and --pack was the second, overlapping
-    // one. `--world W --pack shared` asks for the copy --world just excluded,
-    // so the flag is gone rather than left to contradict itself — and since
-    // --pack is declared only on the commands that read it, clap refuses it.
+fn export_refuses_the_pack_flag_and_the_shared_source_under_a_world() {
+    // Same story as `delete`: `--pack` folded into `--source`, and the
+    // contradiction it enabled is now refused on the one axis that is left.
+    // `--world W --source shared-pack` asks to read the copy `--world` just
+    // excluded, so nothing is written and nothing is guessed.
     let root = world_seeing_one_name_in_both_packs();
     let dir = tempfile::tempdir().unwrap();
+
     let out = bin()
         .current_dir(dir.path())
         .args([
@@ -2416,16 +2668,36 @@ fn export_refuses_the_pack_flag() {
             "house",
             "--pack",
             "shared",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
         .unwrap();
-
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("unexpected argument '--pack'"),
+        "stderr:\n{stderr}"
+    );
+
+    let out = bin()
+        .current_dir(dir.path())
+        .args([
+            "export",
+            "house",
+            "--world",
+            "Test",
+            "--source",
+            "shared-pack",
+            "--path",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--source shared-pack cannot be combined with --world"),
         "stderr:\n{stderr}"
     );
     // Refused means nothing was written.
@@ -2433,38 +2705,45 @@ fn export_refuses_the_pack_flag() {
 }
 
 #[test]
-fn export_with_no_world_refuses_source_world() {
-    // The same refusal `structures` and `delete` make: a world's structures live in a
-    // world's database, and none was named.
+fn export_with_no_world_refuses_the_sources_that_need_one() {
+    // The same refusal `structures` and `delete` make: a world's structures
+    // live inside a world, and none was named.
     let root = world_with_construct(&[("bomber", b"x")]);
     let dir = tempfile::tempdir().unwrap();
-    let out = bin()
-        .current_dir(dir.path())
-        .args([
-            "export",
-            "bomber",
-            "--source",
-            "world",
-            "--com-mojang",
-            root.path().to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
+    for source in ["world-db", "world-pack"] {
+        let out = bin()
+            .current_dir(dir.path())
+            .args([
+                "export",
+                "bomber",
+                "--source",
+                source,
+                "--path",
+                root.path().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
 
-    assert_eq!(out.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("--source world"), "stderr:\n{stderr}");
-    assert!(!dir.path().join("bomber.mcstructure").exists());
+        assert_eq!(out.status.code(), Some(2), "--source {source}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(&format!("--source {source} needs a world")),
+            "stderr:\n{stderr}"
+        );
+        assert!(!dir.path().join("bomber.mcstructure").exists());
+    }
 }
 
 #[test]
-fn structures_refuses_the_pack_flag() {
-    // --world is the scope selector here too. A listing under --world is a
-    // world's whole view, both packs included, and the SOURCE column already
-    // says which pack each row is in — so --pack narrowed a listing that was
-    // never ambiguous to begin with. Declared only on the command that still
-    // reads it, so clap does the refusing.
+fn structures_takes_a_shared_source_under_a_world_where_export_and_delete_refuse_it() {
+    // `--pack` is gone here too, but the contradiction `export` and `delete`
+    // refuse is not one for a listing: a world's view genuinely *contains* the
+    // shared copy's rows when that is what the world runs, so narrowing to
+    // them answers a real question. It is also the only way to list a world's
+    // structures without opening its database, which a read must avoid — so
+    // refusing it here would cost a capability rather than prevent a mistake.
     let root = world_seeing_one_name_in_both_packs();
+
     let out = bin()
         .args([
             "structures",
@@ -2472,36 +2751,27 @@ fn structures_refuses_the_pack_flag() {
             "Test",
             "--pack",
             "shared",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
         .unwrap();
-
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("unexpected argument '--pack'"),
         "stderr:\n{stderr}"
     );
-}
 
-#[test]
-fn a_world_listing_shows_both_packs_it_sees() {
-    // What --pack used to narrow: one name in both packs serving this world
-    // comes back as two rows, distinguished by scope, rather than one.
-    let root = world_seeing_one_name_in_both_packs();
     let out = bin()
         .args([
             "structures",
             "--world",
             "Test",
-            // This fixture's `db/` is a stub directory, not a real LevelDB —
-            // see the note on `world_with_construct`.
             "--source",
-            "pack",
+            "shared-pack",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2511,18 +2781,60 @@ fn a_world_listing_shows_both_packs_it_sees() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let scopes: Vec<&str> = v["structures"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|e| e["name"] == "house")
-        .map(|e| e["scope"].as_str().unwrap())
-        .collect();
-    assert_eq!(scopes.len(), 2, "{v}");
-    assert!(scopes.contains(&"world"), "{v}");
-    assert!(scopes.contains(&"shared"), "{v}");
+    let rows = v["structures"].as_array().unwrap();
+    assert!(!rows.is_empty(), "{v}");
+    assert!(
+        rows.iter().all(|e| e["source"] == "shared-pack"),
+        "every row must be from the pack that was named: {v}"
+    );
+}
+
+#[test]
+fn a_world_listing_shows_both_packs_it_sees() {
+    // What `--pack` used to narrow, `--source` now does on its own: one name
+    // in both packs serving this world is two rows, and each is reachable by
+    // naming its pack. That is the whole reason the two flags collapsed into
+    // one — `--source world-pack` could not tell these two apart, and needed
+    // a second flag to finish the sentence.
+    //
+    // Two runs rather than one because this fixture's `db/` is a stub
+    // directory (see the note on `world_with_construct`), so every run has to
+    // name a pack source to stay off it.
+    let root = world_seeing_one_name_in_both_packs();
+    let rows = |source: &str| -> serde_json::Value {
+        let out = bin()
+            .args([
+                "structures",
+                "--world",
+                "Test",
+                "--source",
+                source,
+                "--json",
+                "--path",
+                root.path().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+
+    for source in ["world-pack", "shared-pack"] {
+        let v = rows(source);
+        let houses: Vec<&serde_json::Value> = v["structures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["name"] == "house")
+            .collect();
+        assert_eq!(houses.len(), 1, "--source {source}: {v}");
+        assert_eq!(houses[0]["source"], source, "{v}");
+    }
 }
 
 /// Backdates every file directly inside a world's `db/`, so the in-use
@@ -2578,7 +2890,7 @@ fn delete_removes_a_structure_from_a_world_database() {
             "house",
             "--world",
             world,
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2596,7 +2908,7 @@ fn delete_removes_a_structure_from_a_world_database() {
             "--world",
             world,
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2635,7 +2947,7 @@ fn delete_removes_the_database_copy_and_the_pack_copy_together() {
             "--json",
             "--world",
             world,
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2652,8 +2964,8 @@ fn delete_removes_the_database_copy_and_the_pack_copy_together() {
     assert_eq!(rows.len(), 2, "one row per copy removed: {v}");
     // Two rows share a name, so `source` is the field that tells them apart.
     let sources: Vec<&str> = rows.iter().map(|r| r["source"].as_str().unwrap()).collect();
-    assert!(sources.contains(&"world"), "{v}");
-    assert!(sources.contains(&"pack"), "{v}");
+    assert!(sources.contains(&"world-db"), "{v}");
+    assert!(sources.contains(&"world-pack"), "{v}");
 }
 
 #[test]
@@ -2670,11 +2982,11 @@ fn delete_source_world_leaves_the_pack_copy_alone() {
             "delete",
             "house",
             "--source",
-            "world",
+            "world-db",
             "--json",
             "--world",
             world,
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2685,16 +2997,16 @@ fn delete_source_world_leaves_the_pack_copy_alone() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    assert!(pack_copy.is_file(), "--source world must not touch a pack");
+    assert!(pack_copy.is_file(), "--source world-db must not touch a pack");
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let rows = v["deleted"].as_array().unwrap();
     assert_eq!(rows.len(), 1, "{v}");
-    assert_eq!(rows[0]["source"], "world");
+    assert_eq!(rows[0]["source"], "world-db");
 }
 
 #[test]
 fn delete_source_pack_never_opens_the_world_database() {
-    // The property that made `delete --source pack` shippable in stage 2, and
+    // The property that made `delete --source world-pack` shippable in stage 2, and
     // it has to survive stage 4 giving the command a write path. Opening a
     // leveldb rewrites its file set, so an unchanged fingerprint is proof the
     // database was never opened at all.
@@ -2709,10 +3021,10 @@ fn delete_source_pack_never_opens_the_world_database() {
             "delete",
             "tower",
             "--source",
-            "pack",
+            "world-pack",
             "--world",
             world,
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2745,7 +3057,7 @@ fn delete_refuses_a_world_that_looks_in_use_and_writes_nothing() {
             "house",
             "--world",
             world,
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2795,7 +3107,7 @@ fn a_second_delete_straight_after_the_first_is_not_blocked_by_it() {
             "barn",
             "--world",
             world,
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2813,7 +3125,7 @@ fn a_second_delete_straight_after_the_first_is_not_blocked_by_it() {
             "house",
             "--world",
             world,
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2855,7 +3167,7 @@ fn a_mark_from_our_own_write_does_not_wave_through_a_live_world() {
                 "barn",
                 "--world",
                 world,
-                "--com-mojang",
+                "--path",
                 root.path().to_str().unwrap(),
             ])
             .output()
@@ -2873,7 +3185,7 @@ fn a_mark_from_our_own_write_does_not_wave_through_a_live_world() {
             "house",
             "--world",
             world,
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2903,7 +3215,7 @@ fn delete_of_a_batch_with_one_bad_name_removes_nothing_from_the_database() {
             "nope",
             "--world",
             world,
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2917,8 +3229,8 @@ fn delete_of_a_batch_with_one_bad_name_removes_nothing_from_the_database() {
             world,
             "--json",
             "--source",
-            "world",
-            "--com-mojang",
+            "world-db",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -2996,7 +3308,7 @@ fn enable_beta_apis_turns_it_on_and_backs_the_file_up_first() {
             "enable-beta-apis",
             "Test",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -3021,7 +3333,7 @@ fn enable_beta_apis_turns_it_on_and_backs_the_file_up_first() {
             "enable-beta-apis",
             "Test",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -3062,7 +3374,7 @@ fn a_no_op_flip_takes_no_backup() {
             "enable-beta-apis",
             "Test",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -3089,7 +3401,7 @@ fn enable_beta_apis_on_a_world_with_no_level_dat_fails_cleanly() {
         .args([
             "enable-beta-apis",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -3342,7 +3654,7 @@ fn install_reports_rate_limiting_with_the_token_guidance_when_github_returns_403
 
     let out = bin()
         .env("CONSTRUCT_GITHUB_API", &base)
-        .args(["install", "--com-mojang", root.path().to_str().unwrap()])
+        .args(["install", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
 
@@ -3367,7 +3679,7 @@ fn install_exits_3_and_lists_available_assets_when_the_version_is_missing() {
             "install",
             "--version",
             "9.9.9",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -3395,7 +3707,7 @@ fn install_places_both_packs_and_enables_them_in_a_world() {
             "--world",
             "Test",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -3435,7 +3747,7 @@ fn install_reports_an_unreachable_github_without_touching_anything() {
     let out = bin()
         // Port 1 refuses immediately on every platform we target.
         .env("CONSTRUCT_GITHUB_API", "http://127.0.0.1:1")
-        .args(["install", "--com-mojang", root.path().to_str().unwrap()])
+        .args(["install", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -3453,7 +3765,7 @@ fn install_names_both_byte_counts_when_the_download_is_truncated() {
 
     let out = bin()
         .env("CONSTRUCT_GITHUB_API", &base)
-        .args(["install", "--com-mojang", root.path().to_str().unwrap()])
+        .args(["install", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
 
@@ -3496,7 +3808,7 @@ fn install_verifies_the_addon_is_actually_construct_before_placing_anything() {
 
     let out = bin()
         .env("CONSTRUCT_GITHUB_API", &base)
-        .args(["install", "--com-mojang", root.path().to_str().unwrap()])
+        .args(["install", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     assert_ne!(out.status.code(), Some(0));
@@ -3538,7 +3850,7 @@ fn install_exits_5_with_the_packs_already_placed_when_level_dat_cannot_be_flippe
             "--world",
             "Test",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -3607,7 +3919,7 @@ fn install_exits_5_with_the_packs_already_placed_when_the_world_pack_list_is_mal
             "--world",
             "Test",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -3662,7 +3974,7 @@ fn install_moves_a_construct_found_in_behavior_packs_and_keeps_its_structures() 
     let (base, _server) = stub_github(build_mcaddon_bytes());
     let out = bin()
         .env("CONSTRUCT_GITHUB_API", &base)
-        .args(["install", "--com-mojang", root.path().to_str().unwrap()])
+        .args(["install", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     assert!(
@@ -3708,7 +4020,7 @@ fn install_merges_a_behavior_packs_copy_into_the_development_one_without_losing_
         .args([
             "install",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -3790,7 +4102,7 @@ fn install_world_warns_when_a_world_construct_copy_shadows_the_shared_copy() {
             "install",
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -3834,7 +4146,7 @@ fn status_reports_the_installed_version_and_which_worlds_have_it() {
         .args([
             "status",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -3877,7 +4189,7 @@ fn status_counts_the_structures_in_every_pack_it_can_see() {
                     name,
                     "--world",
                     "Test",
-                    "--com-mojang",
+                    "--path",
                     root.path().to_str().unwrap(),
                 ])
                 .output()
@@ -3892,7 +4204,7 @@ fn status_counts_the_structures_in_every_pack_it_can_see() {
         .args([
             "status",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -3906,17 +4218,17 @@ fn status_counts_the_structures_in_every_pack_it_can_see() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let shared = &v["structures"][0];
     assert_eq!(shared["world"], serde_json::Value::Null);
-    assert_eq!(shared["scope"], "shared");
+    assert_eq!(shared["source"], "shared-pack");
     assert_eq!(shared["count"], 1);
     let world = &v["structures"][1];
     assert_eq!(world["world"], "Test");
-    assert_eq!(world["scope"], "world");
+    assert_eq!(world["source"], "world-pack");
     assert_eq!(world["count"], 2);
 
     // And in the printed form, which is where a person reads it.
     let out = bin()
         .env("CONSTRUCT_GITHUB_API", "http://127.0.0.1:1")
-        .args(["status", "--com-mojang", root.path().to_str().unwrap()])
+        .args(["status", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
@@ -3933,7 +4245,7 @@ fn status_without_construct_points_at_install() {
     std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
     let out = bin()
         .env("CONSTRUCT_GITHUB_API", "http://127.0.0.1:1")
-        .args(["status", "--com-mojang", root.path().to_str().unwrap()])
+        .args(["status", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(3));
@@ -3949,7 +4261,7 @@ fn a_world_without_construct_enabled_is_not_listed() {
         .args([
             "status",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -3970,7 +4282,7 @@ fn status_reports_up_to_date_when_installed_matches_latest() {
         .args([
             "status",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -3993,7 +4305,7 @@ fn status_reports_up_to_date_when_installed_matches_latest() {
     let (base, _server) = stub_github_release("v1.2.0");
     let human = bin()
         .env("CONSTRUCT_GITHUB_API", &base)
-        .args(["status", "--com-mojang", root.path().to_str().unwrap()])
+        .args(["status", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&human.stdout);
@@ -4010,7 +4322,7 @@ fn status_reports_an_update_is_available() {
         .args([
             "status",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4027,7 +4339,7 @@ fn status_reports_an_update_is_available() {
     let (base, _server) = stub_github_release("v1.3.0");
     let human = bin()
         .env("CONSTRUCT_GITHUB_API", &base)
-        .args(["status", "--com-mojang", root.path().to_str().unwrap()])
+        .args(["status", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&human.stdout);
@@ -4111,7 +4423,7 @@ fn enable_beta_apis_refuses_with_exit_4_when_minecraft_has_the_world_open() {
         .args([
             "enable-beta-apis",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4154,7 +4466,7 @@ fn install_world_refuses_with_exit_4_before_it_downloads_anything() {
             "install",
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4183,7 +4495,7 @@ fn install_without_a_world_ignores_whether_any_world_is_in_use() {
 
     let out = bin()
         .env("CONSTRUCT_GITHUB_API", &base)
-        .args(["install", "--com-mojang", root.path().to_str().unwrap()])
+        .args(["install", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
 
@@ -4218,7 +4530,7 @@ fn a_flip_that_required_a_closed_world_does_not_ask_for_a_reload() {
         .args([
             "enable-beta-apis",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4254,7 +4566,7 @@ fn a_world_install_does_not_ask_for_a_reload() {
             "install",
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4283,7 +4595,7 @@ fn an_install_without_a_world_still_asks_for_a_reload() {
 
     let out = bin()
         .env("CONSTRUCT_GITHUB_API", &base)
-        .args(["install", "--com-mojang", root.path().to_str().unwrap()])
+        .args(["install", "--path", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     assert!(
@@ -4306,7 +4618,7 @@ fn merge_without_o_is_a_usage_error() {
             "a",
             "b",
             "--merge",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4338,11 +4650,11 @@ fn merge_writes_one_file_from_several_structures() {
             "--json",
             // `world_with_construct`'s `db/` is a stub directory, never a real
             // LevelDB (see `copy_writes_bytes_into_the_destination_worlds_own_construct`
-            // above) — resolving without `--source pack` would fail opening
+            // above) — resolving without `--source shared-pack` would fail opening
             // it before merge logic ever runs.
             "--source",
-            "pack",
-            "--com-mojang",
+            "shared-pack",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4388,8 +4700,8 @@ fn merge_refuses_an_existing_target_without_force() {
             "-o",
             target.to_str().unwrap(),
             "--source",
-            "pack",
-            "--com-mojang",
+            "shared-pack",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4417,8 +4729,8 @@ fn merge_reports_overlap_on_stderr_and_in_the_payload() {
             target.to_str().unwrap(),
             "--json",
             "--source",
-            "pack",
-            "--com-mojang",
+            "shared-pack",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4466,8 +4778,8 @@ fn merge_with_on_overlap_error_exits_1_and_writes_nothing() {
             "-o",
             target.to_str().unwrap(),
             "--source",
-            "pack",
-            "--com-mojang",
+            "shared-pack",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4494,8 +4806,8 @@ fn merging_one_structure_is_allowed() {
             "-o",
             target.to_str().unwrap(),
             "--source",
-            "pack",
-            "--com-mojang",
+            "shared-pack",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4597,7 +4909,7 @@ fn delete_removes_every_structure_named() {
             "delete",
             "barn",
             "silo",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4630,10 +4942,10 @@ fn delete_of_a_batch_with_one_bad_name_removes_nothing() {
             "nosuchthing",
             "silo",
             "--source",
-            "pack",
+            "world-pack",
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4656,7 +4968,7 @@ fn delete_json_carries_a_deleted_array_and_the_world() {
             "barn",
             "silo",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4669,16 +4981,15 @@ fn delete_json_carries_a_deleted_array_and_the_world() {
 
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["schema"], 1);
-    // No world was named, so there is none to report — and `scope` sits at the
-    // top level because the grammar picks one scope per command now, where it
-    // used to be per row.
+    // No world was named, so there is none to report — and with `world` null
+    // meaning "the shared copy and nothing else", each row's `source` is the
+    // only place statement left to make.
     assert!(v["world"].is_null(), "{v}");
-    assert_eq!(v["scope"], "shared");
     let deleted = v["deleted"].as_array().unwrap();
     assert_eq!(deleted.len(), 2);
     assert_eq!(deleted[0]["name"], "barn");
     assert_eq!(deleted[0]["id"], "mystructure:barn");
-    assert_eq!(deleted[0]["source"], "pack");
+    assert_eq!(deleted[0]["source"], "shared-pack");
     assert_eq!(deleted[1]["name"], "silo");
 }
 
@@ -4692,7 +5003,7 @@ fn delete_of_a_single_structure_still_emits_a_one_row_array() {
             "delete",
             "barn",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4710,7 +5021,7 @@ fn delete_with_no_structure_named_is_a_usage_error() {
             "delete",
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4748,8 +5059,8 @@ fn copy_moves_every_structure_named() {
             "barn",
             "silo",
             "--source",
-            "pack",
-            "--com-mojang",
+            "shared-pack",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4785,8 +5096,8 @@ fn copy_of_a_batch_with_one_bad_name_writes_nothing() {
             "nosuchthing",
             "silo",
             "--source",
-            "pack",
-            "--com-mojang",
+            "shared-pack",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4819,8 +5130,8 @@ fn copy_refuses_the_whole_batch_when_one_target_already_exists() {
             "barn",
             "silo",
             "--source",
-            "pack",
-            "--com-mojang",
+            "shared-pack",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4847,9 +5158,9 @@ fn copy_json_carries_a_written_array_with_from_to_and_scope_at_the_top() {
             "barn",
             "silo",
             "--source",
-            "pack",
+            "shared-pack",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4866,7 +5177,7 @@ fn copy_json_carries_a_written_array_with_from_to_and_scope_at_the_top() {
     // not any one row.
     assert_eq!(v["from"], "flag1/Test");
     assert_eq!(v["to"], "flag1/Other");
-    assert_eq!(v["scope"], "world");
+    assert_eq!(v["target"], "world-pack");
 
     let written = v["written"].as_array().unwrap();
     assert_eq!(written.len(), 2);
@@ -4888,9 +5199,9 @@ fn copy_of_a_single_structure_still_emits_a_one_row_array() {
             "Other",
             "barn",
             "--source",
-            "pack",
+            "shared-pack",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4908,7 +5219,7 @@ fn copy_with_no_structure_named_is_a_usage_error() {
             "copy",
             "Test",
             "Other",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4938,7 +5249,7 @@ fn import_takes_every_file_named() {
             silo.to_str().unwrap(),
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -4973,7 +5284,7 @@ fn import_of_a_batch_with_one_unreadable_file_writes_nothing() {
             missing.to_str().unwrap(),
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -5007,7 +5318,7 @@ fn import_refuses_two_files_that_would_derive_one_name() {
             b.join("house.mcstructure").to_str().unwrap(),
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -5045,7 +5356,7 @@ fn import_name_with_more_than_one_file_is_a_usage_error() {
             "whatever",
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -5077,7 +5388,7 @@ fn import_json_carries_a_written_array_with_pack_and_scope_at_the_top() {
             "--world",
             "Test",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -5091,7 +5402,9 @@ fn import_json_carries_a_written_array_with_pack_and_scope_at_the_top() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["schema"], 1);
     // One destination home per invocation, so these describe the command.
-    assert_eq!(v["scope"], "world");
+    // `target` is spelled as a `--source` value, naming the place the files
+    // landed in the same vocabulary `structures` and `export` read back.
+    assert_eq!(v["target"], "world-pack");
     assert!(v["pack"].as_str().unwrap().contains("ConstructStructures"));
 
     let written = v["written"].as_array().unwrap();
@@ -5115,7 +5428,7 @@ fn import_of_a_single_file_still_emits_a_one_row_array() {
             "--world",
             "Test",
             "--json",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -5133,7 +5446,7 @@ fn import_with_no_file_named_is_a_usage_error() {
             "import",
             "--world",
             "Test",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
         ])
         .output()
@@ -5167,11 +5480,11 @@ fn tab_completion_completes_world_names() {
         .env("_CLAP_COMPLETE_INDEX", "5")
         .env("COMPLETE", "bash")
         .args([
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
             "--",
             "construct",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
             "export",
             "--world",
@@ -5209,7 +5522,7 @@ fn tab_completion_completes_structure_names_for_the_targeted_world() {
                 src.to_str().unwrap(),
                 "--world",
                 "Test",
-                "--com-mojang",
+                "--path",
                 root.path().to_str().unwrap(),
             ])
             .output()
@@ -5222,11 +5535,11 @@ fn tab_completion_completes_structure_names_for_the_targeted_world() {
         .env("_CLAP_COMPLETE_INDEX", "6")
         .env("COMPLETE", "bash")
         .args([
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
             "--",
             "construct",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
             "export",
             "--world",
@@ -5262,11 +5575,11 @@ fn tab_completion_completes_shared_structures_when_no_world_is_named() {
         .env("_CLAP_COMPLETE_INDEX", "4")
         .env("COMPLETE", "bash")
         .args([
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
             "--",
             "construct",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
             "export",
             "",
@@ -5299,11 +5612,11 @@ fn tab_completion_completes_source_world_structures_for_copy() {
         .env("_CLAP_COMPLETE_INDEX", "6")
         .env("COMPLETE", "bash")
         .args([
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
             "--",
             "construct",
-            "--com-mojang",
+            "--path",
             root.path().to_str().unwrap(),
             "copy",
             "Test",
@@ -5322,5 +5635,348 @@ fn tab_completion_completes_source_world_structures_for_copy() {
     assert!(
         text.contains("barn"),
         "should suggest source world structure barn:\n{text}"
+    );
+}
+
+/// A path inside the structures folder `import --world Test` writes into,
+/// given as the relative path the tree should mirror.
+fn imported_tree_path(root: &std::path::Path, rel: &str) -> std::path::PathBuf {
+    root.join("minecraftWorlds/Test/behavior_packs/ConstructStructures/structures")
+        .join(rel)
+}
+
+#[test]
+fn import_of_a_directory_mirrors_its_tree_under_the_named_folder() {
+    // The folder you name becomes a folder in the pack, so `Amelix/CF-Q1`
+    // stays `Amelix/CF-Q1` — and nesting below it survives too.
+    let root = world_with_construct(&[]);
+    let src = root.path().join("Amelix");
+    std::fs::create_dir_all(src.join("sub")).unwrap();
+    std::fs::write(src.join("CF-Q1.mcstructure"), b"q1-bytes").unwrap();
+    std::fs::write(src.join("sub/tower.mcstructure"), b"tower-bytes").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            src.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--path",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(
+        std::fs::read(imported_tree_path(root.path(), "Amelix/CF-Q1.mcstructure")).unwrap(),
+        b"q1-bytes"
+    );
+    assert_eq!(
+        std::fs::read(imported_tree_path(root.path(), "Amelix/sub/tower.mcstructure")).unwrap(),
+        b"tower-bytes"
+    );
+}
+
+#[test]
+fn import_of_a_directory_reports_the_namespaced_ids() {
+    let root = world_with_construct(&[]);
+    let src = root.path().join("Amelix");
+    std::fs::create_dir_all(src.join("sub")).unwrap();
+    std::fs::write(src.join("CF-Q1.mcstructure"), b"q1").unwrap();
+    std::fs::write(src.join("sub/tower.mcstructure"), b"t").unwrap();
+
+    let out = bin()
+        .args([
+            "--json",
+            "import",
+            src.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--path",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let ids: Vec<&str> = v["written"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["Amelix:CF-Q1", "Amelix:sub/tower"]);
+}
+
+#[test]
+fn import_of_a_directory_skips_files_that_are_not_structures() {
+    // A folder of structures routinely carries a README or a .DS_Store, and
+    // naming those was never how they got into the batch.
+    let root = world_with_construct(&[]);
+    let src = root.path().join("Amelix");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("barn.mcstructure"), b"barn").unwrap();
+    std::fs::write(src.join("README.md"), b"notes").unwrap();
+    std::fs::write(src.join(".DS_Store"), b"junk").unwrap();
+
+    let out = bin()
+        .args([
+            "--json",
+            "import",
+            src.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--path",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let ids: Vec<&str> = v["written"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["Amelix:barn"]);
+}
+
+#[test]
+fn import_of_a_directory_with_no_structures_in_it_fails() {
+    // Silently succeeding while writing nothing reads as "imported" — the
+    // folder was almost certainly the wrong one.
+    let root = world_with_construct(&[]);
+    let src = root.path().join("Empty");
+    std::fs::create_dir_all(src.join("deeper")).unwrap();
+    std::fs::write(src.join("README.md"), b"notes").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            src.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--path",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "an empty folder must not report success");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Empty"),
+        "must name the folder that held nothing:\n{stderr}"
+    );
+}
+
+#[test]
+fn import_name_with_a_directory_is_a_usage_error() {
+    // `--name` renames a single import. A folder is a batch whose whole point
+    // is the names it already carries, so there is nothing for one name to
+    // rename — the same refusal `--name` gets for several files.
+    let root = world_with_construct(&[]);
+    let src = root.path().join("Amelix");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("barn.mcstructure"), b"barn").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            src.to_str().unwrap(),
+            "--name",
+            "renamed",
+            "--world",
+            "Test",
+            "--path",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--name"),
+        "must say which flag is the problem:\n{stderr}"
+    );
+    assert!(
+        !imported_tree_path(root.path(), "Amelix/barn.mcstructure").exists(),
+        "a usage error must attempt nothing"
+    );
+}
+
+#[test]
+fn import_takes_files_and_directories_in_one_batch() {
+    let root = world_with_construct(&[]);
+    let loose = root.path().join("silo.mcstructure");
+    std::fs::write(&loose, b"silo-bytes").unwrap();
+    let src = root.path().join("Amelix");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("barn.mcstructure"), b"barn-bytes").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            loose.to_str().unwrap(),
+            src.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--path",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The loose file keeps the default namespace; the folder's file is nested.
+    assert_eq!(
+        std::fs::read(imported_tree_path(root.path(), "silo.mcstructure")).unwrap(),
+        b"silo-bytes"
+    );
+    assert_eq!(
+        std::fs::read(imported_tree_path(root.path(), "Amelix/barn.mcstructure")).unwrap(),
+        b"barn-bytes"
+    );
+}
+
+#[test]
+fn import_of_a_directory_writes_nothing_when_one_file_already_exists() {
+    // The plan-then-write discipline has to survive expansion: a folder is
+    // refused whole, never left half imported.
+    let root = world_with_construct(&[]);
+    let src = root.path().join("Amelix");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("barn.mcstructure"), b"barn-bytes").unwrap();
+
+    let args = |root: &std::path::Path, src: &std::path::Path| {
+        vec![
+            "import".to_string(),
+            src.to_str().unwrap().to_string(),
+            "--world".to_string(),
+            "Test".to_string(),
+            "--path".to_string(),
+            root.to_str().unwrap().to_string(),
+        ]
+    };
+    assert!(
+        bin()
+            .args(args(root.path(), &src))
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    std::fs::write(src.join("silo.mcstructure"), b"silo-bytes").unwrap();
+    let out = bin().args(args(root.path(), &src)).output().unwrap();
+    assert!(!out.status.success(), "the existing barn must refuse the batch");
+    assert!(
+        !imported_tree_path(root.path(), "Amelix/silo.mcstructure").exists(),
+        "no file may land when any file in the folder collides"
+    );
+}
+
+#[test]
+fn import_of_a_directory_derives_a_usable_name_for_each_folder() {
+    // Folder names are not structure names: a space becomes `_`, exactly as a
+    // file stem's does, so the tree is mirrored as closely as Construct's
+    // naming rules allow.
+    let root = world_with_construct(&[]);
+    let src = root.path().join("My Builds");
+    std::fs::create_dir_all(src.join("tall towers")).unwrap();
+    std::fs::write(src.join("tall towers/big one.mcstructure"), b"x").unwrap();
+
+    let out = bin()
+        .args([
+            "--json",
+            "import",
+            src.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--path",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["written"][0]["id"], "My_Builds:tall_towers/big_one");
+    assert!(
+        imported_tree_path(root.path(), "My_Builds/tall_towers/big_one.mcstructure").exists()
+    );
+}
+
+#[test]
+fn import_of_a_directory_warns_once_about_the_namespace_not_once_per_file() {
+    // Every file in a folder shares the folder's namespace, so the warning is
+    // about the folder. Repeating it forty times buries the forty lines that
+    // actually differ.
+    let root = world_with_construct(&[]);
+    let src = root.path().join("Amelix");
+    std::fs::create_dir_all(src.join("sub")).unwrap();
+    std::fs::write(src.join("barn.mcstructure"), b"a").unwrap();
+    std::fs::write(src.join("silo.mcstructure"), b"b").unwrap();
+    std::fs::write(src.join("sub/tower.mcstructure"), b"c").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            src.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--path",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let warnings = stderr
+        .lines()
+        .filter(|l| l.contains("mystructure namespace"))
+        .count();
+    assert_eq!(warnings, 1, "one warning per namespace:\n{stderr}");
+    assert!(
+        stderr.contains("Amelix"),
+        "the warning must name the namespace:\n{stderr}"
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        stdout.lines().filter(|l| l.trim_start().starts_with("into ")).count(),
+        1,
+        "the destination pack is one answer for the batch:\n{stdout}"
+    );
+    // The per-structure lines are the ones worth repeating.
+    assert_eq!(
+        stdout.lines().filter(|l| l.starts_with("imported ")).count(),
+        3,
+        "{stdout}"
     );
 }

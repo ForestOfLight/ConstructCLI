@@ -16,9 +16,11 @@ use std::path::{Path, PathBuf};
 struct Payload {
     /// The pack every file in this batch landed in, and what that means for
     /// reach. One destination home is chosen per invocation, so these
-    /// describe the command rather than any one row.
+    /// describe the command rather than any one row. `target` is spelled as a
+    /// `--source` value — `world-pack` or `shared-pack` — so a reader can
+    /// name the same place back to `structures` or `export`.
     pack: String,
-    scope: &'static str,
+    target: &'static str,
     written: Vec<Written>,
 }
 
@@ -49,18 +51,153 @@ fn id_for(file: &Path, name: Option<&str>) -> Result<String> {
     }
 }
 
+/// One file the command will import, and the id it lands under.
+struct Planned {
+    file: PathBuf,
+    id: String,
+}
+
+/// Every `.mcstructure` under `dir`, deepest paths included, sorted by path so
+/// a directory import reports in a stable order.
+///
+/// Files that are not `.mcstructure` are skipped rather than refused: a folder
+/// of structures routinely carries a README or a `.DS_Store`, and naming them
+/// on the command line was never how they got here. `file_type` reports a
+/// symlink as a symlink rather than following it, so a directory symlink is
+/// never recursed into and the walk cannot be led outside `dir` — the same
+/// guarantee `pack::structures::collect` relies on when reading a pack.
+fn mcstructures_under(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    walk(dir, &mut found)?;
+    found.sort();
+    Ok(found)
+}
+
+fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            walk(&path, out)?;
+        } else if path.extension().and_then(|x| x.to_str()) == Some(structures::EXTENSION) {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// The id a file inside an imported directory lands under.
+///
+/// The directory's own name becomes the namespace and its tree becomes the
+/// name, so `Amelix/sub/tower.mcstructure` imports as `Amelix:sub/tower` and
+/// lands at `structures/Amelix/sub/tower.mcstructure` — the same tree, in the
+/// pack. Every segment goes through `derive_name`, so a folder named `My
+/// Builds` imports as `My_Builds` and a segment that cannot be a name at all
+/// stops the command instead of being mangled into one.
+fn id_under_directory(root_name: &str, file: &Path, dir: &Path) -> Result<String> {
+    let rel = file.strip_prefix(dir).map_err(|_| CoreError::Internal {
+        what: format!("{} is not under {}", file.display(), dir.display()),
+    })?;
+
+    let mut segments = vec![structures::derive_name(root_name)?];
+    let parents = rel.parent().map(Path::to_path_buf).unwrap_or_default();
+    for component in parents.components() {
+        let part = component
+            .as_os_str()
+            .to_str()
+            .ok_or_else(|| CoreError::BadStructureName {
+                name: file.display().to_string(),
+                reason: "a folder name that is not valid UTF-8".to_string(),
+            })?;
+        segments.push(structures::derive_name(part)?);
+    }
+    let stem = file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| CoreError::BadStructureName {
+            name: file.display().to_string(),
+            reason: "the file has no usable stem".to_string(),
+        })?;
+    segments.push(structures::derive_name(stem)?);
+
+    let (namespace, rest) = segments.split_first().expect("root name is always present");
+    Ok(format!("{}:{}", namespace, rest.join("/")))
+}
+
+/// Turns the paths named on the command line into the files to import.
+///
+/// A file imports under its own stem, exactly as it always has. A directory
+/// expands to every `.mcstructure` beneath it, keeping its tree. The two mix
+/// freely in one invocation.
+fn expand(paths: &[PathBuf], name: Option<&str>) -> Result<Vec<Planned>> {
+    let mut planned = Vec::new();
+    for path in paths {
+        if !path.is_dir() {
+            planned.push(Planned {
+                id: id_for(path, name)?,
+                file: path.clone(),
+            });
+            continue;
+        }
+
+        // `file_name` is `None` for `.`, `..` and a root, none of which offer
+        // a name to file the tree under. Asking for the folder to be named
+        // outright beats guessing one from the current directory.
+        let root_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| CoreError::BadStructureName {
+                name: path.display().to_string(),
+                reason: "this folder has no name to import under; \
+                         name the folder by its own path".to_string(),
+            })?;
+
+        let files = mcstructures_under(path)?;
+        if files.is_empty() {
+            return Err(CoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("{} holds no .mcstructure files", path.display()),
+            )));
+        }
+        for file in files {
+            planned.push(Planned {
+                id: id_under_directory(root_name, &file, path)?,
+                file,
+            });
+        }
+    }
+    Ok(planned)
+}
+
 /// Construct's in-game list only shows `mystructure:` structures (§17), so a
 /// namespaced name lands somewhere the addon will not display.
-fn warn_if_outside_default_namespace(id: &str, out: &mut Out) {
-    if !id.starts_with(&format!("{}:", key::DEFAULT_NAMESPACE)) {
+///
+/// Warned once per namespace rather than once per structure: a folder import
+/// puts every one of its files in the same namespace, and forty identical
+/// lines bury the forty that actually differ.
+fn warn_about_namespaces_outside_the_default(ids: &[String], out: &mut Out) {
+    let default = format!("{}:", key::DEFAULT_NAMESPACE);
+    let mut seen: Vec<&str> = Vec::new();
+    for id in ids {
+        if id.starts_with(&default) {
+            continue;
+        }
+        let Some((namespace, _)) = id.split_once(':') else {
+            continue;
+        };
+        if seen.contains(&namespace) {
+            continue;
+        }
+        seen.push(namespace);
         out.warn(format!(
-            "{id} is outside the mystructure namespace; Construct's in-game list will not show it"
+            "{namespace} is outside the mystructure namespace; \
+             Construct's in-game list will not show its structures"
         ));
     }
 }
 
 pub fn run(
-    files: &[PathBuf],
+    paths: &[PathBuf],
     world: Option<&World>,
     installation: &Installation,
     name: Option<&str>,
@@ -71,10 +208,9 @@ pub fn run(
     // `export` plans every target first. `home_for_write` below can *create*
     // a structures pack, so a batch that cannot be read must fail before it
     // has that side effect.
-    let mut sources: Vec<(&PathBuf, String, Vec<u8>)> = Vec::new();
-    for file in files {
-        let bytes = std::fs::read(file)?;
-        let id = id_for(file, name)?;
+    let mut sources: Vec<(PathBuf, String, Vec<u8>)> = Vec::new();
+    for Planned { file, id } in expand(paths, name)? {
+        let bytes = std::fs::read(&file)?;
         sources.push((file, id, bytes));
     }
 
@@ -128,9 +264,11 @@ pub fn run(
         }
     }
 
+    let ids: Vec<String> = plan.iter().map(|(_, id, _, _)| id.clone()).collect();
+    warn_about_namespaces_outside_the_default(&ids, out);
+
     let mut written = Vec::new();
     for (file, id, bytes, _) in plan {
-        warn_if_outside_default_namespace(&id, out);
         if let Some(w) = world {
             crate::commands::warn_if_another_pack_has_it(w, installation, &home.dir, &id, out);
         }
@@ -140,10 +278,6 @@ pub fn run(
             "imported {} as {}",
             file.display(),
             key::display_name(&id)
-        ));
-        out.line(format!(
-            "  into {}",
-            crate::commands::pack_phrase(home.kind, world.map(|w| w.display_name.as_str()))
         ));
         out.line(format!("  {}", path.display()));
 
@@ -155,12 +289,17 @@ pub fn run(
         });
     }
 
-    // Once, after the whole batch: the advice is about reloading the world,
-    // not about any one structure.
+    // Once, after the whole batch: one destination home is chosen per
+    // invocation, so where the files landed is an answer about the command
+    // rather than about any one structure — and so is the reload advice.
+    out.line(format!(
+        "into {}",
+        crate::commands::pack_phrase(home.kind, world.map(|w| w.display_name.as_str()))
+    ));
     out.line("Reload the world before Construct sees it.");
     out.emit(Payload {
         pack: home.dir.display().to_string(),
-        scope: crate::commands::scope_field(home.kind),
+        target: crate::commands::target_field(home.kind),
         written,
     });
     Ok(())

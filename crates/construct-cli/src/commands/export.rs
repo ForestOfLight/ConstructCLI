@@ -20,12 +20,11 @@ use std::path::{Component, Path, PathBuf};
 
 #[derive(Serialize)]
 struct Payload {
-    /// The world read from, or `None` for the shared copy of Construct.
+    /// The world read from, or `None` for the shared copy of Construct. Which
+    /// places were reachable follows from it: `null` is the shared copy and
+    /// nothing else, a world is that world's database and its own pack and
+    /// never the shared copy.
     world: Option<String>,
-    /// Which copy of Construct was in scope, in the vocabulary `import` and
-    /// `delete` use. The grammar picks one scope and nothing in a batch can
-    /// escape it, so this is per command rather than per row.
-    scope: &'static str,
     written: Vec<Written>,
 }
 
@@ -117,18 +116,17 @@ fn sanitize_for_filename(name: &str) -> String {
     }
 }
 
-/// One invocation's catalog, and how to report which copy it came from.
+/// One invocation's catalog, and the world it belongs to.
 ///
 /// The two entry points differ only in how they build this: [`shared`] reads
 /// one pack and opens no database at all, [`for_world`] reads a world and the
 /// pack it owns. Everything after — resolve, plan, write, merge — is the same
 /// work on the same rows, so it is written once below.
-struct Scope<'a> {
+struct View<'a> {
     /// The world read from, or `None` for the shared copy of Construct.
     world: Option<&'a World>,
-    label: &'static str,
     entries: Vec<Entry>,
-    /// Held open for world-database rows. `None` when the scope has none.
+    /// Held open for world-database rows. `None` when the view has none.
     store: Option<OpenedStore>,
 }
 
@@ -149,22 +147,22 @@ pub fn shared(
     out: &mut Out,
 ) -> Result<()> {
     let home = pack::for_installation(installation)?.pack;
-    let entries = catalog::from_pack(&home.dir, pack::Scope::Shared);
-    let scope = Scope {
+    let entries = catalog::from_pack(&home.dir, Source::SharedPack);
+    let view = View {
         world: None,
-        label: "shared",
         entries,
         store: None,
     };
-    run(&scope, structures, output, source, force, merge, on_overlap, out)
+    run(&view, structures, output, source, force, merge, on_overlap, out)
 }
 
 /// `export <names…> --world W` — that world's database and its own pack.
 ///
-/// The shared copy is out of scope by construction, which is what retired
-/// `--pack`: with only one pack left in view there is no second one to choose
-/// between. `loader::world_scoped` does the dropping, because `pack::serving`
-/// reports the shared copy for a world that has no copy of its own.
+/// The shared copy is out of reach by construction: `--world` and `--source
+/// shared-pack` contradict each other and `main.rs` refuses the pair, so the
+/// only pack left in view is the world's own. `loader::world_scoped` does the
+/// dropping, because `pack::serving` reports the shared copy for a world that
+/// has no copy of its own.
 #[allow(clippy::too_many_arguments)]
 pub fn for_world(
     world: &World,
@@ -178,18 +176,17 @@ pub fn for_world(
     out: &mut Out,
 ) -> Result<()> {
     let loaded = loader::for_world(world, installations, source, out)?;
-    let scope = Scope {
+    let view = View {
         world: Some(world),
-        label: "world",
-        entries: loader::world_scoped(loaded.entries, &loaded.packs),
+        entries: loader::world_scoped(loaded.entries),
         store: loaded.store,
     };
-    run(&scope, structures, output, source, force, merge, on_overlap, out)
+    run(&view, structures, output, source, force, merge, on_overlap, out)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn run(
-    scope: &Scope,
+    view: &View,
     structures: &[String],
     output: Option<&Path>,
     source: Option<Source>,
@@ -199,7 +196,7 @@ fn run(
     out: &mut Out,
 ) -> Result<()> {
     if merge {
-        return run_merge(scope, structures, output, source, force, on_overlap, out);
+        return run_merge(view, structures, output, source, force, on_overlap, out);
     }
 
     // Resolve every name and target path before writing anything, so a
@@ -207,7 +204,7 @@ fn run(
     // leaving half a job done.
     let mut plan: Vec<(catalog::Entry, PathBuf)> = Vec::new();
     for name in structures {
-        let entry = resolve(name, scope, source)?;
+        let entry = resolve(name, view, source)?;
         let target = match output {
             Some(path) => path.to_path_buf(),
             None => {
@@ -230,7 +227,7 @@ fn run(
         }
     }
 
-    let store = scope.store.as_ref().map(|s| s as &dyn StructureStore);
+    let store = view.store.as_ref().map(|s| s as &dyn StructureStore);
     let mut written = Vec::new();
     for (entry, target) in plan {
         let bytes = catalog::read_entry(&entry, store)?;
@@ -251,28 +248,21 @@ fn run(
     }
 
     out.emit(Payload {
-        world: scope.world.map(World::qualified),
-        scope: scope.label,
+        world: view.world.map(World::qualified),
         written,
     });
     Ok(())
 }
 
-/// `catalog::resolve` with the scope named on a miss.
-///
-/// `--pack` is gone, so the pack narrowing argument is always `None` here: a
-/// world-scoped export sees one pack and a shared one sees the other, and
-/// neither has two to choose between.
-fn resolve(name: &str, scope: &Scope, source: Option<Source>) -> Result<catalog::Entry> {
-    catalog::resolve(name, &scope.entries, source, None)
-        .map_err(|e| loader::explain_miss(e, scope.world))
+/// `catalog::resolve` with the world named on a miss.
+fn resolve(name: &str, view: &View, source: Option<Source>) -> Result<catalog::Entry> {
+    catalog::resolve(name, &view.entries, source).map_err(|e| loader::explain_miss(e, view.world))
 }
 
 #[derive(Serialize)]
 struct MergedPayload {
     /// The world read from, or `None` for the shared copy of Construct.
     world: Option<String>,
-    scope: &'static str,
     merged: Merged,
 }
 
@@ -298,7 +288,7 @@ struct OverlapRow {
 /// looks inside a `.mcstructure` at all. Everything else copies bytes.
 #[allow(clippy::too_many_arguments)]
 fn run_merge(
-    scope: &Scope,
+    view: &View,
     structures: &[String],
     output: Option<&Path>,
     source: Option<Source>,
@@ -313,10 +303,10 @@ fn run_merge(
         });
     }
 
-    let store = scope.store.as_ref().map(|s| s as &dyn StructureStore);
+    let store = view.store.as_ref().map(|s| s as &dyn StructureStore);
     let mut pieces = Vec::new();
     for name in structures {
-        let entry = resolve(name, scope, source)?;
+        let entry = resolve(name, view, source)?;
         let bytes = catalog::read_entry(&entry, store)?;
         let decoded = mcstructure::decode(&bytes, &entry.name)?;
         pieces.push((entry.name.clone(), decoded));
@@ -356,8 +346,7 @@ fn run_merge(
     ));
 
     out.emit(MergedPayload {
-        world: scope.world.map(World::qualified),
-        scope: scope.label,
+        world: view.world.map(World::qualified),
         merged: Merged {
             path: target.display().to_string(),
             bytes: bytes.len() as u64,

@@ -193,7 +193,7 @@ fn the_structures_pack_is_the_home_when_there_is_one() {
     let home = pack::home(&world).expect("the shell pack is a home");
     assert_eq!(home.kind, pack::HomeKind::WorldStructuresPack);
     assert_eq!(home.dir, created.dir);
-    assert_eq!(home.kind.scope(), pack::Scope::World);
+    assert_eq!(home.kind.source(), construct_core::catalog::Source::WorldPack);
 }
 
 #[test]
@@ -510,8 +510,8 @@ fn pack_entries_carry_their_file_path() {
     let pack = root.path().join("Construct[BP]");
     touch(&pack.join("structures/bomber.mcstructure"), b"12345");
 
-    let entries = catalog::from_pack(&pack, construct_core::pack::Scope::World);
-    assert_eq!(entries[0].source, Source::Pack);
+    let entries = catalog::from_pack(&pack, Source::WorldPack);
+    assert_eq!(entries[0].source, Source::WorldPack);
     assert_eq!(entries[0].id, "mystructure:bomber");
     assert_eq!(
         entries[0].path.as_deref(),
@@ -525,27 +525,24 @@ fn unify_interleaves_both_sources_by_name() {
         catalog::Entry {
             name: "house".into(),
             id: "mystructure:house".into(),
-            source: Source::World,
+            source: Source::WorldDb,
             size_bytes: 1,
             path: None,
-            scope: None,
         },
         catalog::Entry {
             name: "zebra".into(),
             id: "mystructure:zebra".into(),
-            source: Source::World,
+            source: Source::WorldDb,
             size_bytes: 1,
             path: None,
-            scope: None,
         },
     ];
     let pack = vec![catalog::Entry {
         name: "barn".into(),
         id: "mystructure:barn".into(),
-        source: Source::Pack,
+        source: Source::WorldPack,
         size_bytes: 1,
         path: Some(std::path::PathBuf::from("/p/structures/barn.mcstructure")),
-        scope: None,
     }];
     let all = catalog::unify(world, pack);
     assert_eq!(
@@ -671,10 +668,55 @@ fn every_segment_is_left_exactly_as_it_sits_on_disk() {
 }
 
 #[test]
-fn writing_still_refuses_a_separator_in_a_name() {
-    // Reading and writing stay asymmetric on purpose (§17): `structures` reports whatever
-    // depth exists, but nothing this tool writes creates a nested path, because the
-    // character that would enable it is the one that makes traversal possible.
-    assert!(structures::path_for(Path::new("/p"), "stuff:towers/diamond").is_err());
+fn a_derived_name_is_still_a_single_segment() {
+    // `path_for` now writes the depth `list` reads, but depth comes from real
+    // directories, never from a string someone typed: a file stem or a
+    // `--name` is one segment, so the separator that would make traversal
+    // possible cannot enter that way.
     assert!(structures::derive_name("towers/diamond").is_err());
+    assert!(structures::derive_name("../x").is_err());
+}
+
+#[test]
+fn path_for_nests_a_name_that_carries_separators() {
+    // Symmetry with `list`: a pack holding `structures/Stuff/Towers/Diamond`
+    // reports `Stuff:Towers/Diamond`, so that id has to be one this tool can
+    // write back — otherwise `import` and `copy` cannot round-trip a tree
+    // `structures` just printed.
+    assert_eq!(
+        structures::path_for(Path::new("/p"), "stuff:towers/diamond").unwrap(),
+        Path::new("/p/structures/stuff/towers/diamond.mcstructure")
+    );
+    assert_eq!(
+        structures::path_for(Path::new("/p"), "a:b/c/d").unwrap(),
+        Path::new("/p/structures/a/b/c/d.mcstructure")
+    );
+}
+
+#[test]
+fn path_for_validates_every_segment_of_a_nested_name() {
+    // Depth is not an escape hatch: each segment faces the same check the
+    // single-segment name always did, so traversal is refused at any depth.
+    for evil in [
+        "ns:a/../b",
+        "ns:a/./b",
+        "ns:a//b",
+        "ns:a/",
+        "ns:/a",
+        "ns:a/b c/d",
+    ] {
+        assert!(
+            structures::path_for(Path::new("/p"), evil).is_err(),
+            "{evil} should be refused"
+        );
+    }
+}
+
+#[test]
+fn path_for_refuses_a_nested_name_in_the_default_namespace() {
+    // `mystructure` is the one namespace with no folder of its own, so
+    // `mystructure:a/b` would write `structures/a/b` — which `list` reads back
+    // as `a:b`. Refused rather than silently filed under another namespace.
+    assert!(structures::path_for(Path::new("/p"), "mystructure:a/b").is_err());
+    assert!(structures::path_for(Path::new("/p"), "a/b").is_err());
 }

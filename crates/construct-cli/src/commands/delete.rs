@@ -17,8 +17,9 @@
 //! refuses such a name and asks for `--source`, because `export -o` and `copy`
 //! have to pick one and guessing is the wrong answer. `delete` removes both,
 //! because "remove this name from this world" is a complete instruction with no
-//! guess in it. `--source` narrows it for anyone who wants one gone and the
-//! other kept.
+//! guess in it. `--source world-db` or `--source world-pack` narrows it for
+//! anyone who wants one gone and the other kept; `--source shared-pack` is
+//! refused under `--world`, since that is the copy `--world` exists to spare.
 //!
 //! `--world` is also the only form that opens a world's own database, which is
 //! the only leveldb write this tool makes. Opening a leveldb runs recovery and
@@ -40,12 +41,11 @@ use serde::Serialize;
 
 #[derive(Serialize)]
 struct Payload {
-    /// The world the deletion was scoped to, or `None` for the shared copy.
+    /// The world the deletion was aimed at, or `None` for the shared copy.
+    /// Which copy of Construct was reachable follows from it: `null` is the
+    /// shared copy and nothing else, a world is that world and never the
+    /// shared copy. Each row then says which of the places it came out of.
     world: Option<String>,
-    /// Which copy of Construct was in scope, in the vocabulary `import` and
-    /// `copy` use. Per command rather than per row now: the grammar picks one
-    /// scope and nothing in a batch can escape it.
-    scope: &'static str,
     deleted: Vec<Deleted>,
 }
 
@@ -53,9 +53,11 @@ struct Payload {
 struct Deleted {
     name: String,
     id: String,
-    /// Which of the two places this copy lived: `world` for a database key,
-    /// `pack` for a file. One name can produce a row of each under `--world`,
-    /// so this is the field that tells two rows sharing a `name` apart.
+    /// Which of the three places this copy lived: `world-db` for a database
+    /// key, `world-pack` or `shared-pack` for a file. One name can produce a
+    /// row of each under `--world`, so this is the field telling two rows
+    /// sharing a `name` apart. Spelled as the `--source` value that selects
+    /// it, so a reader can narrow the next run to one of them.
     source: &'static str,
     /// Where the file was, for a pack row. `None` for a database row, which has
     /// no path.
@@ -73,7 +75,7 @@ pub fn shared(
     out: &mut Out,
 ) -> Result<()> {
     let pack = pack::for_installation(installation)?.pack;
-    let entries = catalog::from_pack(&pack.dir, pack::Scope::Shared);
+    let entries = catalog::from_pack(&pack.dir, Source::SharedPack);
 
     let plan = resolve(names, &entries, source, None)?;
     let mut deleted = Vec::new();
@@ -98,7 +100,6 @@ pub fn shared(
     out.line("Reload affected worlds before Construct stops showing them.");
     out.emit(Payload {
         world: None,
-        scope: "shared",
         deleted,
     });
     Ok(())
@@ -116,9 +117,9 @@ pub fn for_world(
     source: Option<Source>,
     out: &mut Out,
 ) -> Result<()> {
-    // `--source pack` is an ordinary unlink and must not open a database at
+    // A pack `--source` is an ordinary unlink and must not open a database at
     // all, not even to look. Keeping this branch first is what preserves that.
-    let live = if source == Some(Source::Pack) {
+    let live = if source.is_some_and(|s| s.is_pack()) {
         None
     } else {
         // Refuse before opening, because the open is itself a write. A world
@@ -137,7 +138,7 @@ pub fn for_world(
     // The shared copy is not this command's business, and `export --world`
     // draws the same line for the same reason — so the dropping lives in
     // `loader::world_scoped` rather than here.
-    let pack_entries = loader::world_scoped(all_pack_entries, &packs);
+    let pack_entries = loader::world_scoped(all_pack_entries);
 
     let entries = catalog::unify(world_entries, pack_entries);
     let plan = resolve(names, &entries, source, Some(world))?;
@@ -147,7 +148,7 @@ pub fn for_world(
     // half-way across two kinds of storage; the reverse order could not offer
     // that, because nothing brings an unlinked file back.
     let mut deleted = Vec::new();
-    for entry in plan.iter().filter(|e| e.source == Source::World) {
+    for entry in plan.iter().filter(|e| e.source == Source::WorldDb) {
         let store = live
             .as_ref()
             .ok_or_else(|| internal(format!("world entry {} with no open database", entry.id)))?;
@@ -177,7 +178,7 @@ pub fn for_world(
         construct_core::writemark::record(world);
     }
 
-    for entry in plan.iter().filter(|e| e.source == Source::Pack) {
+    for entry in plan.iter().filter(|e| e.source.is_pack()) {
         let path = unlink(entry)?;
         out.line(format!("deleted {}", entry.name));
         if let Some(home) = packs.iter().find(|h| path.starts_with(&h.dir)) {
@@ -193,7 +194,6 @@ pub fn for_world(
     out.line("Reload the world before Construct stops showing it.");
     out.emit(Payload {
         world: Some(world.qualified()),
-        scope: "world",
         deleted,
     });
     Ok(())
@@ -203,7 +203,7 @@ pub fn for_world(
 ///
 /// An unknown name halfway down the list must leave the structures named before
 /// it intact — a delete that half-happened is the one outcome there is no undo
-/// for. `resolve_all` rather than `resolve`: within one scope a name can still
+/// for. `resolve_all` rather than `resolve`: within one world a name can still
 /// be in both the database and a pack, and both go.
 fn resolve(
     names: &[String],
@@ -214,7 +214,7 @@ fn resolve(
     let mut plan = Vec::new();
     for name in names {
         plan.extend(
-            catalog::resolve_all(name, entries, source, None)
+            catalog::resolve_all(name, entries, source)
                 .map_err(|e| loader::explain_miss(e, world))?,
         );
     }

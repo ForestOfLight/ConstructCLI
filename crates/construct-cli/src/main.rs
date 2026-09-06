@@ -36,7 +36,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
     //
     // Config roots keep their configured names — that is the entire reason §7 makes
     // `name` mandatory, and `config::parse` has already rejected duplicates and any
-    // name that would shadow a built-in installation. Roots from `--com-mojang` have
+    // name that would shadow a built-in installation. Roots from `--path` have
     // no name to carry, so they are numbered.
     let mut extra_roots: Vec<(String, std::path::PathBuf)> = loaded
         .config
@@ -44,8 +44,19 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
         .iter()
         .map(|r| (r.name.clone(), r.path.clone()))
         .collect();
-    for (i, path) in cli.command.com_mojang().iter().enumerate() {
-        extra_roots.push((format!("flag{}", i + 1), path.clone()));
+    // `--path` takes either kind of directory, so sort each one before use: a
+    // world folder joins discovery directly under the `path` installation,
+    // anything else is probed as a com.mojang root.
+    let mut extra_worlds: Vec<std::path::PathBuf> = Vec::new();
+    let mut flag_roots = 0;
+    for path in cli.command.paths() {
+        match discovery::classify(path) {
+            discovery::PathKind::World => extra_worlds.push(path.clone()),
+            discovery::PathKind::Root => {
+                flag_roots += 1;
+                extra_roots.push((format!("flag{flag_roots}"), path.clone()));
+            }
+        }
     }
 
     let home = std::env::var("HOME")
@@ -83,22 +94,27 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
     );
 
     let installations = discovery::platform::resolve(candidates);
-    let worlds = discovery::enumerate(&installations);
+    let worlds = discovery::enumerate(&installations, &extra_worlds);
 
     // Deliberately NOT an early return. A world reference may be a filesystem
     // path, which resolves with zero installations — §6 promises that, and every
     // CI runner depends on it. `no_installations` is only reported when it is
-    // genuinely the explanation: a plain `WorldNotFound` with no installations
-    // present is best explained as "there's nothing to search." A
-    // `MalformedReference` (bad syntax) or `UnreadableWorld` (found it, can't
-    // read it) is true regardless of how many installations exist, and must
-    // pass through untouched rather than being overwritten.
+    // genuinely the explanation: a plain `WorldNotFound` with nothing to search
+    // is best explained as "there's nothing to search." A `MalformedReference`
+    // (bad syntax) or `UnreadableWorld` (found it, can't read it) is true
+    // regardless of how many installations exist, and must pass through
+    // untouched rather than being overwritten.
+    //
+    // "Nothing to search" is not the same as "no installations": `--path` can
+    // name a world folder that belongs to no installation at all, and a world
+    // in hand is something to search.
+    let nothing_to_search = installations.is_empty() && worlds.is_empty();
     let no_installations = || CoreError::NoInstallations {
         probed: probed.clone(),
     };
     let resolve_world = |r: &str| {
         discovery::reference::resolve(r, &worlds).map_err(|e| {
-            if installations.is_empty() && matches!(e, CoreError::WorldNotFound { .. }) {
+            if nothing_to_search && matches!(e, CoreError::WorldNotFound { .. }) {
                 no_installations()
             } else {
                 e
@@ -108,37 +124,24 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
 
     match &cli.command {
         Command::Add { path } => commands::add::run(path, out),
-        Command::Worlds { .. } if installations.is_empty() => Err(no_installations()),
+        Command::Worlds { .. } if nothing_to_search => Err(no_installations()),
         Command::Worlds { .. } => commands::worlds::run(&worlds, out),
-        Command::Structures {
-            world: Some(world),
-            source,
-            ..
-        } => {
-            let w = resolve_world(world)?;
-            commands::structures::run(&w, &installations, source.map(Into::into), out)
-        }
-        Command::Structures {
-            world: None,
-            source,
-            ..
-        } => {
-            if *source == Some(cli::SourceArg::World) {
-                // Nothing to read: a world's structures live in a world's
-                // database, and no world was named. Usage error, not a
-                // failure — nothing was attempted.
-                eprintln!(
-                    "error: --source world needs a world to read from\n\n\
-                     construct structures --world <world> --source world"
-                );
-                std::process::exit(2);
+        Command::Structures { world, source, .. } => {
+            check_source_against_world("structures", "read from", world.as_ref(), *source, false);
+            match world {
+                Some(world) => {
+                    let w = resolve_world(world)?;
+                    commands::structures::run(&w, &installations, source.map(Into::into), out)
+                }
+                None => {
+                    let installation = discovery::installation::choose(
+                        &installations,
+                        std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
+                        loaded.config.default_installation.as_deref(),
+                    )?;
+                    commands::structures::shared(installation, out)
+                }
             }
-            let installation = discovery::installation::choose(
-                &installations,
-                std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
-                loaded.config.default_installation.as_deref(),
-            )?;
-            commands::structures::shared(installation, out)
         }
         Command::Export {
             world,
@@ -159,15 +162,13 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 );
                 std::process::exit(2);
             }
-            if world.is_none() && *source == Some(cli::SourceArg::World) {
-                // The same refusal `structures` and `delete` make: a world's
-                // structures live in a world's database, and none was named.
-                eprintln!(
-                    "error: --source world needs a world to read from\n\n\
-                     construct export <structure> --world <world> --source world"
-                );
-                std::process::exit(2);
-            }
+            check_source_against_world(
+                "export <structure>",
+                "read from",
+                world.as_ref(),
+                *source,
+                true,
+            );
             // `-o` names the file this writes, and the only file Minecraft
             // loads is a `.mcstructure`. A missing extension is completed
             // rather than refused — `-o castle` is unambiguous — but a
@@ -239,23 +240,36 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
             }
         }
         Command::Import {
-            files,
+            paths,
             world,
             name,
             force,
             ..
         } => {
-            if name.is_some() && files.len() > 1 {
+            if name.is_some() {
                 // --name renames one import and cannot name several, exactly
                 // as -o names one output file. Usage error, not a failure:
-                // nothing was attempted.
-                eprintln!(
-                    "error: --name renames a single import, but {} files were given\n\n\
-                     Drop --name to derive each name from its file stem, or import them \
-                     one at a time.",
-                    files.len()
-                );
-                std::process::exit(2);
+                // nothing was attempted. A folder is a batch for the same
+                // reason, whatever it happens to hold — its whole point is the
+                // names it already carries.
+                if let Some(dir) = paths.iter().find(|p| p.is_dir()) {
+                    eprintln!(
+                        "error: --name renames a single import, but {} is a folder\n\n\
+                         A folder imports every structure under it, keeping its tree. \
+                         Drop --name, or name a single file to rename it.",
+                        dir.display()
+                    );
+                    std::process::exit(2);
+                }
+                if paths.len() > 1 {
+                    eprintln!(
+                        "error: --name renames a single import, but {} files were given\n\n\
+                         Drop --name to derive each name from its file stem, or import them \
+                         one at a time.",
+                        paths.len()
+                    );
+                    std::process::exit(2);
+                }
             }
             let w = world.as_deref().map(resolve_world).transpose()?;
             let installation = match &w {
@@ -267,7 +281,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 )?,
             };
             commands::import::run(
-                files,
+                paths,
                 w.as_ref(),
                 installation,
                 name.as_deref(),
@@ -280,67 +294,58 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
             dst_world,
             structures,
             source,
-            pack,
             force,
             ..
         } => {
             let src = resolve_world(src_world)?;
             let dst = resolve_world(dst_world)?;
+            // No `--world` here to contradict, so all three `--source` values
+            // are live: `copy` is the one command whose source world can see
+            // its database, its own pack, and the shared copy at once.
             commands::copy::run(
                 &src,
                 &dst,
                 structures,
                 &installations,
                 source.map(Into::into),
-                pack.map(Into::into),
                 *force,
                 out,
             )
         }
-        // `--pack` is deliberately absent from `delete`: `--world` is its scope
-        // selector, and the two can contradict each other outright
-        // (`--world W --pack shared` asks to delete from the shared copy while
-        // scoped to a world that must not touch it). clap refuses the flag.
         Command::Delete {
             structures,
             world,
             source,
             ..
-        } => match world {
-            Some(reference) => {
-                let w = resolve_world(reference)?;
-                commands::delete::for_world(
-                    &w,
-                    structures,
-                    &installations,
-                    source.map(Into::into),
-                    out,
-                )
-            }
-            None => {
-                if *source == Some(cli::SourceArg::World) {
-                    // The same refusal `structures --source world` makes: a
-                    // world's structures live in a world's database, and no
-                    // world was named.
-                    eprintln!(
-                        "error: --source world needs a world to delete from\n\n\
-                         construct delete <structure> --world <world> --source world"
-                    );
-                    std::process::exit(2);
+        } => {
+            check_source_against_world(
+                "delete <structure>",
+                "delete from",
+                world.as_ref(),
+                *source,
+                true,
+            );
+            match world {
+                Some(reference) => {
+                    let w = resolve_world(reference)?;
+                    commands::delete::for_world(
+                        &w,
+                        structures,
+                        &installations,
+                        source.map(Into::into),
+                        out,
+                    )
                 }
-                let installation = discovery::installation::choose(
-                    &installations,
-                    std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
-                    loaded.config.default_installation.as_deref(),
-                )?;
-                commands::delete::shared(
-                    installation,
-                    structures,
-                    source.map(Into::into),
-                    out,
-                )
+                None => {
+                    let installation = discovery::installation::choose(
+                        &installations,
+                        std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
+                        loaded.config.default_installation.as_deref(),
+                    )?;
+                    commands::delete::shared(installation, structures, source.map(Into::into), out)
+                }
             }
-        },
+        }
         Command::EnableBetaApis { world, .. } => {
             let w = resolve_world(world)?;
             commands::enable_beta_apis::run(&w, &loaded.config.backups, out)
@@ -384,6 +389,54 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
     }
 }
 
+/// Refuses the ways `--source` and `--world` contradict each other.
+///
+/// clap cannot express this. `--source` is one enum, but its values do not all
+/// mean the same kind of place: `world-db` and `world-pack` name places inside
+/// a world, so they need one named. That half applies everywhere.
+///
+/// `world_excludes_shared` is the other half, and only `export` and `delete`
+/// set it: for them `--world` is the grammar's scope selector and the shared
+/// copy is the thing it exists to keep them away from, so `--world W --source
+/// shared-pack` asks for two incompatible things at once. `structures` does
+/// not set it — a world listing *shows* the shared copy's rows when that is
+/// what the world runs, so narrowing to them is a coherent request, and it is
+/// the only way to list a world's structures without opening its database.
+///
+/// `copy` calls this for neither half: it takes its worlds as positionals
+/// rather than `--world`, and its source world really can see all three places
+/// at once.
+///
+/// Both refusals exit 2 — nothing has been attempted, and silently ignoring
+/// either would answer a question the user did not ask.
+fn check_source_against_world(
+    usage: &str,
+    verb: &str,
+    world: Option<&String>,
+    source: Option<cli::SourceArg>,
+    world_excludes_shared: bool,
+) {
+    let Some(source) = source else { return };
+    let value = source.as_str();
+    if world.is_none() && source.needs_a_world() {
+        eprintln!(
+            "error: --source {value} needs a world to {verb}\n\n\
+             construct {usage} --world <world> --source {value}"
+        );
+        std::process::exit(2);
+    }
+    if world.is_some() && !source.needs_a_world() && world_excludes_shared {
+        eprintln!(
+            "error: --source {value} cannot be combined with --world\n\n\
+             The shared copy of Construct serves every world using it, so a command \
+             aimed at one world never reaches it. Drop --world to {verb} the shared \
+             copy:\n\n\
+             construct {usage} --source {value}"
+        );
+        std::process::exit(2);
+    }
+}
+
 /// `-o`'s path with the `.mcstructure` extension it must have, or the
 /// extension that was given instead.
 ///
@@ -423,7 +476,7 @@ fn report(err: &CoreError) {
             for p in probed {
                 eprintln!("  {}", p.display());
             }
-            eprintln!("\nPoint at one explicitly:\n  construct worlds --com-mojang <path>");
+            eprintln!("\nPoint at one explicitly:\n  construct worlds --path <path>");
         }
         CoreError::MalformedReference {
             looks_like_path, ..
@@ -471,23 +524,22 @@ fn report(err: &CoreError) {
         }
         CoreError::AmbiguousStructure { name, sources } => {
             eprintln!("\n{name} exists in: {}", sources.join(", "));
-            // Two packs need `--pack`; `--source` cannot separate them, since
-            // both matches *are* pack entries. Saying "--source" there would
-            // send the user round a loop that never resolves.
-            if sources.iter().all(|s| s.starts_with("pack:")) {
-                eprintln!("\nBoth are packs this world sees. Pick one with --pack:");
-                eprintln!("  construct <command> ... --pack world   # or: --pack shared");
-            } else {
-                eprintln!("\nDisambiguate with --source:");
-                eprintln!("  construct structures --world <world> --source world   # or: --source pack");
+            // One axis now, so the hint is the matched values read back: every
+            // collision — database against pack, or one pack against the other
+            // — is separated by the same flag, and the values to try are
+            // exactly the places that matched.
+            eprintln!("\nDisambiguate with --source:");
+            let mut alternatives = sources.iter();
+            if let Some(first) = alternatives.next() {
+                eprintln!("  construct <command> ... --source {first}");
+                for other in alternatives {
+                    eprintln!("  construct <command> ... --source {other}");
+                }
             }
             // Construct's own list resolves this by letting the pack copy win
             // (§17). The CLI refuses instead — but the user is usually asking
             // which one the game shows, so answer it.
-            // `starts_with`, not equality: a pack entry is labelled by which
-            // pack it is in (`pack:world`, `pack:shared`), so matching the
-            // bare word would never fire.
-            if sources.iter().any(|s| s.starts_with("pack")) {
+            if sources.iter().any(|s| s.ends_with("-pack")) {
                 eprintln!("\nConstruct shows the pack copy in-game.");
             }
         }
@@ -523,8 +575,9 @@ fn report(err: &CoreError) {
             // half would report a structure deleted while a copy of it
             // survived there.
             eprintln!(
-                "\nIf you meant a structure in Construct's folder, --source pack \
-                 skips the database:\n  construct <command> ... --source pack"
+                "\nIf you meant a structure in Construct's folder, naming that pack \
+                 skips the database:\n  construct <command> ... --source world-pack   \
+                 # or: --source shared-pack"
             );
         }
         CoreError::UnwritableLevelDat { written: false, .. } => {
