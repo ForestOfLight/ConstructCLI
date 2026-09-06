@@ -7,7 +7,7 @@
 //! header UUID as the copy this tool installs, and which of the two the game
 //! ends up loading is not something either the player or this tool decides.
 //! Meanwhile every command here resolves Construct through
-//! `pack::behavior_root`, so the misplaced copy is invisible to them and the
+//! `pack::shared_behavior_root`, so the misplaced copy is invisible to them and the
 //! structures inside it are unreachable.
 //!
 //! [`adopt`] folds that copy into the development root before an install

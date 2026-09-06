@@ -2,11 +2,11 @@
 //!
 //! `install` is idempotent by design, which only helps a user who can see
 //! what they already have. This command reports it: the installed version
-//! from the shared pack's own manifest, the latest release GitHub has (when
+//! from the shared copy's own manifest, the latest release GitHub has (when
 //! reachable), and which worlds have Construct's behaviour pack enabled.
 //!
 //! It also reports where this installation's worlds keep their structures.
-//! `list` answers that one world at a time; a structure in the shared pack is
+//! `list` answers that one world at a time; a structure in the shared copy is
 //! in every world using it, and only a cross-world view shows that at a
 //! glance.
 //!
@@ -34,8 +34,8 @@ struct Payload {
 /// One pack that holds structures, and how many it holds.
 #[derive(Serialize)]
 struct PackRow {
-    /// The world this pack belongs to, or null for the installation's shared
-    /// copy, which belongs to every world using it.
+    /// The world this pack belongs to, or null for the shared copy of
+    /// Construct, which belongs to every world using it.
     world: Option<String>,
     /// `shared`, or `world` for a pack only one world sees.
     scope: &'static str,
@@ -49,8 +49,8 @@ pub fn run(
     worlds: &[World],
     out: &mut Out,
 ) -> Result<()> {
-    // The installation's shared copy, not a world-local override: `status`
-    // reports on the installation, the same thing `install` writes to.
+    // The shared copy of Construct, not a world's own: `status` reports on
+    // the installation, the same thing `install` writes to.
     let installed = pack::for_installation(installation)?.pack;
     let version = manifest::version_string(installed.manifest.version);
 
@@ -76,9 +76,9 @@ pub fn run(
         .map(|w| w.display_name.clone())
         .collect();
 
-    // Where structures live, shared copy first. A world with no home yet has
-    // no structures of its own and no row: the shared line above it already
-    // says what that world sees.
+    // Where structures live, the shared copy first. A world with no home yet
+    // has no structures of its own and no row: the shared line above it
+    // already says what that world sees.
     let mut structures = vec![PackRow {
         world: None,
         scope: "shared",
@@ -86,7 +86,7 @@ pub fn run(
         count: pack::structures::list(&installed.dir).len(),
     }];
     let mut structure_lines = vec![format!(
-        "{} in the shared pack, which every world using it sees",
+        "{} in the shared copy of Construct, which every world using it sees",
         structures[0].count
     )];
     for world in worlds

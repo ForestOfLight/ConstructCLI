@@ -99,7 +99,7 @@ pub fn run(
     // With a world, the write belongs in that world's structures home — its
     // own copy of Construct if it has one, else its structures pack, created
     // here if it has none. Without a world there is no per-world home to
-    // choose, and the shared Construct is the deliberate answer: "put this in
+    // choose, and the shared copy of Construct is the deliberate answer: "put this in
     // every world that uses it" is a thing to want, and the line below says
     // that is what happened.
     let home = match world {

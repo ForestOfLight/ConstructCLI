@@ -26,7 +26,7 @@ pub struct Cli {
     pub source: Option<SourceArg>,
 
     /// Disambiguate a structure name present in both packs a world sees —
-    /// its own and the installation's shared Construct.
+    /// its own and the shared copy of Construct.
     #[arg(long, global = true, value_enum)]
     pub pack: Option<PackArg>,
 
@@ -46,15 +46,14 @@ pub enum PackArg {
     /// The world's own pack — its structures pack, or its own copy of
     /// Construct when that is what it runs.
     World,
-    /// The installation's shared copy of Construct, which every world using
-    /// it sees.
+    /// The shared copy of Construct, which every world using it sees.
     Shared,
 }
 
 impl From<PackArg> for construct_core::pack::Scope {
     fn from(p: PackArg) -> Self {
         match p {
-            PackArg::World => Self::WorldLocal,
+            PackArg::World => Self::World,
             PackArg::Shared => Self::Shared,
         }
     }
@@ -81,10 +80,11 @@ pub enum Command {
     /// List discovered worlds.
     Worlds,
 
-    /// List the structures in a world, or in the shared pack with no world.
+    /// List the structures in a world, or in the shared copy of Construct
+    /// with no world.
     List {
         /// World name, qualified reference, or path. Without one, the
-        /// installation's shared Construct pack is listed on its own.
+        /// shared copy of Construct is listed on its own.
         #[arg(add = ArgValueCandidates::new(crate::complete::complete_worlds))]
         world: Option<String>,
     },

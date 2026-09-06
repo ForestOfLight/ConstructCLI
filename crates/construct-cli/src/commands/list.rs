@@ -9,7 +9,8 @@ use serde::Serialize;
 
 #[derive(Serialize)]
 struct Payload<'a> {
-    /// The world listed, or null when the shared pack was listed on its own.
+    /// The world listed, or null when the shared copy of Construct was
+    /// listed on its own.
     world: Option<String>,
     structures: Vec<Row<'a>>,
 }
@@ -48,7 +49,7 @@ pub fn run(
     Ok(())
 }
 
-/// The shared pack on its own, with no world named.
+/// The shared copy of Construct on its own, with no world named.
 ///
 /// Deliberately not a world's view: this is the one listing that is about the
 /// installation rather than about a world, and it answers "what does every
@@ -79,7 +80,7 @@ fn render(world: Option<String>, entries: &[Entry], out: &mut Out) {
                 //
                 // `pack` alone stopped being an answer once a world could see
                 // two packs at once: `pack:world` belongs to this world,
-                // `pack:shared` is in every world using the shared install.
+                // `pack:shared` is in every world using the shared copy.
                 out.line(format!(
                     "{:<24} {:<12} {:>9}",
                     e.name,
@@ -99,7 +100,7 @@ fn render(world: Option<String>, entries: &[Entry], out: &mut Out) {
                 id: &e.id,
                 source: e.source.as_str(),
                 scope: e.scope.map(|s| match s {
-                    pack::Scope::WorldLocal => "world",
+                    pack::Scope::World => "world",
                     pack::Scope::Shared => "shared",
                 }),
                 size_bytes: e.size_bytes,

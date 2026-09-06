@@ -77,8 +77,8 @@ pub fn complete_structures() -> Vec<CompletionCandidate> {
         let serving = pack::serving(&world, inst);
         for home in serving {
             let scope_help = match home.kind.scope() {
-                pack::Scope::WorldLocal => "world pack structure",
-                pack::Scope::Shared => "shared construct structure",
+                pack::Scope::World => "world pack structure",
+                pack::Scope::Shared => "shared Construct structure",
             };
             let entries = catalog::from_pack(&home.dir, home.kind.scope());
             for entry in entries {
