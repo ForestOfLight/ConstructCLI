@@ -2,7 +2,7 @@
 //! nothing else.
 //!
 //! A structure in the shared `development_behavior_packs` copy of Construct is
-//! shared by every world that copy serves, which makes "which worlds have
+//! seen by every world that copy serves, which makes "which worlds have
 //! which structures" unanswerable per world. This pack is the fix: each world
 //! gets its own, so a structure written for a world belongs to that world.
 //!

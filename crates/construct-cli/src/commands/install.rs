@@ -197,12 +197,12 @@ pub fn run(
     let root = &installation.dev_pack_root;
     let migrated: Vec<Migrated> = [
         (
-            pack::behavior_root(root),
+            pack::shared_behavior_root(root),
             pack::stray_behavior_root(root),
             pack::CONSTRUCT_BP_UUID,
         ),
         (
-            pack::resource_root(root),
+            pack::shared_resource_root(root),
             pack::stray_resource_root(root),
             pack::CONSTRUCT_RP_UUID,
         ),
@@ -212,12 +212,12 @@ pub fn run(
     .collect();
 
     let bp = install::place(
-        &pack::behavior_root(&installation.dev_pack_root),
+        &pack::shared_behavior_root(&installation.dev_pack_root),
         &extracted.behavior,
         force,
     )?;
     let rp = install::place(
-        &pack::resource_root(&installation.dev_pack_root),
+        &pack::shared_resource_root(&installation.dev_pack_root),
         &extracted.resource,
         force,
     )?;
@@ -249,9 +249,9 @@ pub fn run(
     let mut structures_pack = None;
     let mut beta_apis = None;
     if let Some(world) = world {
-        // Placement above always writes into the installation's shared
+        // Placement above always writes into the shared
         // dev-pack root. But a world with its own `behavior_packs/Construct[BP]`
-        // copy is governed by that copy, not the shared one (`pack::for_world`'s
+        // copy is governed by that copy, not the shared copy (`pack::for_world`'s
         // precedence — the same one `import`/`copy`/`delete`/`list` resolve
         // through). Without this, install would report a version bump the
         // world never actually gets, and every later structure command would

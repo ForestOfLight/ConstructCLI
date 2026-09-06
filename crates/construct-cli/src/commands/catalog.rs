@@ -44,7 +44,7 @@ pub fn for_world(
         Vec::new()
     } else {
         // Every pack serving this world, not just one: a world running the
-        // shared Construct sees that pack's structures *and* its own
+        // shared copy of Construct sees that pack's structures *and* its own
         // structures pack, and reporting one of the two would misstate what
         // the world has.
         match installation::for_world(installations, world).and_then(|i| {

@@ -36,8 +36,8 @@ pub struct Entry {
     /// which live in a database rather than a file.
     pub path: Option<std::path::PathBuf>,
     /// For a pack entry, whether that pack serves this world alone or every
-    /// world the shared installation serves. `None` for world entries, which
-    /// are per-world by construction.
+    /// world the shared copy of Construct serves. `None` for world entries,
+    /// which are per-world by construction.
     pub scope: Option<Scope>,
 }
 
@@ -49,7 +49,7 @@ impl Entry {
     pub fn source_label(&self) -> &'static str {
         match (self.source, self.scope) {
             (Source::World, _) => "world",
-            (Source::Pack, Some(Scope::WorldLocal)) => "pack:world",
+            (Source::Pack, Some(Scope::World)) => "pack:world",
             (Source::Pack, Some(Scope::Shared)) => "pack:shared",
             (Source::Pack, None) => "pack",
         }
@@ -112,7 +112,7 @@ pub fn unify(world: Vec<Entry>, pack: Vec<Entry>) -> Vec<Entry> {
 /// Finds exactly one structure by name, never guessing between sources.
 ///
 /// `pack_scope` narrows to one pack when a world sees the same name in two of
-/// them — its own and the shared installation's. Without it such a name has no
+/// them — its own and the shared copy of Construct. Without it such a name has no
 /// single answer, and this refuses rather than picking: the two files are
 /// different structures that happen to share a name, and guessing which one a
 /// `delete` meant is the guess with the worst consequence.
@@ -400,7 +400,7 @@ mod tests {
                 source: Source::Pack,
                 size_bytes: 2,
                 path: None,
-                scope: Some(Scope::WorldLocal),
+                scope: Some(Scope::World),
             },
         ];
         assert!(resolve("house", &e, None, None).is_err(), "ambiguous");
@@ -411,7 +411,7 @@ mod tests {
             1
         );
         assert_eq!(
-            resolve("house", &e, None, Some(Scope::WorldLocal))
+            resolve("house", &e, None, Some(Scope::World))
                 .unwrap()
                 .size_bytes,
             2
@@ -434,7 +434,7 @@ mod tests {
         }];
         assert!(resolve("house", &e, None, None).is_ok());
         assert!(matches!(
-            resolve("house", &e, None, Some(Scope::WorldLocal)),
+            resolve("house", &e, None, Some(Scope::World)),
             Err(CoreError::StructureNotFound { .. })
         ));
     }

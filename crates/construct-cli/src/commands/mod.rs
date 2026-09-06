@@ -27,7 +27,12 @@ pub mod worlds;
 /// `development_behavior_packs` or sits inside the world folder — but it
 /// answers it forty characters in, and this is the distinction that decides
 /// whether a structure shows up in one world or in every world using the
-/// shared pack. So it is stated in words, and in terms of that consequence.
+/// shared copy. So it is stated in words, and in terms of that consequence.
+///
+/// Every phrase here names a *copy of Construct* (or the world's structures
+/// pack beside it) and prefixes it with its scope: the shared copy, or the
+/// world that owns it. `pack_short` shortens the same names without changing
+/// that vocabulary.
 ///
 /// The caller supplies the preposition: `import` and `copy` write *into* this
 /// pack, `delete` removes *from* it. The consequence clause reads correctly
@@ -35,20 +40,21 @@ pub mod worlds;
 /// only, and one deleted from it disappears from that world only.
 pub fn pack_phrase(kind: pack::HomeKind, world: Option<&str>) -> String {
     match (kind, world) {
-        (pack::HomeKind::ConstructInWorld, Some(w)) => {
+        (pack::HomeKind::WorldConstruct, Some(w)) => {
             format!("{w}'s own copy of Construct — that world only")
         }
-        (pack::HomeKind::ConstructInWorld, None) => {
+        (pack::HomeKind::WorldConstruct, None) => {
             "the world's own copy of Construct — that world only".to_string()
         }
-        (pack::HomeKind::StructuresPack, Some(w)) => {
+        (pack::HomeKind::WorldStructuresPack, Some(w)) => {
             format!("{w}'s structures pack — that world only")
         }
-        (pack::HomeKind::StructuresPack, None) => {
+        (pack::HomeKind::WorldStructuresPack, None) => {
             "the world's structures pack — that world only".to_string()
         }
         (pack::HomeKind::SharedConstruct, _) => {
-            "the Construct in development_behavior_packs — shared by every world".to_string()
+            "the shared copy of Construct in development_behavior_packs — every world using it"
+                .to_string()
         }
     }
 }
@@ -58,16 +64,16 @@ pub fn pack_phrase(kind: pack::HomeKind, world: Option<&str>) -> String {
 /// once and the rest are per-world by construction.
 pub fn pack_short(kind: pack::HomeKind, world: &str) -> String {
     match kind {
-        pack::HomeKind::ConstructInWorld => format!("{world}'s own copy of Construct"),
-        pack::HomeKind::StructuresPack => format!("{world}'s structures pack"),
-        pack::HomeKind::SharedConstruct => "the shared pack".to_string(),
+        pack::HomeKind::WorldConstruct => format!("{world}'s own copy of Construct"),
+        pack::HomeKind::WorldStructuresPack => format!("{world}'s structures pack"),
+        pack::HomeKind::SharedConstruct => "the shared copy of Construct".to_string(),
     }
 }
 
 /// The `scope` field `import`, `copy`, and `delete` all carry in JSON.
 pub fn scope_field(kind: pack::HomeKind) -> &'static str {
     match kind.scope() {
-        pack::Scope::WorldLocal => "world",
+        pack::Scope::World => "world",
         pack::Scope::Shared => "shared",
     }
 }
@@ -98,7 +104,7 @@ pub fn home_for_write(
     ));
     Ok(pack::Home {
         dir: created.dir,
-        kind: pack::HomeKind::StructuresPack,
+        kind: pack::HomeKind::WorldStructuresPack,
     })
 }
 
@@ -109,7 +115,7 @@ pub fn home_for_write(
 /// existing file, and these two are different files in different packs. But
 /// the game loads both packs for this world and logs a conflict when two carry
 /// one name, resolving it in a way this tool cannot predict — and a user with
-/// structures already in the shared Construct will hit exactly this while
+/// structures already in the shared copy of Construct will hit exactly this while
 /// giving a world copies of its own, so it has to be said rather than
 /// discovered in-game.
 pub fn warn_if_another_pack_has_it(
