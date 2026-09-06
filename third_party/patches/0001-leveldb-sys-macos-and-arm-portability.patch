@@ -18,28 +18,37 @@ Three independent portability defects, each of which alone breaks the build:
 
 Also passes -Wno-error=implicit-function-declaration, since the vendored
 zlib calls lseek/read/write/close without including <unistd.h> and current
-clang rejects implicit declarations outright.
+clang rejects implicit declarations outright. That flag is gated to non-MSVC
+targets: cl.exe only warns about implicit declarations, and it rejects the
+unrecognised flag itself with "command line error D8021: invalid numeric
+argument", which broke the build on windows-latest.
 ---
- build.rs                               | 10 +++++++++-
+ build.rs                               | 16 +++++++++++++++-
  ffi/leveldb/lib/zlib/zutil.h           |  5 ++++-
  ffi/leveldb/src/port/port_posix_sse.cc |  5 +++++
- 3 files changed, 18 insertions(+), 2 deletions(-)
+ 3 files changed, 24 insertions(+), 2 deletions(-)
 
 diff --git a/build.rs b/build.rs
-index 1e1320e..5e4cff8 100644
+index 1e1320e..007c565 100644
 --- a/build.rs
 +++ b/build.rs
-@@ -1,5 +1,9 @@
+@@ -1,5 +1,15 @@
  fn main() {
      let mut config = cmake::Config::new("ffi");
 +    // The vendored zlib calls lseek/read/write/close without including <unistd.h>.
 +    // Implicit function declarations are a hard error from C99 onward, and current
 +    // clang enforces it, so the vendored sources no longer compile without this.
-+    config.cflag("-Wno-error=implicit-function-declaration");
++    // cl.exe needs no such opt-out — it only warns (C4013) — and it rejects the
++    // unrecognised spelling outright with D8021, so the flag has to stay off MSVC
++    // targets. This reads the target rather than cfg!(), because it has to match
++    // the compiler cmake picks for the target, not the one running the build.
++    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
++        config.cflag("-Wno-error=implicit-function-declaration");
++    }
      let mut ffi_dst = config.build().join("build");
      let mut leveldb_dst = ffi_dst.join("leveldb");
  
-@@ -20,6 +24,10 @@ fn main() {
+@@ -20,6 +30,10 @@ fn main() {
      println!("cargo:rustc-link-lib=static=leveldb-ffi");
      println!("cargo:rustc-link-lib=static=leveldb-mcpe");
  

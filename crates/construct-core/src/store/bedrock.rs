@@ -4,7 +4,7 @@ use crate::discovery::World;
 use crate::error::{CoreError, Result};
 use crate::store::{StructureStore, key};
 use bedrock_level::db::Database;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct BedrockStore {
     db: Database,
@@ -140,12 +140,87 @@ impl StructureStore for BedrockStore {
 /// the wrong path is a corrupted save, so this is a hard panic rather than a
 /// warning.
 pub fn guard_copy_path(path: &Path) {
-    let tmp = std::env::temp_dir();
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let tmp = tmp.canonicalize().unwrap_or(tmp);
+    let canonical = resolve_existing(path);
+    let tmp = resolve_existing(&std::env::temp_dir());
     assert!(
         canonical.starts_with(&tmp),
         "refusing to open a database outside a temp directory: {}",
         canonical.display()
     );
+}
+
+/// Resolves `path` as far as it exists on disk.
+///
+/// [`Path::canonicalize`] fails outright on a path that is not there yet, and
+/// the read path asks about such paths routinely — a database that turns out to
+/// be missing, a snapshot named before it is created. Resolving only the side
+/// that happens to exist compares an unresolved path against a resolved temp
+/// directory, which disagree wherever the temp directory is reached through a
+/// symlink: on macOS `$TMPDIR` lives under `/var`, a link to `/private/var`, so
+/// a path genuinely inside the temp directory was refused. Resolving the
+/// deepest ancestor that does exist and re-attaching the rest keeps both sides
+/// of that comparison in the same form.
+fn resolve_existing(path: &Path) -> PathBuf {
+    let mut tail = Vec::new();
+    let mut cursor = path;
+    let resolved = loop {
+        match cursor.canonicalize() {
+            Ok(resolved) => break resolved,
+            // `file_name` is `None` at a root, and for a path ending in `..`,
+            // which cannot be re-attached to a resolved prefix by name. Neither
+            // can be resolved any further, so leave the path as it came.
+            Err(_) => match (cursor.parent(), cursor.file_name()) {
+                (Some(parent), Some(name)) => {
+                    tail.push(name);
+                    cursor = parent;
+                }
+                _ => return path.to_path_buf(),
+            },
+        }
+    };
+    let mut out = resolved;
+    out.extend(tail.iter().rev());
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The macOS CI failure. `$TMPDIR` there sits under `/var`, a symlink to
+    /// `/private/var`, and this guard is asked about a database that is missing
+    /// — the case [`BedrockStore::open_copy`] is supposed to return an error
+    /// for. Both sides of the comparison have to resolve the same way, or the
+    /// guard panics on a path that really is under the temp directory.
+    #[cfg(unix)]
+    #[test]
+    fn resolves_a_missing_path_reached_through_a_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        let link = tmp.path().join("link");
+        std::fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert_eq!(
+            resolve_existing(&link.join("no-db")),
+            real.canonicalize().unwrap().join("no-db")
+        );
+    }
+
+    #[test]
+    fn resolves_a_path_that_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            resolve_existing(tmp.path()),
+            tmp.path().canonicalize().unwrap()
+        );
+    }
+
+    /// Nothing to resolve against, so the path comes back untouched and the
+    /// guard judges it as written — which refuses it, since it is not in temp.
+    #[test]
+    fn leaves_a_path_with_no_existing_ancestor_alone() {
+        let path = Path::new("construct-no-such-ancestor/db");
+        assert_eq!(resolve_existing(path), path);
+    }
 }
