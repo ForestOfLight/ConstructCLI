@@ -9,6 +9,8 @@ use construct_core::worldpacks;
 use std::path::Path;
 
 pub mod catalog;
+pub mod add;
+pub mod completions;
 pub mod copy;
 pub mod delete;
 pub mod enable_beta_apis;

@@ -14,6 +14,44 @@ fn bin() -> Command {
     c
 }
 
+fn bin_with_config(config: &std::path::Path) -> Command {
+    let mut command = bin();
+    command.env("CONSTRUCT_CONFIG", config);
+    command
+}
+
+#[test]
+fn add_classifies_supported_paths_and_rejects_other_directories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let com_mojang = tmp.path().join("games/com.mojang");
+    let world = tmp.path().join("world");
+    let structures = tmp.path().join("structures");
+    std::fs::create_dir_all(com_mojang.join("minecraftWorlds")).unwrap();
+    std::fs::create_dir_all(world.join("db")).unwrap();
+    std::fs::write(world.join("level.dat"), b"stub").unwrap();
+    std::fs::create_dir_all(&structures).unwrap();
+
+    for path in [&com_mojang, &world] {
+        let out = bin_with_config(&config)
+            .args(["add", path.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    let settings: toml::Value = toml::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    assert_eq!(settings["roots"][0]["path"].as_str(), com_mojang.canonicalize().unwrap().to_str());
+    assert_eq!(settings["other_worlds"][0].as_str(), world.canonicalize().unwrap().to_str());
+
+    let out = bin_with_config(&config)
+        .args(["add", structures.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("expected a com.mojang directory or a world directory"));
+}
+
 #[test]
 fn help_lists_the_read_commands() {
     let out = bin().arg("--help").output().unwrap();
@@ -981,8 +1019,8 @@ fn copy_reads_from_a_real_world_database_into_the_destinations_pack() {
         .args([
             "copy",
             src_name,
-            "house",
             "RealDestination",
+            "house",
             "--json",
             "--com-mojang",
             root.path().to_str().unwrap(),
@@ -996,7 +1034,7 @@ fn copy_reads_from_a_real_world_database_into_the_destinations_pack() {
     );
 
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["name"], "house");
+    assert_eq!(v["written"][0]["name"], "house");
     assert_eq!(v["from"], format!("flag1/{src_name}"));
     assert_eq!(v["to"], "flag1/RealDestination");
 
@@ -1092,8 +1130,8 @@ fn copy_writes_bytes_into_the_destination_worlds_own_construct() {
         .args([
             "copy",
             "Test",
-            "barn",
             "Other",
+            "barn",
             "--source",
             "pack",
             "--json",
@@ -1109,7 +1147,7 @@ fn copy_writes_bytes_into_the_destination_worlds_own_construct() {
     );
 
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["name"], "barn");
+    assert_eq!(v["written"][0]["name"], "barn");
     // Qualified, not display_name: `--com-mojang` roots with no config name
     // are numbered `flag1`, `flag2`, ... (see `main.rs`), and both worlds sit
     // under the one root this test passes, with no account segment (a single
@@ -1164,8 +1202,8 @@ fn copy_creates_the_destination_worlds_structures_pack() {
         .args([
             "copy",
             "Test",
-            "barn",
             "Other",
+            "barn",
             "--source",
             "pack",
             "--com-mojang",
@@ -1214,8 +1252,8 @@ fn copy_refuses_an_existing_target_unless_forced() {
     let args = [
         "copy",
         "Test",
-        "barn",
         "Other",
+        "barn",
         "--source",
         "pack",
         "--com-mojang",
@@ -1253,8 +1291,8 @@ fn copy_of_a_name_that_is_not_there_suggests_near_matches() {
         .args([
             "copy",
             "Test",
-            "bar",
             "Other",
+            "bar",
             "--source",
             "pack",
             "--com-mojang",
@@ -1325,8 +1363,8 @@ fn import_derives_a_name_from_the_file_stem_and_reports_it() {
 
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     // The space becomes `_`; the capitals are the user's and are kept.
-    assert_eq!(v["name"], "My_House");
-    assert_eq!(v["id"], "mystructure:My_House");
+    assert_eq!(v["written"][0]["name"], "My_House");
+    assert_eq!(v["written"][0]["id"], "mystructure:My_House");
     // Into the world's own structures pack, which this import created: the
     // world's Construct is the shared copy, so writing there would have put
     // the structure in every world using it.
@@ -1366,7 +1404,7 @@ fn import_accepts_a_name_with_capitals() {
     );
 
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["name"], "10HzCounter");
+    assert_eq!(v["written"][0]["name"], "10HzCounter");
     let written = root
         .path()
         .join("minecraftWorlds/Test/behavior_packs/ConstructStructures/structures/10HzCounter.mcstructure");
@@ -1619,7 +1657,7 @@ fn delete_says_when_it_removed_from_the_shared_construct() {
         String::from_utf8_lossy(&out.stderr)
     );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["scope"], "shared");
+    assert_eq!(v["deleted"][0]["scope"], "shared");
 
     // And in the printed output, which is where a person reads it.
     let root = world_with_construct(&[("bomber", b"x")]);
@@ -3669,4 +3707,689 @@ fn support_build(size: [i32; 3], origin: [i32; 3], name: &str) -> SupportBuild {
 
 fn merge_fixture(size: [i32; 3], origin: [i32; 3], name: &str) -> Vec<u8> {
     support_build(size, origin, name).bytes()
+}
+
+// ---------------------------------------------------------------------------
+// Plural arity: `delete`, `copy`, and `import` each take N structures, the way
+// `export` always has. Every one of them resolves the whole batch before it
+// touches anything, so a bad name in the middle leaves the job untouched
+// rather than half done.
+// ---------------------------------------------------------------------------
+
+/// The shared Construct's `structures/` directory inside a `world_with_construct`.
+fn shared_structures(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("development_behavior_packs/Construct[BP]/structures")
+}
+
+#[test]
+fn delete_removes_every_structure_named() {
+    let root = world_with_construct(&[("barn", b"a"), ("silo", b"b"), ("hut", b"c")]);
+    let dir = shared_structures(root.path());
+
+    let out = bin()
+        .args([
+            "delete",
+            "Test",
+            "barn",
+            "silo",
+            "--source",
+            "pack",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(!dir.join("barn.mcstructure").exists());
+    assert!(!dir.join("silo.mcstructure").exists());
+    assert!(
+        dir.join("hut.mcstructure").exists(),
+        "a structure that was not named must survive"
+    );
+}
+
+#[test]
+fn delete_of_a_batch_with_one_bad_name_removes_nothing() {
+    // The whole point of resolving the batch up front: `barn` is real and
+    // would have been unlinked already if this walked the list one at a time.
+    let root = world_with_construct(&[("barn", b"a"), ("silo", b"b")]);
+    let dir = shared_structures(root.path());
+
+    let out = bin()
+        .args([
+            "delete",
+            "Test",
+            "barn",
+            "nosuchthing",
+            "silo",
+            "--source",
+            "pack",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+
+    assert!(
+        dir.join("barn.mcstructure").exists(),
+        "nothing may be removed when any name in the batch fails to resolve"
+    );
+    assert!(dir.join("silo.mcstructure").exists());
+}
+
+#[test]
+fn delete_json_carries_a_deleted_array_and_the_world() {
+    let root = world_with_construct(&[("barn", b"a"), ("silo", b"b")]);
+    let out = bin()
+        .args([
+            "delete",
+            "Test",
+            "barn",
+            "silo",
+            "--source",
+            "pack",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["schema"], 1);
+    assert!(v["world"].as_str().unwrap().ends_with("Test"), "{v}");
+    let deleted = v["deleted"].as_array().unwrap();
+    assert_eq!(deleted.len(), 2);
+    assert_eq!(deleted[0]["name"], "barn");
+    assert_eq!(deleted[0]["id"], "mystructure:barn");
+    assert_eq!(deleted[0]["scope"], "shared");
+    assert_eq!(deleted[1]["name"], "silo");
+}
+
+#[test]
+fn delete_of_a_single_structure_still_emits_a_one_row_array() {
+    // The shape does not depend on the count — that is the whole reason for
+    // moving to an array rather than switching between two payloads.
+    let root = world_with_construct(&[("barn", b"a")]);
+    let out = bin()
+        .args([
+            "delete",
+            "Test",
+            "barn",
+            "--source",
+            "pack",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["deleted"].as_array().unwrap().len(), 1);
+    assert_eq!(v["deleted"][0]["name"], "barn");
+}
+
+#[test]
+fn delete_with_no_structure_named_is_a_usage_error() {
+    let root = world_with_construct(&[("barn", b"a")]);
+    let out = bin()
+        .args([
+            "delete",
+            "Test",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}
+
+/// A bare destination world under `world_with_construct`'s root, with a
+/// Construct copy of its own so writes land in a predictable place.
+fn destination_with_construct(root: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let world = root.join("minecraftWorlds").join(name);
+    std::fs::create_dir_all(world.join("db")).unwrap();
+    std::fs::write(world.join("levelname.txt"), name).unwrap();
+    std::fs::write(world.join("level.dat"), b"x").unwrap();
+    let bp = world.join("behavior_packs/Construct[BP]");
+    std::fs::create_dir_all(bp.join("structures")).unwrap();
+    std::fs::copy(
+        root.join("development_behavior_packs/Construct[BP]/manifest.json"),
+        bp.join("manifest.json"),
+    )
+    .unwrap();
+    world
+}
+
+#[test]
+fn copy_moves_every_structure_named() {
+    let root = world_with_construct(&[("barn", b"barn-bytes"), ("silo", b"silo-bytes")]);
+    let dst = destination_with_construct(root.path(), "Other");
+
+    let out = bin()
+        .args([
+            "copy",
+            "Test",
+            "Other",
+            "barn",
+            "silo",
+            "--source",
+            "pack",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let structures = dst.join("behavior_packs/Construct[BP]/structures");
+    assert_eq!(
+        std::fs::read(structures.join("barn.mcstructure")).unwrap(),
+        b"barn-bytes"
+    );
+    assert_eq!(
+        std::fs::read(structures.join("silo.mcstructure")).unwrap(),
+        b"silo-bytes"
+    );
+}
+
+#[test]
+fn copy_of_a_batch_with_one_bad_name_writes_nothing() {
+    let root = world_with_construct(&[("barn", b"barn-bytes"), ("silo", b"silo-bytes")]);
+    let dst = destination_with_construct(root.path(), "Other");
+
+    let out = bin()
+        .args([
+            "copy",
+            "Test",
+            "Other",
+            "barn",
+            "nosuchthing",
+            "silo",
+            "--source",
+            "pack",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+
+    let structures = dst.join("behavior_packs/Construct[BP]/structures");
+    assert!(
+        !structures.join("barn.mcstructure").exists(),
+        "nothing may be written when any name in the batch fails to resolve"
+    );
+    assert!(!structures.join("silo.mcstructure").exists());
+}
+
+#[test]
+fn copy_refuses_the_whole_batch_when_one_target_already_exists() {
+    // The collision check runs over the whole plan before the first write,
+    // the way `export`'s does — so `barn` must not land just because `silo`
+    // is the one that collides.
+    let root = world_with_construct(&[("barn", b"barn-bytes"), ("silo", b"silo-bytes")]);
+    let dst = destination_with_construct(root.path(), "Other");
+    let structures = dst.join("behavior_packs/Construct[BP]/structures");
+    std::fs::write(structures.join("silo.mcstructure"), b"theirs").unwrap();
+
+    let out = bin()
+        .args([
+            "copy",
+            "Test",
+            "Other",
+            "barn",
+            "silo",
+            "--source",
+            "pack",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+
+    assert!(!structures.join("barn.mcstructure").exists());
+    assert_eq!(
+        std::fs::read(structures.join("silo.mcstructure")).unwrap(),
+        b"theirs"
+    );
+}
+
+#[test]
+fn copy_json_carries_a_written_array_with_from_to_and_scope_at_the_top() {
+    let root = world_with_construct(&[("barn", b"barn-bytes"), ("silo", b"silo-bytes")]);
+    destination_with_construct(root.path(), "Other");
+
+    let out = bin()
+        .args([
+            "copy",
+            "Test",
+            "Other",
+            "barn",
+            "silo",
+            "--source",
+            "pack",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["schema"], 1);
+    // One destination home per invocation, so these describe the command,
+    // not any one row.
+    assert_eq!(v["from"], "flag1/Test");
+    assert_eq!(v["to"], "flag1/Other");
+    assert_eq!(v["scope"], "world");
+
+    let written = v["written"].as_array().unwrap();
+    assert_eq!(written.len(), 2);
+    assert_eq!(written[0]["name"], "barn");
+    assert_eq!(written[0]["id"], "mystructure:barn");
+    assert_eq!(written[0]["bytes"], 10);
+    assert_eq!(written[1]["name"], "silo");
+}
+
+#[test]
+fn copy_of_a_single_structure_still_emits_a_one_row_array() {
+    let root = world_with_construct(&[("barn", b"barn-bytes")]);
+    destination_with_construct(root.path(), "Other");
+
+    let out = bin()
+        .args([
+            "copy",
+            "Test",
+            "Other",
+            "barn",
+            "--source",
+            "pack",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["written"].as_array().unwrap().len(), 1);
+    assert_eq!(v["written"][0]["name"], "barn");
+}
+
+#[test]
+fn copy_with_no_structure_named_is_a_usage_error() {
+    let root = world_with_construct(&[("barn", b"a")]);
+    let out = bin()
+        .args([
+            "copy",
+            "Test",
+            "Other",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}
+
+/// Where an `import --world Test` lands under `world_with_construct`: the
+/// world's own structures pack, created on demand by the first write.
+fn imported_into_test(root: &std::path::Path, name: &str) -> std::path::PathBuf {
+    root.join("minecraftWorlds/Test/behavior_packs/ConstructStructures/structures")
+        .join(format!("{name}.mcstructure"))
+}
+
+#[test]
+fn import_takes_every_file_named() {
+    let root = world_with_construct(&[]);
+    let barn = root.path().join("barn.mcstructure");
+    let silo = root.path().join("silo.mcstructure");
+    std::fs::write(&barn, b"barn-bytes").unwrap();
+    std::fs::write(&silo, b"silo-bytes").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            barn.to_str().unwrap(),
+            silo.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(
+        std::fs::read(imported_into_test(root.path(), "barn")).unwrap(),
+        b"barn-bytes"
+    );
+    assert_eq!(
+        std::fs::read(imported_into_test(root.path(), "silo")).unwrap(),
+        b"silo-bytes"
+    );
+}
+
+#[test]
+fn import_of_a_batch_with_one_unreadable_file_writes_nothing() {
+    let root = world_with_construct(&[]);
+    let barn = root.path().join("barn.mcstructure");
+    std::fs::write(&barn, b"barn-bytes").unwrap();
+    let missing = root.path().join("nosuchfile.mcstructure");
+
+    let out = bin()
+        .args([
+            "import",
+            barn.to_str().unwrap(),
+            missing.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    // 1, not 2: the batch parses fine, the read is what fails.
+    assert_eq!(out.status.code(), Some(1));
+
+    assert!(
+        !imported_into_test(root.path(), "barn").exists(),
+        "nothing may be written when any file in the batch cannot be read"
+    );
+}
+
+#[test]
+fn import_refuses_two_files_that_would_derive_one_name() {
+    // Distinct files collapsing onto a single structure name is silent data
+    // loss — the second would land on the first. Caught before any write,
+    // not discovered halfway through the batch.
+    let root = world_with_construct(&[]);
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    std::fs::write(a.join("house.mcstructure"), b"first").unwrap();
+    std::fs::write(b.join("house.mcstructure"), b"second").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            a.join("house.mcstructure").to_str().unwrap(),
+            b.join("house.mcstructure").to_str().unwrap(),
+            "--world",
+            "Test",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("house"), "must name the collision:\n{stderr}");
+    assert!(
+        !stderr.contains("unexpected argument"),
+        "must be refused for the name collision, not for taking two files:\n{stderr}"
+    );
+
+    assert!(
+        !imported_into_test(root.path(), "house").exists(),
+        "nothing may be written when two files claim one name"
+    );
+}
+
+#[test]
+fn import_name_with_more_than_one_file_is_a_usage_error() {
+    // `--name` renames a single import; it cannot name several, the same way
+    // `export -o` cannot name several output files.
+    let root = world_with_construct(&[]);
+    let barn = root.path().join("barn.mcstructure");
+    let silo = root.path().join("silo.mcstructure");
+    std::fs::write(&barn, b"a").unwrap();
+    std::fs::write(&silo, b"b").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            barn.to_str().unwrap(),
+            silo.to_str().unwrap(),
+            "--name",
+            "whatever",
+            "--world",
+            "Test",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--name") && !stderr.contains("unexpected argument"),
+        "must be refused for --name, not for taking two files:\n{stderr}"
+    );
+
+    assert!(!imported_into_test(root.path(), "whatever").exists());
+    assert!(!imported_into_test(root.path(), "barn").exists());
+}
+
+#[test]
+fn import_json_carries_a_written_array_with_pack_and_scope_at_the_top() {
+    let root = world_with_construct(&[]);
+    let barn = root.path().join("barn.mcstructure");
+    let silo = root.path().join("silo.mcstructure");
+    std::fs::write(&barn, b"barn-bytes").unwrap();
+    std::fs::write(&silo, b"silo-bytes").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            barn.to_str().unwrap(),
+            silo.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["schema"], 1);
+    // One destination home per invocation, so these describe the command.
+    assert_eq!(v["scope"], "world");
+    assert!(v["pack"].as_str().unwrap().contains("ConstructStructures"));
+
+    let written = v["written"].as_array().unwrap();
+    assert_eq!(written.len(), 2);
+    assert_eq!(written[0]["name"], "barn");
+    assert_eq!(written[0]["id"], "mystructure:barn");
+    assert_eq!(written[0]["bytes"], 10);
+    assert_eq!(written[1]["name"], "silo");
+}
+
+#[test]
+fn import_of_a_single_file_still_emits_a_one_row_array() {
+    let root = world_with_construct(&[]);
+    let barn = root.path().join("barn.mcstructure");
+    std::fs::write(&barn, b"barn-bytes").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            barn.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["written"].as_array().unwrap().len(), 1);
+    assert_eq!(v["written"][0]["name"], "barn");
+}
+
+#[test]
+fn import_with_no_file_named_is_a_usage_error() {
+    let root = world_with_construct(&[]);
+    let out = bin()
+        .args([
+            "import",
+            "--world",
+            "Test",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn completions_subcommand_generates_shell_scripts() {
+    for shell in ["bash", "zsh", "fish", "elvish", "powershell"] {
+        let out = bin().args(["completions", shell]).output().unwrap();
+        assert!(
+            out.status.success(),
+            "completions {shell} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            text.contains("construct"),
+            "completions {shell} output missing binary name: {text}"
+        );
+    }
+}
+
+#[test]
+fn tab_completion_completes_world_names() {
+    let root = world_with_construct(&[("barn", b"x")]);
+    let out = bin()
+        .env("_CLAP_COMPLETE_INDEX", "4")
+        .env("COMPLETE", "bash")
+        .args([
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+            "--",
+            "construct",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+            "export",
+            "",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Test"), "should suggest world Test:\n{text}");
+}
+
+#[test]
+fn tab_completion_completes_structure_names_for_the_targeted_world() {
+    let (root, world_name) = fixture_world_with_construct(&[], &[("bomber", b"x")]);
+    let out = bin()
+        .env("_CLAP_COMPLETE_INDEX", "5")
+        .env("COMPLETE", "bash")
+        .args([
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+            "--",
+            "construct",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+            "export",
+            world_name,
+            "",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("house"),
+        "should suggest world-db structure house:\n{text}"
+    );
+    assert!(
+        text.contains("bomber"),
+        "should suggest pack structure bomber:\n{text}"
+    );
+}
+
+#[test]
+fn tab_completion_completes_source_world_structures_for_copy() {
+    let root = world_with_construct(&[("barn", b"x")]);
+    destination_with_construct(root.path(), "Other");
+
+    let out = bin()
+        .env("_CLAP_COMPLETE_INDEX", "6")
+        .env("COMPLETE", "bash")
+        .args([
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+            "--",
+            "construct",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+            "copy",
+            "Test",
+            "Other",
+            "",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("barn"),
+        "should suggest source world structure barn:\n{text}"
+    );
 }

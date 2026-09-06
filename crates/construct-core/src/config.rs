@@ -5,25 +5,29 @@
 //! Unknown keys warn rather than fail.
 
 use crate::error::{CoreError, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Config {
     pub default_installation: Option<String>,
     pub roots: Vec<ExtraRoot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other_worlds: Vec<PathBuf>,
     pub backups: Backups,
+    #[serde(flatten, skip_serializing_if = "toml::Table::is_empty")]
+    unknown: toml::Table,
 }
 
 /// An extra `com.mojang` root to probe. Named, because an unnamed root cannot
 /// appear in the `<installation>/<account>/<world>` grammar.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ExtraRoot {
     pub name: String,
     pub path: PathBuf,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Backups {
     pub dir: Option<PathBuf>,
     pub keep: usize,
@@ -69,6 +73,8 @@ struct WireConfig {
     default_installation: Option<String>,
     #[serde(default)]
     roots: Vec<WireRoot>,
+    #[serde(default)]
+    other_worlds: Vec<PathBuf>,
     backups: Option<WireBackups>,
     #[serde(flatten)]
     unknown: toml::Table,
@@ -137,23 +143,98 @@ pub fn parse(text: &str, path: &Path) -> Result<(Config, Vec<String>)> {
         Config {
             default_installation: wire.default_installation,
             roots,
+            other_worlds: wire.other_worlds,
             backups,
+            unknown: wire.unknown,
         },
         warnings,
     ))
+}
+
+/// The effective config location before any config contents are read.
+pub fn path(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    env("CONSTRUCT_CONFIG")
+        .map(PathBuf::from)
+        .or_else(default_path)
+}
+
+/// Loads only the config file, without applying environment overrides.
+pub fn load_file(path: &Path) -> Result<(Config, Vec<String>)> {
+    if !path.is_file() {
+        return Ok((Config::default(), Vec::new()));
+    }
+    parse(&std::fs::read_to_string(path)?, path)
+}
+
+/// Saves a config, creating its parent directory when necessary.
+pub fn save(path: &Path, config: &Config) -> Result<()> {
+    let text = toml::to_string_pretty(config).map_err(|e| CoreError::BadConfig {
+        path: path.to_path_buf(),
+        reason: e.to_string(),
+    })?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, text)?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddedPath {
+    Root,
+    OtherWorld,
+}
+
+/// Adds a directory to the appropriate persistent path list.
+pub fn add_path(config: &mut Config, path: &Path) -> Result<(AddedPath, bool)> {
+    if !path.is_dir() {
+        return Err(CoreError::InvalidPath {
+            path: path.to_path_buf(),
+            reason: "expected a directory".to_string(),
+        });
+    }
+    let path = std::fs::canonicalize(path)?;
+
+    if path.file_name().is_some_and(|name| name == "com.mojang") {
+        if config.roots.iter().any(|root| root.path == path) {
+            return Ok((AddedPath::Root, false));
+        }
+        let mut number = 1;
+        let name = loop {
+            let name = format!("root{number}");
+            if !config.roots.iter().any(|root| root.name == name) {
+                break name;
+            }
+            number += 1;
+        };
+        config.roots.push(ExtraRoot { name, path });
+        return Ok((AddedPath::Root, true));
+    }
+
+    if path.join("level.dat").is_file() {
+        let added = !config.other_worlds.contains(&path);
+        if added {
+            config.other_worlds.push(path);
+        }
+        return Ok((AddedPath::OtherWorld, added));
+    }
+
+    Err(CoreError::InvalidPath {
+        path,
+        reason: "expected a com.mojang directory or a world directory containing level.dat"
+            .to_string(),
+    })
 }
 
 /// Loads config, then applies environment overrides on top.
 pub fn load(explicit: Option<&Path>, env: &dyn Fn(&str) -> Option<String>) -> Result<Loaded> {
     let path = explicit
         .map(Path::to_path_buf)
-        .or_else(|| env("CONSTRUCT_CONFIG").map(PathBuf::from))
-        .or_else(default_path);
+        .or_else(|| self::path(env));
 
     let (mut config, mut warnings, source) = match &path {
         Some(p) if p.is_file() => {
-            let text = std::fs::read_to_string(p)?;
-            let (c, w) = parse(&text, p)?;
+            let (c, w) = load_file(p)?;
             (c, w, Some(p.clone()))
         }
         // An absent file is not an error.
@@ -238,6 +319,16 @@ keep = 3
             "warning should name the key: {}",
             warnings[0]
         );
+    }
+
+    #[test]
+    fn saving_preserves_unknown_keys() {
+        let (config, _) = parse("future_setting = true\n", Path::new("c.toml")).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        save(&path, &config).unwrap();
+        let saved = std::fs::read_to_string(path).unwrap();
+        assert!(saved.contains("future_setting = true"));
     }
 
     #[test]
