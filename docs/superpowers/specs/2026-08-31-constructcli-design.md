@@ -153,31 +153,36 @@ command can ship before the codec exists.
 
 | Command | leveldb read | leveldb write | Other writes |
 |---|---|---|---|
-| `worlds`, `list`, `export`, `status` | yes | — | — |
+| `worlds`, `structures`, `export`, `status` | yes | — | — |
 | `import` | — | — | pack `structures/` |
 | `copy` | yes (source) | — | pack `structures/` |
 | `install` | — | — | packs, pack JSON, `level.dat` |
 | `experiment` | — | — | `level.dat` |
-| `delete --source pack` | — | — | unlink one `.mcstructure` |
-| **`delete --source world`** | yes | **yes** | — |
+| `delete <name>` (no `--world`) | — | — | unlink from the shared Construct |
+| `delete <name> --world W --source pack` | — | — | unlink from that world's pack |
+| **`delete <name> --world W`** | — | **yes** | unlink, when the world's pack also matched |
 
-`delete --source world` is the only command that writes to a leveldb *deliberately*. Every
-"leveldb read" in the table above is a read of a **copy**, never of the world itself,
-because opening a database modifies it (§8). Deleting a pack structure is an ordinary file
-unlink and carries none of the ceremony in §8.
+`delete` is the only command that writes to a leveldb *deliberately*, and since stage 4 it is
+also the only one that opens a world's **own** database. Every "leveldb read" in the table
+above is a read of a **copy**, never of the world itself, because opening a database modifies
+it (§8) — but a write has to touch the original, and a copy would be thrown away unwritten.
+`delete` therefore does not read via a copy either: one live handle lists, resolves, and
+removes. Deleting a pack structure is an ordinary file unlink and carries none of that
+ceremony, which is why `--source pack` and `--pack` provably never open a database at all.
 
 ## 5. Command surface
 
 ```
 construct worlds                                    # enumerate discovered worlds
 construct status                                    # Construct: installed version, latest, enabled worlds
-construct list <world>                              # structures in a world, both sources
+construct structures --world <world>                # structures in a world, both sources
 construct export <world> <structure> [-o FILE]
 construct export <world> <s1> <s2>...                # one file each; -o is a usage error
 construct export <world> <s1> <s2>... --merge -o FILE
 construct import <file> [--world W] [--name N]      # into Construct's structures/
 construct copy <src-world> <structure> <dst-world>
-construct delete <world> <structure>
+construct delete <structure>                        # from the shared Construct
+construct delete <structure> --world W              # that world only, never shared
 construct install [--version V] [--world W]
 construct experiment <world> --beta-apis [on|off]   # value omitted prints current state
 ```
@@ -192,14 +197,14 @@ these as a single in-game list**, so the CLI does too — presenting two lists w
 worse model than the thing it drives.
 
 ```
-$ construct list release/Survival
+$ construct structures release/Survival
 NAME              SOURCE   SIZE
 house             world     12 KB
 barn              world      4 KB
 imported_tower    pack      31 KB
 ```
 
-`list` with **no world** is the one listing that is about the installation rather than a
+`structures` with **no world** is the one listing that is about the installation rather than a
 world: it shows the shared pack's `structures/` alone, which is what every world using that
 pack gets. No world's own pack is in it and no database is opened, so it answers "what is in
 the shared pack?" without needing a world to ask through. `--source world` there is a usage
@@ -208,18 +213,41 @@ error (exit 2) — a world's structures live in a world's database, and none was
 Every structure-taking command accepts a bare name and searches both sources. A name present
 in both is an error naming the qualified forms, with `--source world|pack` as the
 disambiguator — the same never-guess rule §6 applies to world references. `--source` also
-works as a plain filter on `list`.
+works as a plain filter on `structures`.
+
+**`delete` is the exception, added in stage 4.** Its scope is expressed by its grammar
+rather than by a filter, mirroring `import`: `delete <name>` targets the shared copy of
+Construct, `delete <name> --world W` targets that world. Absence means shared for both
+commands.
+
+**`--world` cannot reach the shared copy**, by construction rather than by convention. A
+structure there belongs to every world using it, so a command scoped to one world must not
+remove it as a side effect; a name found only in the shared copy is reported as missing from
+the world instead. Removing the shared one is a different invocation, and it warns.
+
+Within the world scope, `delete` removes *every* matching copy — the database key and the
+world's own pack file — rather than refusing. The never-guess rule exists because `export -o`
+and `copy` have to pick one of the matches and any pick is a guess; "remove this name from
+this world" contains no such guess, so there is nothing to refuse. `--source` narrows it for
+anyone who wants one gone and the other kept. `--pack` is refused outright on `delete` and
+`export`: it is a second scope selector that can contradict `--world`. Every other command
+keeps the never-guess refusal.
 
 A world sees two *packs*, so one name can be in both — its own and the shared Construct's.
 `--source` cannot separate those: both matches are pack entries, and pointing at it would
 send the user round a loop that never resolves. **`--pack world|shared`** is the
-disambiguator for that case, in the same vocabulary `list` prints (`pack:world`,
-`pack:shared`) and the payloads carry (`scope`). It filters listings as well as resolving
-names. Naming a pack drops world-database entries: a pack filter is about packs, and a
-structure in a database is in none of them.
+disambiguator for that case, in the same vocabulary `structures` prints (`pack:world`,
+`pack:shared`) and the payloads carry (`scope`). Since stage 4 it is declared only on `copy`,
+the one command left that must resolve a single name out of both packs a world sees:
+`export` and `delete` express scope with `--world` instead, and `structures` lists both packs
+rather than choosing. Naming a pack drops world-database entries: a pack filter is about
+packs, and a structure in a database is in none of them.
 
-This gives `delete` a useful asymmetry: `--source pack` is an `unlink` with none of §8's
-ceremony, while `--source world` is the only leveldb write in the tool.
+This gives `delete` a useful asymmetry. `delete <name>` with no `--world` is an `unlink`
+with none of §8's ceremony and opens no database at all — there is no world in scope to open
+one for. `delete <name> --world W --source pack` is likewise a pure unlink. Only
+`delete --world` without `--source pack` writes to a leveldb, which makes it the only such
+write in the tool.
 
 ### Where a world's structures are managed
 
@@ -262,7 +290,7 @@ pack or in a world's own Construct belongs to that world, and one in the shared 
 appears in every world using it.
 
 ```
-$ construct list release/Survival
+$ construct structures --world release/Survival
 NAME              SOURCE        SIZE
 house             world        12 KB
 barn              world         4 KB
@@ -278,17 +306,17 @@ One consequence has no clean answer and is reported rather than resolved: a worl
 one name in two packs — `house` in the shared Construct and `house` in its own structures
 pack. The files do not collide, so §5's overwrite rule has nothing to refuse; the game loads
 both packs, logs a conflict, and picks a winner this tool cannot predict. `import` and `copy`
-therefore **warn** naming both packs, and `list` shows both rows with their scopes. Refusing
+therefore **warn** naming both packs, and `structures` shows both rows with their scopes. Refusing
 instead would block the one path every existing user takes — giving a world copies of
 structures the shared pack already has.
 
-Commands that need *one* structure refuse such a name until `--pack` picks between them.
-Without that the name is unreachable: `delete` could neither remove the world's copy nor the
-shared one.
+Commands that need *one* structure refuse such a name. On `copy`, `--pack` picks between
+them; on `export` and `delete`, `--world` already settles it — with the shared copy out of
+scope there is only one pack left to name.
 
 ### Output
 
-`--json` is supported by `worlds`, `list`, and `status`, and by the result summary of every
+`--json` is supported by `worlds`, `structures`, and `status`, and by the result summary of every
 write command. Each payload carries a `"schema": 1` field. Versioning the output from the
 first release is cheap insurance given that a GUI consuming this library is a stated goal.
 
@@ -323,7 +351,7 @@ a mangled name is one Construct will not list.
 subfolder supplies. The names the game itself stores keep their capitals: `10HzCounter` and
 `CanopyPlayers:players` are both real keys measured in local worlds, the second showing that
 Bedrock does not fold a namespace either. Lowercasing was the earlier rule and was mangling by
-the definition above: it made half the structures `list` prints unaddressable by `import
+the definition above: it made half the structures `structures` prints unaddressable by `import
 --name`, `copy`, and `delete`. One consequence to know: on a case-insensitive filesystem —
 macOS's default — `House` and `house` are one file, so the second import refuses as a
 collision there while creating a separate file on Linux. The derived name is always printed, and
@@ -386,7 +414,7 @@ A world reference is a display name (from `levelname.txt`) or a folder name. Qua
 is only needed when ambiguous, and the error supplies the qualified form:
 
 ```
-$ construct list "Test World"
+$ construct structures --world "Test World"
 error: "Test World" matches 3 worlds
 
   release/Shared/Ssu8ww1SFbM=         4 MB   3 weeks ago
@@ -394,7 +422,7 @@ error: "Test World" matches 3 worlds
   preview/Shared/XyZ9=                1 MB   2 months ago
 
 Use a qualified reference:
-  construct list release/Shared/Ssu8ww1SFbM=
+  construct structures --world release/Shared/Ssu8ww1SFbM=
 ```
 
 Qualified form is `<installation>/<account>/<world>`, each segment optional from the left.
@@ -465,7 +493,7 @@ reading from a 2.4 GB snapshot…
 ```
 
 The copy is unconditional and not gated behind a flag. It announces itself, because it is
-not free: `construct list` on a large survival world copies gigabytes before printing a
+not free: `construct structures` on a large survival world copies gigabytes before printing a
 dozen lines. That cost buys the guarantee that a read cannot alter a save, which is worth
 more than the seconds — a tool that silently rewrites a world it was only asked to inspect
 has no business being pointed at anyone's survival world.
@@ -482,30 +510,79 @@ Recorded here rather than implied, because an earlier draft of this section prom
 check the code did not perform.
 
 The prize this forfeits is a cheap read. A backend offering a genuine read-only open — one
-that neither recovers nor locks — would let `list` and `export` skip the copy entirely.
+that neither recovers nor locks — would let `structures` and `export` skip the copy entirely.
 `bedrock-leveldb` claims exactly that (§3), which is why `StructureStore` is a trait: the
 day a read-only open exists, reads stop copying, and no command above the trait changes.
 
-LevelDB writes (`delete --source world` only) follow a fixed sequence:
+LevelDB writes (`delete` only) follow a fixed sequence:
 
 1. Resolve the world.
-2. Snapshot `db/` to the backup directory. **Before opening**, because opening is itself a
-   write — a snapshot taken afterwards preserves an already-modified database.
-3. Open the database. **If the LOCK is held, stop.** No `--force`; a concurrent writer is
-   how worlds get corrupted.
-4. Mutate.
+2. **Refuse if the world looks in use.** No `--force`; a concurrent writer is how worlds get
+   corrupted.
+3. Open the world's own database. This is the one place in the tool that does, and the open
+   is itself a write, which is why step 2 comes first.
+4. Mutate, verifying each removal against the same handle.
 5. Drop the handle to flush.
-6. Report the backup path in the success message.
 
-There is no `--force` for the LOCK refusal. The `--force` flag in §5 governs file collisions
-only and never applies here.
+**Amended in stage 4, twice.**
+
+*The LOCK refusal became a two-phase watch.* Step 2 originally read "open the database; if
+the LOCK is held, stop." That is not implementable against this backend: the build shipped by
+mcpelauncher creates no `db/LOCK` at all with a world open — measured 2026-09-04 and
+re-confirmed 2026-09-05 across ten real worlds — so the file's presence is evidence of
+neither state.
+
+What replaces it has three phases, because one is not enough.
+
+1. `inuse::looks_in_use` asks whether `db/` was written within `ACTIVITY_WINDOW`. It only
+   *suspects*, and a negative — the common case — is instant and final.
+2. `writemark::left_by_us` asks whether that recent write was **ours**. `delete` writes `db/`
+   itself, so its own write looked exactly like a running game to the next invocation; the
+   mark records the mtime left behind and recognises it exactly. Instant.
+3. `inuse::confirm_in_use` watches for a **further** write, up to `CONFIRM_WATCH`. A live
+   world keeps writing and a finished command does not, which is the distinction a recency
+   test alone cannot make.
+
+Only phase 3 can refuse. Phase 2 can only ever *skip* a wait, never cause one, and every way
+it can fail — no mark, an unreadable one, a first run, a world someone else touched — falls
+through to phase 3, which is where the check was before the mark existed. So the mark cannot
+make a world look free when it is not: a write by the game since ours is strictly newer than
+the recorded mtime, which no filesystem granularity can blur. Verified against a live session
+(2026-09-05): a planted mark goes stale within one autosave gap and the world is still
+detected as open.
+
+Both constants are twice the longest measured autosave gap, and that measurement is
+per-build: 5s on mcpelauncher/macOS, **10s** on mcpelauncher flatpak/Linux (14 writes in 90s,
+2026-09-05). The window was 10s on the macOS figure alone, which on Linux equalled the real
+gap and let a world the game had open read as free — a false negative on the dangerous side.
+It is 20s now. The check stays one-sided: a false positive costs a watch the user waits out,
+a false negative costs a corrupted save.
+
+Exact per-platform signals exist — a held `flock` where a build takes one, `/proc/*/fd` on
+Linux, which was measured to work even through flatpak — and are deliberately not used. A
+detector that is precise on one platform and absent on the others is worse than one that
+behaves identically everywhere.
+
+*The db backup is gone.* Steps 2 and 6 of the original sequence snapshotted `db/` to the
+backup directory and reported the path. Stage 4 dropped both. LevelDB is crash-safe by
+construction — a write-ahead log plus an atomic manifest rename — so an interrupted `Delete`
+loses the deletion rather than the database, and the FFI's default `WriteOptions`
+(`sync = false`, with no knob to change it) mean the exposure is a lost *removal* on power
+loss, not a damaged world. The backup was never really defending against leveldb; it was
+defending against this tool being wrong, and it cost a full copy of `db/` — gigabytes, ten
+deep at the default retention — on every world delete. What it bought was undo for deleting
+the wrong structure, and `export` before `delete` buys that for anyone who wants it.
+
+The `--force` flag in §5 governs file collisions only and never applies to the in-use
+refusal.
 
 Backups live outside the world folder, in the configured backup directory, with retention
-of the last `keep` per world (default 10). A `db.backup-*` folder inside a world directory
-would confuse Minecraft, bloat the world, and ride along into any world export. Retention is
-keyed on the
-path-sanitized qualified reference `<installation>/<account>/<folder>`, not the folder name
-alone, which is not unique across roots.
+of the last `keep` per world (default 10). Since stage 4 removed the db backup these are
+`level.dat` copies alone, which are kilobytes; the reasoning still stands for anything a
+later stage adds. A backup folder inside a world directory would confuse Minecraft, bloat
+the world, and ride along into any world export. Retention is keyed on the path-sanitized
+qualified reference `<installation>/<account>/<folder>`, not the folder name alone, which is
+not unique across roots.
 
 `level.dat` writes (`install --world`, `experiment`) copy the file to the same backup
 directory before modifying it. Minecraft's own `level.dat_old` is not a substitute — it is
@@ -605,7 +682,7 @@ re-serialized exactly five bytes shorter per empty list. Of the thirteen files m
 The same crate also converts `ByteArray`, `IntArray`, and `LongArray` into `List` on parse,
 so those tags cannot survive a round-trip either.
 
-Decoding is unaffected — every file above parses correctly — so `list`, `export`, `import`,
+Decoding is unaffected — every file above parses correctly — so `structures`, `export`, `import`,
 and `copy` were never blocked. **Resolved in stage 3** by patching the fork, the first option
 listed here: `nbtx` writes a sequence's element type and length lazily, on the first element,
 so an empty one emits neither. The patch arms a flag when a sequence opens and writes
@@ -639,7 +716,7 @@ that, the sole installation if only one exists; failing that, they error listing
 candidates. Same never-guess rule as world references.
 
 `status` also reports **where this installation's worlds keep their structures**: a count for
-the shared pack, then one per world that has a home of its own. `list` answers that question
+the shared pack, then one per world that has a home of its own. `structures` answers that question
 one world at a time, and a structure in the shared pack is in every world using it — only the
 cross-world view shows both at a glance. A world with no home yet has no row: the shared line
 already says everything that world sees. It stays a cheap command — a directory listing per
@@ -816,10 +893,10 @@ Every message names the thing, says why, and gives the next action.
 | World reference ambiguous | Disambiguation table with qualified references | 2 |
 | World in use, read command | Irrelevant — reads always work from a copy | 0 |
 | No room for the snapshot a read needs | The copy fails part-way with the OS error; there is no pre-flight check (§8) | 1 |
-| World in use, `delete --source world` | Stop hard; no `--force` | 4 |
+| World in use, `delete --world` (db-touching form) | Stop hard, before the open; no `--force` | 4 |
 | World in use, `level.dat` write | Refuse before backup or write; name the world and say to close it | 4 |
 | Structure not found | Suggest near matches from the catalog already in hand | 3 |
-| Structure name in both sources | Name both qualified forms; point at `--source` | 2 |
+| Structure name in both sources | Name both qualified forms; point at `--source` — except `delete`, which removes both (§5) | 2 |
 | Structure prefix | Bare `name` means `mystructure:name`; `prefix:name` accepted explicitly | — |
 | Target file already exists | Refuse; point at `--force` | 1 |
 | Unusable name from file stem | Reject rather than mangle; point at `--name` | 2 |
@@ -922,17 +999,20 @@ cleanly separable. Suggested stages, each independently useful:
 
 0. **Spike** — `bedrock_level` against a copy of a real world. Throwaway. Gates everything.
 1. **Read path** — workspace scaffolding, `config`, `discovery` (including multi-root, world
-   references, and paths-as-references), `store` reads, and `worlds` / `list` / `export`.
+   references, and paths-as-references), `store` reads, and `worlds` / `structures` / `export`.
    Delivers the half of the tool that replaces holoprint, and touches nothing destructive.
-   `list` is world-source only until stage 2 adds the pack source.
+   `structures` is world-source only until stage 2 adds the pack source.
 2. **Construct integration** — `pack`, `catalog`, `install`, `status`, `experiment`,
    `import`, `copy`, and `delete --source pack`. Delivers the other documented manual
    workflow and unifies the namespace. Writes files and `level.dat`, but no leveldb. Settle
    the pack-structure naming question (§17) here, once there is tooling to check it with.
 3. **Merge** — `mcstructure` codec and `merge`, behind `export --merge`. The only stage
    needing the codec; fully testable against fixtures.
-4. **Delete from a world** — `backup` plus `store` writes and `delete --source world`.
+4. **Delete from a world** — `store` writes and `delete` against a world's own database.
    Deliberately last: the only leveldb write, and the only stage that can damage a world.
+   **Shipped without the `backup` work this line planned for**: see §8: leveldb's own
+   crash-safety makes a db copy the wrong tool, and the in-use refusal is what guards the
+   write. Stage 4 also gave `delete` its delete-both semantics (§5).
 
 Note that deletion arrives in stage 2 for pack structures, so users get the capability long
 before the risky path exists. Stage 4 could be dropped entirely without affecting anything
@@ -943,7 +1023,7 @@ else, which is worth remembering if `bedrock_level`'s write path disappoints in 
 | Risk | Severity | Mitigation |
 |---|---|---|
 | Construct upgrade wipes `structures/` | **Data loss** | Preserve across upgrade; highest-priority test |
-| `delete` corrupts a world db | **Data loss** | Mojang's leveldb via FFI; snapshot before write; hard refusal on LOCK |
+| `delete` corrupts a world db | **Data loss** | **Revised in stage 4.** Mojang's own leveldb via FFI; hard refusal when the world looks in use (§8), which is write-recency because the LOCK is unobservable on at least one real build. No backup: leveldb's WAL and atomic manifest rename make an interrupted delete lose the removal, not the database. The residual exposure is deleting the wrong structure, which `export` before `delete` covers |
 | `bedrock-rs` churns or stalls | High | Commit pin; `StructureStore` trait; Apache-2.0 permits vendoring |
 | Upstream never merges the portability fixes | Medium | **Realized.** Forks are pinned and self-sufficient; upstream merging is an improvement, not a dependency |
 | A read silently rewrites a world | **Data loss** | **Realized in the spike.** Reads always operate on a copy (§8); asserted by a test that hashes `db/` before and after |
@@ -990,7 +1070,7 @@ data in ordinary `AppData\Roaming`.
 - **How a `.mcstructure` sitting directly in `structures/` is addressed in-game** — as bare
   `name`, or as `namespace:name` requiring a subdirectory. Construct's README says to drop
   files directly into the folder, which suggests the bare form, but this determines what
-  `list` displays for pack-source structures and what `import` should name them. Deferred to
+  `structures` displays for pack-source structures and what `import` should name them. Deferred to
   stage 2, when the tooling to check it exists.
 
   Two shipped packs found on a real machine use *different* layouts, which is the strongest
@@ -1016,14 +1096,14 @@ data in ordinary `AppData\Roaming`.
 
   Pack structure ids therefore arrive from the game already carrying `mystructure:`, so a file
   sitting directly in `structures/` is `mystructure:<stem>`. That is what `import` writes by
-  default, and what `list` displays. The subdirectory form remains inferred — from
+  default, and what `structures` displays. The subdirectory form remains inferred — from
   `behavior_packs/Understudy/structures/Understudy/players.mcstructure` in a world-local pack
   copy — and is item 6 on the §16 checklist rather than something `import` defaults to.
 
   The same code shows two behaviours the CLI deliberately does **not** copy. Construct's list
   lets a pack structure *shadow* a world structure of the same name, and it drops world
   structures outside `mystructure:` entirely. §5 refuses an ambiguous name rather than picking
-  a winner, and `list` shows every namespace — but the ambiguity message says which copy
+  a winner, and `structures` shows every namespace — but the ambiguity message says which copy
   Construct would show in-game, since that is the question the user is really asking.
 
   **Settled, and wider than assumed.** `docs/bedrock-mcstructure-files.md` — a local copy of
@@ -1039,7 +1119,7 @@ data in ordinary `AppData\Roaming`.
 
   **The first subfolder is the namespace; every folder after it is part of the name.** Nesting is
   therefore not limited to one level, which is what an earlier reading of the evidence assumed —
-  `list` must walk `structures/` to its full depth, and an id may legitimately contain `/` after
+  `structures` must walk `structures/` to its full depth, and an id may legitimately contain `/` after
   the colon.
 
   Two further behaviours are documented there and worth recording:
@@ -1052,7 +1132,7 @@ data in ordinary `AppData\Roaming`.
     world copy. Both are true: the addon's list and the engine's loader disagree, so the CLI says
     which copy Construct displays rather than claiming which one the game would place.
 
-  Reading and writing stay asymmetric on purpose. `list` shows whatever depth is on disk, but
+  Reading and writing stay asymmetric on purpose. `structures` shows whatever depth is on disk, but
   `import --name` still refuses a `/` in the name: creating nested paths is a capability nobody has
   asked for, and the character that would enable it is the one that makes traversal possible.
 - The **disable** direction of the Beta APIs flip (§10). The enabled state is measured; that

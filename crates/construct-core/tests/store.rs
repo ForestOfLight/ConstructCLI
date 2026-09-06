@@ -17,7 +17,7 @@ fn extract() -> (tempfile::TempDir, PathBuf) {
 #[test]
 fn lists_only_structure_keys() {
     let (_tmp, db) = extract();
-    let store = BedrockStore::open(&db).unwrap();
+    let store = BedrockStore::open_copy(&db).unwrap();
     let mut ids = store.ids().unwrap();
     ids.sort();
     assert_eq!(
@@ -34,7 +34,7 @@ fn lists_only_structure_keys() {
 #[test]
 fn gets_a_structure_by_bare_name() {
     let (_tmp, db) = extract();
-    let store = BedrockStore::open(&db).unwrap();
+    let store = BedrockStore::open_copy(&db).unwrap();
     let bytes = store.get("house").unwrap().expect("house is present");
     assert!(!bytes.is_empty());
     // A .mcstructure is little-endian NBT, which begins with TAG_Compound.
@@ -44,7 +44,7 @@ fn gets_a_structure_by_bare_name() {
 #[test]
 fn gets_a_structure_by_qualified_name() {
     let (_tmp, db) = extract();
-    let store = BedrockStore::open(&db).unwrap();
+    let store = BedrockStore::open_copy(&db).unwrap();
     assert!(store.get("understudy:players").unwrap().is_some());
     // The bare form must NOT find a non-default namespace.
     assert!(store.get("players").unwrap().is_none());
@@ -53,22 +53,81 @@ fn gets_a_structure_by_qualified_name() {
 #[test]
 fn a_missing_structure_is_none_not_an_error() {
     let (_tmp, db) = extract();
-    let store = BedrockStore::open(&db).unwrap();
+    let store = BedrockStore::open_copy(&db).unwrap();
     assert!(store.get("nope").unwrap().is_none());
 }
 
 #[test]
 fn opening_a_nonexistent_database_is_an_error() {
     let tmp = tempfile::tempdir().unwrap();
-    assert!(BedrockStore::open(&tmp.path().join("no-db")).is_err());
+    assert!(BedrockStore::open_copy(&tmp.path().join("no-db")).is_err());
 }
 
 #[test]
 #[should_panic(expected = "outside a temp directory")]
 fn the_guard_refuses_a_path_outside_temp() {
-    construct_core::store::bedrock::guard_test_path(std::path::Path::new(
+    construct_core::store::bedrock::guard_copy_path(std::path::Path::new(
         "/Users/someone/world/db",
     ));
+}
+
+/// A `World` pointing at an extracted fixture, for the write path.
+///
+/// `open_live` takes a `&World` rather than a `&Path` on purpose — it is the
+/// one opener with no temp-directory guard, so it must not be reachable by
+/// handing a path to a general-purpose function. Building one here is the
+/// cost of that, and it is the point.
+fn fixture_world(dir: &std::path::Path) -> construct_core::discovery::World {
+    construct_core::discovery::World {
+        installation: "test".into(),
+        account: None,
+        folder: "test_level".into(),
+        display_name: "test_level".into(),
+        path: dir.join("test_level"),
+        last_played: None,
+        last_played_source: construct_core::discovery::LastPlayedSource::DirMtime,
+        size_bytes: 0,
+    }
+}
+
+#[test]
+fn open_live_removes_a_structure_and_a_fresh_open_agrees() {
+    let (tmp, _db) = extract();
+    let world = fixture_world(tmp.path());
+
+    {
+        let live = BedrockStore::open_live(&world).unwrap();
+        assert!(live.get("house").unwrap().is_some(), "fixture has house");
+        assert!(live.remove("mystructure:house").unwrap(), "it was removed");
+    }
+
+    // A separate open, after the write handle has been dropped and flushed.
+    let reopened = BedrockStore::open_live(&world).unwrap();
+    assert!(reopened.get("house").unwrap().is_none());
+    // Only the named key went.
+    assert!(reopened.get("barn").unwrap().is_some());
+    assert!(reopened.get("understudy:players").unwrap().is_some());
+}
+
+#[test]
+fn removing_a_structure_that_is_not_there_reports_false() {
+    // leveldb's own `Delete` succeeds for a key that was never present, so
+    // without the lookup beforehand "deleted" would mean nothing.
+    let (tmp, _db) = extract();
+    let world = fixture_world(tmp.path());
+    let live = BedrockStore::open_live(&world).unwrap();
+    assert!(!live.remove("nope").unwrap());
+}
+
+#[test]
+fn a_bare_name_removes_only_the_default_namespace() {
+    // `understudy:players` must survive a `delete players`, the same way
+    // `get` refuses to find it under a bare name.
+    let (tmp, _db) = extract();
+    let world = fixture_world(tmp.path());
+    let live = BedrockStore::open_live(&world).unwrap();
+    assert!(!live.remove("players").unwrap());
+    assert!(live.get("understudy:players").unwrap().is_some());
 }
 
 use construct_core::store::snapshot;

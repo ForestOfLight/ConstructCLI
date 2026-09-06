@@ -21,7 +21,7 @@ pub trait StructureStore {
 
     /// Every structure id with the byte length of its value.
     ///
-    /// Separate from `ids` because `list` needs both and the leveldb backend can
+    /// Separate from `ids` because `structures` needs both and the leveldb backend can
     /// produce them in a single pass. The default implementation is the obvious
     /// two-step; backends that can do better should.
     fn sizes(&self) -> Result<Vec<(String, u64)>> {
@@ -97,6 +97,11 @@ impl StructureStore for OpenedStore {
 /// recovery and rewrites it, so there is no such thing as a read-only open with
 /// this backend — the only safe read is one that never touches the original.
 /// There is deliberately no direct path and no fallback logic here.
+///
+/// The one command that opens a world's own database is `delete`, and it does
+/// so through [`bedrock::BedrockStore::open_live`] rather than here — a write
+/// has to touch the original, and the copy this function makes would be thrown
+/// away unwritten.
 pub fn open_world_store(world: &World) -> Result<OpenedStore> {
     let db = world.db_path();
     if !db.is_dir() {

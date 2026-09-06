@@ -4,12 +4,12 @@ Things automated tests cannot settle. Stage 1 and 2 items; §16 of the design
 spec holds the full list.
 
 - [x] `construct worlds` finds every world the launcher shows, with matching names.
-- [x] `construct list` on a world with structures matches what Construct shows in-game.
+- [x] `construct structures` on a world with structures matches what Construct shows in-game.
 - [x] **Locked world:** load a world in Minecraft, leave it running, then
-      `construct list <that world>`. It must print the snapshot notice and still
+      `construct structures --world <that world>`. It must print the snapshot notice and still
       list structures. POSIX `fcntl` locks are per-process, so this cannot be
       tested from inside the test binary — only a second process proves it.
-- [x] **World left unchanged:** run `construct list` and `construct export`
+- [x] **World left unchanged:** run `construct structures` and `construct export`
       against a world, then confirm the world's `db/` directory is unchanged
       and the world still loads in Minecraft. Byte-identity across every file
       in `db/` has already been verified programmatically; this step is about
@@ -20,6 +20,36 @@ spec holds the full list.
       gap, since only the game could confirm the file is actually usable.
       `construct export` therefore replaces the holoprint upload workflow
       end to end.
+- [ ] **Stage 4: a world survives a database delete.** Save a structure in-game
+      with a structure block, close the world, `construct delete <world> <name>`,
+      then reopen the world in Minecraft. The world must load, the structure must
+      be gone from the in-game list, and everything else must still be there.
+      Tests prove the key is removed and that the rest of the database reads back;
+      only the game can confirm it still considers the world sound afterwards.
+      This is the tool's only leveldb write, so it is the one item on this list
+      where a failure means data loss rather than a wrong answer.
+- [x] **Stage 4: the in-use detection fires against a real session.** Confirmed
+      2026-09-05 against mcpelauncher flatpak / Linux 1.26.45.1: a live world is
+      confirmed in 3.5s, a world closed for hours is cleared. Two `#[ignore]`d
+      tests automate it — with a world open, run:
+
+      ```
+      CONSTRUCT_LIVE_WORLD_DB=<com.mojang>/minecraftWorlds/<world>/db \
+      CONSTRUCT_IDLE_WORLD_DB=<com.mojang>/minecraftWorlds/<other>/db \
+      cargo test -p construct-core --lib inuse -- --ignored --nocapture
+      ```
+
+      The third of them, `a_mark_cannot_mask_a_real_live_world`, is the one that
+      matters most: it plants a `writemark` claiming the game's current write was
+      ours, then proves the mark goes stale and the world is still detected. That
+      is the only direction in which this machinery can lose data.
+
+      They call only the detection functions and never open a database, so they are
+      safe to run against a real world. **Re-run this on any new platform or game
+      build**: it caught a live false negative on Linux that the macOS-derived
+      window had missed (see `carried-forward.md`). If `confirm_in_use` ever takes
+      close to the full `CONFIRM_WATCH`, that build autosaves more slowly than
+      either measured so far and both constants need raising.
 - [ ] *(Windows, needs real hardware)* GDK worlds under
       `%appdata%\Minecraft Bedrock\Users\<account>\...` are discovered, and the
       qualified reference includes the account segment.
@@ -73,7 +103,7 @@ spec holds the full list.
       evidence that the game stored `CanopyPlayers:players` in a world database
       unaltered — but that key was written by a script, and a structure the game
       loads from a pack folder is a different path through its code. If the game
-      folds case there, `list` would print an id the game does not answer to.
+      folds case there, `structures` would print an id the game does not answer to.
 - [ ] **Does the in-use refusal fire on Minecraft builds other than
       mcpelauncher/macOS?** With a world loaded, run
       `construct enable-beta-apis <world>` and expect exit 4 and the
@@ -84,7 +114,7 @@ spec holds the full list.
       which is exactly the bug this replaced, so it is worth re-measuring per
       platform rather than assuming.
 - [x] **Does a merged structure load and place correctly in-game?** Save two pieces of one
-      build with structure blocks, `construct export <world> <a> <b> --merge -o merged.mcstructure`,
+      build with structure blocks, `construct export <a> <b> --world <world> --merge -o merged.mcstructure`,
       import it, and place it. Check that the pieces land in their original relative positions,
       that the gaps between them are cleared to air rather than left as terrain, and
       that block entities (a labelled chest in each piece) kept their contents. Spec §12 asserts

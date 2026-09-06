@@ -99,7 +99,7 @@ fn collect(root: &Path, dir: &Path, out: &mut Vec<PackStructure>) {
 ///
 /// Capitals are allowed. They are not an edge case: structures the game
 /// itself saved carry them routinely, and refusing them meant `copy` and
-/// `import --name` could not address a structure `list` had just printed.
+/// `import --name` could not address a structure `structures` had just printed.
 /// Note that a case-insensitive filesystem — macOS's default — treats
 /// `House` and `house` as one file, so importing the second alongside the
 /// first refuses as a collision there and creates a separate file elsewhere.

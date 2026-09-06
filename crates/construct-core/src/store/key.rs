@@ -35,7 +35,7 @@ pub fn encode_exact(id: &str) -> Vec<u8> {
 ///
 /// A bare name normally means the `mystructure` namespace, but a world that
 /// Minecraft did not write can hold a key with no namespace at all — and stage
-/// 1's `list` shows those, so `export` has to be able to fetch them.
+/// 1's `structures` shows those, so `export` has to be able to fetch them.
 pub fn candidates(id: &str) -> Vec<Vec<u8>> {
     let qualified = encode(id);
     let exact = encode_exact(id);
@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn an_unqualified_key_is_reachable_by_its_own_name() {
         // A world Minecraft did not write can hold `structuretemplate_foo` with no
-        // namespace. `list` shows it, so `export` must be able to fetch it.
+        // namespace. `structures` shows it, so `export` must be able to fetch it.
         assert_eq!(encode_exact("foo"), b"structuretemplate_foo".to_vec());
         assert_eq!(
             candidates("foo"),

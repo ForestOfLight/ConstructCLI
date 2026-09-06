@@ -4,6 +4,7 @@
 use crate::output::Out;
 use construct_core::Result;
 use construct_core::discovery::{Installation, World};
+use construct_core::inuse;
 use construct_core::pack;
 use construct_core::worldpacks;
 use std::path::Path;
@@ -17,8 +18,8 @@ pub mod enable_beta_apis;
 pub mod export;
 pub mod import;
 pub mod install;
-pub mod list;
 pub mod status;
+pub mod structures;
 pub mod worlds;
 
 /// Names the pack a command touched, and what that means for reach.
@@ -38,6 +39,31 @@ pub mod worlds;
 /// pack, `delete` removes *from* it. The consequence clause reads correctly
 /// either way — a structure added to a world's own pack appears in that world
 /// only, and one deleted from it disappears from that world only.
+/// Refuses a world Minecraft appears to have open, saying so if it has to wait.
+///
+/// `inuse`'s second phase watches `db/` for up to `CONFIRM_WATCH` seconds to
+/// tell a live world from a command that just finished writing one. That wait
+/// is silent from the outside and long enough to read as a hang, so this
+/// announces it — but only when it is actually going to happen, which is the
+/// reason phase one is checked here as well as inside `refuse_if_in_use`. The
+/// common case is quiet, instant, and prints nothing.
+pub fn refuse_if_in_use(world: &World, at_risk: inuse::AtRisk, out: &mut Out) -> Result<()> {
+    // Mirrors the phases inside `refuse_if_in_use`, so the notice appears only
+    // when a watch is genuinely about to happen. A recent write this tool made
+    // itself is answered from the mark instantly and must not announce a wait
+    // it is not going to take.
+    if inuse::looks_in_use(&world.db_path()) && !construct_core::writemark::left_by_us(world) {
+        out.line(format!(
+            "{} was written in the last {}s and not by us; watching up to {}s to tell \
+             a live world from a command that just finished\u{2026}",
+            world.db_path().display(),
+            inuse::ACTIVITY_WINDOW.as_secs(),
+            inuse::CONFIRM_WATCH.as_secs(),
+        ));
+    }
+    inuse::refuse_if_in_use(world, at_risk)
+}
+
 pub fn pack_phrase(kind: pack::HomeKind, world: Option<&str>) -> String {
     match (kind, world) {
         (pack::HomeKind::WorldConstruct, Some(w)) => {

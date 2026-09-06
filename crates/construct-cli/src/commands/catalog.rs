@@ -12,14 +12,12 @@ pub struct Loaded {
     pub entries: Vec<Entry>,
     /// Held open so `catalog::read_entry` can fetch world-source bytes.
     pub store: Option<OpenedStore>,
-    /// Every pack whose structures this world sees, in the order
-    /// `pack::serving` returns them. Commands that write need the first one
-    /// (the world's home); `delete` needs to know which pack a file it is
-    /// about to unlink came from.
+    /// The packs the pack half came from, for a caller that has to tell the
+    /// world's own copy from the shared one. See [`world_scoped`].
     pub packs: Vec<pack::Home>,
 }
 
-/// Builds the unified catalog `list`, `copy`, and `export` all resolve names
+/// Builds the unified catalog `structures`, `copy`, and `export` all resolve names
 /// against.
 ///
 /// The `--source pack` short-circuit (never open the world's database) is a
@@ -39,6 +37,73 @@ pub fn for_world(
         (entries, Some(store))
     };
 
+    let (pack_entries, packs) = packs_for_world(world, installations, source, out)?;
+
+    let entries = catalog::unify(world_entries, pack_entries);
+    Ok(Loaded {
+        entries,
+        store,
+        packs,
+    })
+}
+
+/// Drops the shared copy's rows from a world-scoped catalog.
+///
+/// `--world` means *this world*, and the shared copy of Construct serves worlds
+/// the command never named. `export` and `delete` both narrow to it, and both
+/// do the dropping here rather than at resolve time: that way a name living
+/// only in the shared copy reports "not found in this world" — true, and it
+/// points at the right fix — instead of being quietly answered, or unlinked,
+/// from under every other world using that copy.
+///
+/// `pack::serving` reports the shared copy for a world that has no copy of its
+/// own, so the rows are filtered out rather than assumed absent. World-database
+/// rows have no path and always survive.
+pub fn world_scoped(entries: Vec<Entry>, packs: &[pack::Home]) -> Vec<Entry> {
+    let shared_dirs: Vec<_> = packs
+        .iter()
+        .filter(|h| h.kind.scope() == pack::Scope::Shared)
+        .map(|h| h.dir.clone())
+        .collect();
+    entries
+        .into_iter()
+        .filter(|e| {
+            e.path
+                .as_ref()
+                .is_none_or(|p| !shared_dirs.iter().any(|d| p.starts_with(d)))
+        })
+        .collect()
+}
+
+/// Points a miss at the scope that was actually searched.
+///
+/// Without this, `delete house --world W` — or `export house --world W` — for a
+/// structure that lives only in the shared copy reports a bare "not found",
+/// which is the one answer guaranteed to send the user looking in the wrong
+/// place. `None` is the shared copy, whose bare message is already unambiguous.
+pub fn explain_miss(err: CoreError, world: Option<&World>) -> CoreError {
+    match (err, world) {
+        (CoreError::StructureNotFound { name, near }, Some(w)) => CoreError::StructureNotFound {
+            name: format!("{name} in {}", w.display_name),
+            near,
+        },
+        (other, _) => other,
+    }
+}
+
+/// The pack half of the catalog, and the packs it came from.
+///
+/// Split out of [`for_world`] because `delete` builds its world half from a
+/// live database rather than a snapshot (it is about to write to it), so it
+/// cannot go through `for_world` — but the "which packs serve this world"
+/// logic, and the difference between an error and a warning when Construct is
+/// missing, must not be written twice.
+pub fn packs_for_world(
+    world: &World,
+    installations: &[Installation],
+    source: Option<Source>,
+    out: &mut Out,
+) -> Result<(Vec<Entry>, Vec<pack::Home>)> {
     let mut packs = Vec::new();
     let pack_entries = if source == Some(Source::World) {
         Vec::new()
@@ -66,7 +131,7 @@ pub fn for_world(
                 entries
             }
             // Asking for pack structures on a machine with no Construct is an
-            // error; a plain `list` just says so and shows the world.
+            // error; a plain `structures` just says so and shows the world.
             Err(e) if source == Some(Source::Pack) => return Err(e),
             Err(e) => {
                 // Distinguish the reason: `InstallationNotFound` (a
@@ -79,10 +144,5 @@ pub fn for_world(
         }
     };
 
-    let entries = catalog::unify(world_entries, pack_entries);
-    Ok(Loaded {
-        entries,
-        store,
-        packs,
-    })
+    Ok((pack_entries, packs))
 }

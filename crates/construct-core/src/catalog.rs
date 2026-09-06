@@ -56,7 +56,7 @@ impl Entry {
     }
 }
 
-/// The order `list` presents and every command resolves against.
+/// The order `structures` presents and every command resolves against.
 ///
 /// Name first, then source, so that two entries sharing a display name across
 /// sources have a stated order rather than one inherited from concatenation.
@@ -148,6 +148,43 @@ pub fn resolve(
     }
 }
 
+/// Every structure matching a name, for the one command that wants them all.
+///
+/// `resolve` refuses when a name is in two places, because `export -o` and
+/// `copy` have to pick one and guessing is the wrong answer. `delete` is the
+/// exception: "remove this name from this world" is a complete instruction
+/// with no guess in it, so a name in the world's database *and* in both packs
+/// yields three entries and all three go. `--source` and `--pack` still narrow
+/// it for anyone who wants one copy gone and the others kept.
+///
+/// Zero matches is still an error, with the same near-match suggestions
+/// `resolve` offers.
+pub fn resolve_all(
+    name: &str,
+    entries: &[Entry],
+    source: Option<Source>,
+    pack_scope: Option<Scope>,
+) -> Result<Vec<Entry>> {
+    let qualified = key::qualify(name);
+    let matches: Vec<Entry> = entries
+        .iter()
+        .filter(|e| e.name == name || e.id == qualified)
+        .filter(|e| source.is_none_or(|s| e.source == s))
+        // A pack filter is about packs: naming one implies pack entries, so a
+        // world-database entry (which has no pack scope) falls out here.
+        .filter(|e| pack_scope.is_none_or(|s| e.scope == Some(s)))
+        .cloned()
+        .collect();
+
+    if matches.is_empty() {
+        return Err(CoreError::StructureNotFound {
+            name: name.to_string(),
+            near: near_matches(name, entries, source),
+        });
+    }
+    Ok(matches)
+}
+
 /// The bytes behind an entry, wherever they live.
 ///
 /// A world entry needs the store it came from; a pack entry is a file. Either
@@ -213,6 +250,68 @@ mod tests {
                 scope: None,
             },
         ]
+    }
+
+    /// `house` in the world database, in the world's own pack, and in the
+    /// shared one — the three-way collision `delete` sweeps up.
+    fn house_everywhere() -> Vec<Entry> {
+        let pack = |scope| Entry {
+            name: "house".into(),
+            id: "mystructure:house".into(),
+            source: Source::Pack,
+            size_bytes: 1,
+            path: Some(std::path::PathBuf::from("/packs/house.mcstructure")),
+            scope: Some(scope),
+        };
+        vec![
+            Entry {
+                name: "house".into(),
+                id: "mystructure:house".into(),
+                source: Source::World,
+                size_bytes: 1,
+                path: None,
+                scope: None,
+            },
+            pack(Scope::World),
+            pack(Scope::Shared),
+        ]
+    }
+
+    #[test]
+    fn resolve_all_returns_every_copy_of_a_name() {
+        // What `resolve` refuses, this returns. `delete` is the only caller:
+        // "remove this name from this world" needs no guess, so all three go.
+        let got = resolve_all("house", &house_everywhere(), None, None).unwrap();
+        assert_eq!(got.len(), 3);
+    }
+
+    #[test]
+    fn resolve_all_still_honours_source_and_pack_filters() {
+        let entries = house_everywhere();
+        let world = resolve_all("house", &entries, Some(Source::World), None).unwrap();
+        assert_eq!(world.len(), 1);
+        assert_eq!(world[0].source, Source::World);
+
+        let packs = resolve_all("house", &entries, Some(Source::Pack), None).unwrap();
+        assert_eq!(packs.len(), 2);
+
+        // A pack filter is about packs, so the database row falls out too.
+        let shared = resolve_all("house", &entries, None, Some(Scope::Shared)).unwrap();
+        assert_eq!(shared.len(), 1);
+        assert_eq!(shared[0].scope, Some(Scope::Shared));
+    }
+
+    #[test]
+    fn resolve_all_still_refuses_a_name_that_is_nowhere() {
+        // Zero matches is the one case `resolve` and `resolve_all` agree on.
+        let err = resolve_all("nope", &house_everywhere(), None, None).unwrap_err();
+        assert!(matches!(err, CoreError::StructureNotFound { .. }));
+    }
+
+    #[test]
+    fn resolve_all_finds_a_name_by_its_qualified_form() {
+        let got = resolve_all("mystructure:house", &house_everywhere(), None, None).unwrap();
+        assert_eq!(got.len(), 3);
     }
 
     #[test]

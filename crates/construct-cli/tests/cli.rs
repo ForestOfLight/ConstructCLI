@@ -14,6 +14,20 @@ fn bin() -> Command {
     c
 }
 
+/// `bin()` with a `writemark` state directory of its own.
+///
+/// Every CLI test shares one temp `HOME`, and `writemark` keys a world on its
+/// qualified reference — which for the real-leveldb fixture is `flag1/test_level`
+/// in *every* test that uses it. Running in parallel they overwrite each other's
+/// marks, and a test that depends on its own mark surviving then falls through
+/// to the full in-use watch and blows its timing assertion. One state directory
+/// per test root removes the sharing.
+fn bin_isolated(root: &std::path::Path) -> Command {
+    let mut c = bin();
+    c.env("CONSTRUCT_STATE_DIR", root.join("state"));
+    c
+}
+
 fn bin_with_config(config: &std::path::Path) -> Command {
     let mut command = bin();
     command.env("CONSTRUCT_CONFIG", config);
@@ -57,7 +71,7 @@ fn help_lists_the_read_commands() {
     let out = bin().arg("--help").output().unwrap();
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
-    for cmd in ["worlds", "list", "export"] {
+    for cmd in ["worlds", "structures", "export"] {
         assert!(text.contains(cmd), "--help should mention {cmd}:\n{text}");
     }
 }
@@ -123,7 +137,7 @@ fn a_path_referenced_world_works_with_no_installations_at_all() {
     std::fs::create_dir_all(world.join("db")).unwrap();
     std::fs::write(world.join("level.dat"), b"x").unwrap();
     let out = bin()
-        .args(["list", world.to_str().unwrap()])
+        .args(["structures", "--world", world.to_str().unwrap()])
         .output()
         .unwrap();
     // The db is not a real leveldb, so this fails — but it must NOT fail with
@@ -155,7 +169,7 @@ fn a_malformed_reference_is_exit_2_even_with_no_installations() {
     // The resolve_world closure must not rewrite a MalformedReference into
     // NoInstallations just because installations.is_empty() — the input was
     // ill-formed regardless of how many installations exist.
-    let out = bin().args(["list", "a/b/c/d/e/f/g"]).output().unwrap();
+    let out = bin().args(["structures", "--world", "a/b/c/d/e/f/g"]).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -171,7 +185,7 @@ fn a_malformed_reference_is_exit_2_even_with_no_installations() {
 #[test]
 fn a_path_looking_reference_that_does_not_exist_is_exit_2_with_no_installations() {
     let out = bin()
-        .args(["list", "/nonexistent/deep/path"])
+        .args(["structures", "--world", "/nonexistent/deep/path"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
@@ -191,7 +205,7 @@ fn a_bare_name_with_no_installations_is_genuinely_exit_3() {
     // This one IS the right explanation: nothing was found, and there was
     // nothing to search. Asserted with the message too, so a future
     // over-correction that removes the masking entirely gets caught.
-    let out = bin().args(["list", "somename"]).output().unwrap();
+    let out = bin().args(["structures", "--world", "somename"]).output().unwrap();
     assert_eq!(out.status.code(), Some(3));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -221,7 +235,7 @@ fn an_unreadable_world_is_exit_1_not_3_with_no_installations() {
     }
 
     let out = bin()
-        .args(["list", world.to_str().unwrap()])
+        .args(["structures", "--world", world.to_str().unwrap()])
         .output()
         .unwrap();
 
@@ -252,10 +266,10 @@ fn fixture_world() -> (tempfile::TempDir, std::path::PathBuf) {
 }
 
 #[test]
-fn list_by_path_shows_structures_with_their_source() {
+fn structures_by_path_shows_structures_with_their_source() {
     let (_tmp, world) = fixture_world();
     let out = bin()
-        .args(["list", world.to_str().unwrap()])
+        .args(["structures", "--world", world.to_str().unwrap()])
         .output()
         .unwrap();
     assert!(
@@ -273,10 +287,10 @@ fn list_by_path_shows_structures_with_their_source() {
 }
 
 #[test]
-fn list_json_carries_schema_and_entries() {
+fn structures_json_carries_schema_and_entries() {
     let (_tmp, world) = fixture_world();
     let out = bin()
-        .args(["list", world.to_str().unwrap(), "--json"])
+        .args(["structures", "--world", world.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -295,7 +309,7 @@ fn list_json_carries_schema_and_entries() {
 }
 
 #[test]
-fn list_source_pack_with_no_reachable_construct_is_not_found() {
+fn structures_source_pack_with_no_reachable_construct_is_not_found() {
     // Superseded by stage 2: `--source pack` used to just filter to an empty
     // list, since nothing populated Source::Pack yet. Now that it does, an
     // explicit `--source pack` with no reachable Construct is the thing the
@@ -307,7 +321,8 @@ fn list_source_pack_with_no_reachable_construct_is_not_found() {
     let (_tmp, world) = fixture_world();
     let out = bin()
         .args([
-            "list",
+            "structures",
+            "--world",
             world.to_str().unwrap(),
             "--source",
             "pack",
@@ -319,8 +334,8 @@ fn list_source_pack_with_no_reachable_construct_is_not_found() {
 }
 
 #[test]
-fn list_shows_a_long_name_in_full_not_truncated() {
-    // The NAME column in `list` is the identifier the user types into
+fn structures_shows_a_long_name_in_full_not_truncated() {
+    // The NAME column in `structures` is the identifier the user types into
     // `export` (unlike `worlds`, which has a separate untruncated REFERENCE
     // column). A truncated name here would hand back something that no
     // longer resolves. 25 chars, over the 24-wide column, so this fails if
@@ -330,7 +345,7 @@ fn list_shows_a_long_name_in_full_not_truncated() {
     let (_tmp, world) =
         fixture_world_with_extra_structures(&[(&format!("mystructure:{long_name}"), b"AAAAAAAA")]);
     let out = bin()
-        .args(["list", world.to_str().unwrap()])
+        .args(["structures", "--world", world.to_str().unwrap()])
         .output()
         .unwrap();
     assert!(
@@ -350,9 +365,9 @@ fn list_shows_a_long_name_in_full_not_truncated() {
 }
 
 #[test]
-fn list_of_a_missing_world_exits_3() {
+fn structures_of_a_missing_world_exits_3() {
     let out = bin()
-        .args(["list", "definitely-not-a-world"])
+        .args(["structures", "--world", "definitely-not-a-world"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(3));
@@ -364,7 +379,7 @@ fn export_without_o_writes_the_derived_name_into_cwd() {
     let dir = tempfile::tempdir().unwrap();
     let out = bin()
         .current_dir(dir.path())
-        .args(["export", world.to_str().unwrap(), "house"])
+        .args(["export", "--world", world.to_str().unwrap(), "house"])
         .output()
         .unwrap();
     assert!(
@@ -386,6 +401,7 @@ fn export_with_o_uses_the_given_name() {
     let out = bin()
         .args([
             "export",
+            "--world",
             world.to_str().unwrap(),
             "house",
             "-o",
@@ -407,6 +423,7 @@ fn export_refuses_an_existing_target_and_points_at_force() {
     let out = bin()
         .args([
             "export",
+            "--world",
             world.to_str().unwrap(),
             "house",
             "-o",
@@ -433,6 +450,7 @@ fn export_force_overwrites() {
     let out = bin()
         .args([
             "export",
+            "--world",
             world.to_str().unwrap(),
             "house",
             "-o",
@@ -451,7 +469,7 @@ fn exporting_several_structures_writes_one_file_each() {
     let dir = tempfile::tempdir().unwrap();
     let out = bin()
         .current_dir(dir.path())
-        .args(["export", world.to_str().unwrap(), "house", "barn"])
+        .args(["export", "--world", world.to_str().unwrap(), "house", "barn"])
         .output()
         .unwrap();
     assert!(
@@ -471,6 +489,7 @@ fn several_structures_with_o_is_a_usage_error() {
     let out = bin()
         .args([
             "export",
+            "--world",
             world.to_str().unwrap(),
             "house",
             "barn",
@@ -490,7 +509,7 @@ fn a_multi_export_refuses_before_writing_anything_if_one_target_exists() {
 
     let out = bin()
         .current_dir(dir.path())
-        .args(["export", world.to_str().unwrap(), "house", "barn"])
+        .args(["export", "--world", world.to_str().unwrap(), "house", "barn"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -504,7 +523,7 @@ fn a_multi_export_refuses_before_writing_anything_if_one_target_exists() {
 fn exporting_a_missing_structure_exits_3() {
     let (_tmp, world) = fixture_world();
     let out = bin()
-        .args(["export", world.to_str().unwrap(), "nope"])
+        .args(["export", "--world", world.to_str().unwrap(), "nope"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(3));
@@ -545,7 +564,7 @@ fn a_traversal_structure_name_is_refused_and_writes_nothing() {
 
     let out = bin()
         .current_dir(dir.path())
-        .args(["export", world.to_str().unwrap(), "../../../../tmp/PWNED"])
+        .args(["export", "--world", world.to_str().unwrap(), "../../../../tmp/PWNED"])
         .output()
         .unwrap();
 
@@ -573,6 +592,7 @@ fn o_without_an_extension_gets_mcstructure() {
     let out = bin()
         .args([
             "export",
+            "--world",
             world.to_str().unwrap(),
             "house",
             "-o",
@@ -602,6 +622,7 @@ fn o_with_another_extension_is_refused() {
     let out = bin()
         .args([
             "export",
+            "--world",
             world.to_str().unwrap(),
             "house",
             "-o",
@@ -635,6 +656,7 @@ fn o_with_an_uppercase_extension_is_accepted_as_given() {
     let out = bin()
         .args([
             "export",
+            "--world",
             world.to_str().unwrap(),
             "house",
             "-o",
@@ -662,15 +684,11 @@ fn a_merge_target_without_an_extension_gets_mcstructure_too() {
     let out = bin()
         .args([
             "export",
-            "Test",
             "north",
             "tower",
             "--merge",
             "-o",
             dir.path().join("both").to_str().unwrap(),
-            // This fixture's `db/` is a stub directory, not a real LevelDB.
-            "--source",
-            "pack",
             "--com-mojang",
             root.path().to_str().unwrap(),
         ])
@@ -693,7 +711,7 @@ fn other_traversal_shapes_are_also_refused() {
     ]);
     for name in ["a/../../b", "/etc/evil", ".."] {
         let out = bin()
-            .args(["export", world.to_str().unwrap(), name])
+            .args(["export", "--world", world.to_str().unwrap(), name])
             .output()
             .unwrap();
         assert_eq!(
@@ -714,7 +732,7 @@ fn a_colon_bearing_name_sanitizes_and_exports() {
     let dir = tempfile::tempdir().unwrap();
     let out = bin()
         .current_dir(dir.path())
-        .args(["export", world.to_str().unwrap(), "understudy:players"])
+        .args(["export", "--world", world.to_str().unwrap(), "understudy:players"])
         .output()
         .unwrap();
     assert!(
@@ -743,6 +761,7 @@ fn a_multi_export_with_one_hostile_name_writes_nothing() {
         .current_dir(dir.path())
         .args([
             "export",
+            "--world",
             world.to_str().unwrap(),
             "house",
             "../../../../tmp/PWNED2",
@@ -772,7 +791,7 @@ fn a_windows_reserved_device_name_is_sanitized_not_refused() {
     let dir = tempfile::tempdir().unwrap();
     let out = bin()
         .current_dir(dir.path())
-        .args(["export", world.to_str().unwrap(), "CON", "com1"])
+        .args(["export", "--world", world.to_str().unwrap(), "CON", "com1"])
         .output()
         .unwrap();
     assert!(
@@ -800,7 +819,7 @@ fn an_empty_derived_name_is_refused_and_points_at_o() {
 
     let out = bin()
         .current_dir(dir.path())
-        .args(["export", world.to_str().unwrap(), ""])
+        .args(["export", "--world", world.to_str().unwrap(), ""])
         .output()
         .unwrap();
 
@@ -823,6 +842,7 @@ fn explicit_o_path_bypasses_the_derived_name_rules() {
         .current_dir(&inner)
         .args([
             "export",
+            "--world",
             world.to_str().unwrap(),
             "house",
             "-o",
@@ -867,11 +887,12 @@ fn world_with_construct(structures: &[(&str, &[u8])]) -> tempfile::TempDir {
 }
 
 #[test]
-fn list_shows_pack_structures_without_touching_the_world_database() {
+fn structures_shows_pack_structures_without_touching_the_world_database() {
     let root = world_with_construct(&[("bomber", b"12345")]);
     let out = bin()
         .args([
-            "list",
+            "structures",
+            "--world",
             "Test",
             "--source",
             "pack",
@@ -901,7 +922,8 @@ fn source_pack_on_a_machine_without_construct_is_not_found() {
     std::fs::write(world.join("level.dat"), b"x").unwrap();
     let out = bin()
         .args([
-            "list",
+            "structures",
+            "--world",
             "Test",
             "--source",
             "pack",
@@ -916,7 +938,7 @@ fn source_pack_on_a_machine_without_construct_is_not_found() {
 
 /// Like `fixture_world_with_extra_structures`, but extracts the real-leveldb
 /// fixture world under a `--com-mojang` root's `minecraftWorlds/`, and
-/// installs Construct beside it. This is what `list` needs to see a name
+/// installs Construct beside it. This is what `structures` needs to see a name
 /// collision between sources: `discovery::installation::for_world` looks an
 /// installation up by name, and a bare-path reference (as used by
 /// `fixture_world`) always carries the synthetic installation name `"path"`,
@@ -965,6 +987,32 @@ fn fixture_world_with_construct(
     }
 
     (root, "test_level")
+}
+
+/// Gives a world its **own** copy of Construct, holding `structures`.
+///
+/// `fixture_world_with_construct` puts pack structures in the *shared* copy,
+/// which `delete --world` deliberately will not touch. A test about a world's
+/// own pack therefore needs the pack to actually be the world's: `pack::serving`
+/// reports a world's own Construct instead of the shared one when it finds it,
+/// so creating this makes the shared copy invisible to that world.
+fn add_world_construct(world_dir: &std::path::Path, structures: &[(&str, &[u8])]) {
+    let bp = world_dir.join("behavior_packs/Construct[BP]");
+    std::fs::create_dir_all(bp.join("structures")).unwrap();
+    std::fs::write(
+        bp.join("manifest.json"),
+        r#"{"format_version":2,
+            "header":{"name":"Construct [BP] v1.2.0","uuid":"8c0c0153-d8b9-482a-889f-aef922b8fe58","version":[1,2,0]},
+            "modules":[{"type":"data","uuid":"f4d52ae1-2c26-4938-b8c2-7e455d495620","version":[1,0,0]}]}"#,
+    )
+    .unwrap();
+    for (name, bytes) in structures {
+        std::fs::write(
+            bp.join("structures").join(format!("{name}.mcstructure")),
+            bytes,
+        )
+        .unwrap();
+    }
 }
 
 /// Extracts a *second* copy of the real-leveldb fixture world into `worlds_dir`
@@ -1046,11 +1094,11 @@ fn copy_reads_from_a_real_world_database_into_the_destinations_pack() {
 }
 
 #[test]
-fn a_name_in_both_world_and_pack_survives_unshadowed_in_list() {
+fn a_name_in_both_world_and_pack_survives_unshadowed_in_the_structures_listing() {
     // §5's never-guess rule (Task 1) says a name colliding across sources must
     // never let one copy silently win — `catalog::unify` keeps both entries
     // rather than deduping, and `catalog::resolve` is what refuses to pick
-    // between them. `list` never calls `resolve` (it has no single name to
+    // between them. `structures` never calls `resolve` (it has no single name to
     // resolve), so the CLI-visible half of that rule *this* command can prove
     // is that both entries survive to the list, neither shadowing the other.
     // The other half — that a command asking for exactly one structure by
@@ -1063,7 +1111,8 @@ fn a_name_in_both_world_and_pack_survives_unshadowed_in_list() {
     );
     let out = bin()
         .args([
-            "list",
+            "structures",
+            "--world",
             world_name,
             "--json",
             "--com-mojang",
@@ -1306,14 +1355,20 @@ fn copy_of_a_name_that_is_not_there_suggests_near_matches() {
 
 #[test]
 fn export_of_a_name_in_both_world_and_pack_is_refused_naming_both_sources() {
-    // The other half of §5's never-guess rule, completed by this task: a name
-    // present in both the world's database and the pack must not let `export`
-    // silently pick one. Before this task's `export.rs` change, this exact
-    // fixture (see `a_name_in_both_world_and_pack_survives_unshadowed_in_list`
-    // above) exited 0 and wrote the world's copy, because `export` only ever
-    // consulted `catalog::from_world`.
+    // The other half of §5's never-guess rule: a name present in both the
+    // world's database and a pack must not let `export` silently pick one.
+    //
+    // The pack has to be the world's *own* copy of Construct. `--world` cannot
+    // reach the shared copy at all now, so a name in the database and the
+    // shared pack is no longer two things — it is one, and answering with it is
+    // right rather than a guess. The ambiguity that survives is the one inside
+    // a single scope, which is what this fixture builds.
     let (root, world_name) = fixture_world_with_construct(
         &[("mystructure:collide", b"WORLDBYTES")],
+        &[],
+    );
+    add_world_construct(
+        &root.path().join("minecraftWorlds").join(world_name),
         &[("collide", b"PACKBYTES!")],
     );
     let dir = tempfile::tempdir().unwrap();
@@ -1321,6 +1376,7 @@ fn export_of_a_name_in_both_world_and_pack_is_refused_naming_both_sources() {
         .current_dir(dir.path())
         .args([
             "export",
+            "--world",
             world_name,
             "collide",
             "--com-mojang",
@@ -1377,7 +1433,7 @@ fn import_derives_a_name_from_the_file_stem_and_reports_it() {
 #[test]
 fn import_accepts_a_name_with_capitals() {
     // `--name` used to refuse any capital, which made half the structures a
-    // world holds unaddressable: `construct list` prints `10HzCounter`, and
+    // world holds unaddressable: `construct structures` prints `10HzCounter`, and
     // nothing could then import or copy under that name.
     let root = world_with_construct(&[]);
     let src = root.path().join("counter.mcstructure");
@@ -1613,13 +1669,10 @@ fn delete_unlinks_a_pack_structure() {
         .join("development_behavior_packs/Construct[BP]/structures/bomber.mcstructure");
     assert!(file.exists());
 
-    let out = bin()
+    let out = bin_isolated(root.path())
         .args([
             "delete",
-            "Test",
             "bomber",
-            "--source",
-            "pack",
             "--com-mojang",
             root.path().to_str().unwrap(),
         ])
@@ -1640,13 +1693,10 @@ fn delete_says_when_it_removed_from_the_shared_construct() {
     // distinction `import` and `copy` state on the way in.
     let root = world_with_construct(&[("bomber", b"x")]);
 
-    let out = bin()
+    let out = bin_isolated(root.path())
         .args([
             "delete",
-            "Test",
             "bomber",
-            "--source",
-            "pack",
             "--json",
             "--com-mojang",
             root.path().to_str().unwrap(),
@@ -1659,17 +1709,14 @@ fn delete_says_when_it_removed_from_the_shared_construct() {
         String::from_utf8_lossy(&out.stderr)
     );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["deleted"][0]["scope"], "shared");
+    assert_eq!(v["scope"], "shared");
 
     // And in the printed output, which is where a person reads it.
     let root = world_with_construct(&[("bomber", b"x")]);
-    let out = bin()
+    let out = bin_isolated(root.path())
         .args([
             "delete",
-            "Test",
             "bomber",
-            "--source",
-            "pack",
             "--com-mojang",
             root.path().to_str().unwrap(),
         ])
@@ -1702,13 +1749,14 @@ fn delete_says_when_it_removed_from_a_worlds_own_construct() {
     .unwrap();
     std::fs::write(local.join("structures/bomber.mcstructure"), b"local-copy").unwrap();
 
-    let out = bin()
+    let out = bin_isolated(root.path())
         .args([
             "delete",
-            "Test",
             "bomber",
             "--source",
             "pack",
+            "--world",
+            "Test",
             "--com-mojang",
             root.path().to_str().unwrap(),
         ])
@@ -1745,7 +1793,7 @@ fn delete_says_when_it_removed_from_a_worlds_own_construct() {
 }
 
 #[test]
-fn list_with_no_world_shows_only_the_shared_copy() {
+fn structures_with_no_world_shows_only_the_shared_copy() {
     // The installation's own view: what every world using this pack gets.
     // A world's own structures are not part of that answer, and no database
     // is opened to produce it.
@@ -1770,7 +1818,7 @@ fn list_with_no_world_shows_only_the_shared_copy() {
 
     let out = bin()
         .args([
-            "list",
+            "structures",
             "--json",
             "--com-mojang",
             root.path().to_str().unwrap(),
@@ -1796,12 +1844,12 @@ fn list_with_no_world_shows_only_the_shared_copy() {
 }
 
 #[test]
-fn list_with_no_world_refuses_source_world() {
+fn structures_with_no_world_refuses_source_world() {
     // A world's structures live in a world's database, and none was named.
     let root = world_with_construct(&[]);
     let out = bin()
         .args([
-            "list",
+            "structures",
             "--source",
             "world",
             "--com-mojang",
@@ -1815,11 +1863,11 @@ fn list_with_no_world_refuses_source_world() {
 }
 
 #[test]
-fn list_with_no_world_and_no_construct_points_at_install() {
+fn structures_with_no_world_and_no_construct_points_at_install() {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("minecraftWorlds")).unwrap();
     let out = bin()
-        .args(["list", "--com-mojang", root.path().to_str().unwrap()])
+        .args(["structures", "--com-mojang", root.path().to_str().unwrap()])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(3));
@@ -1827,7 +1875,7 @@ fn list_with_no_world_and_no_construct_points_at_install() {
 }
 
 #[test]
-fn list_says_which_pack_each_structure_is_in() {
+fn structures_says_which_pack_each_structure_is_in() {
     // The question this whole split exists to answer: is this structure mine
     // alone, or does every world using the shared copy have it? Both packs
     // serve this world, so both appear, distinguished.
@@ -1852,7 +1900,8 @@ fn list_says_which_pack_each_structure_is_in() {
 
     let out = bin()
         .args([
-            "list",
+            "structures",
+            "--world",
             "Test",
             "--source",
             "pack",
@@ -2070,17 +2119,119 @@ fn world_house(root: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[test]
-fn a_name_in_both_packs_is_refused_and_points_at_pack_not_source() {
-    // `--source pack` cannot separate two packs — both matches *are* pack
-    // entries — so pointing at it would send the user round a loop that never
-    // resolves. Before `--pack` existed, this name could not be deleted at
-    // all.
+fn delete_with_a_world_removes_that_worlds_copy_and_leaves_the_shared_one() {
+    // The scope guarantee, in the direction that protects other worlds:
+    // --world means this world, and the shared copy serves worlds this command
+    // never named, so it must come through untouched.
     let root = world_seeing_one_name_in_both_packs();
-    let out = bin()
+    // --source pack because this fixture's `db/` is a stub that cannot be
+    // opened; the property under test is pack scoping, not the database.
+    let out = bin_isolated(root.path())
         .args([
             "delete",
-            "Test",
             "house",
+            "--world",
+            "Test",
+            "--source",
+            "pack",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!world_house(root.path()).exists(), "the world's copy went");
+    assert!(
+        shared_house(root.path()).is_file(),
+        "--world must never reach the shared copy"
+    );
+}
+
+#[test]
+fn delete_without_a_world_removes_the_shared_copy_and_leaves_the_worlds() {
+    // The other half of the same grammar: absence means shared, exactly as it
+    // does for `import` and `structures`.
+    let root = world_seeing_one_name_in_both_packs();
+    let out = bin_isolated(root.path())
+        .args([
+            "delete",
+            "house",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!shared_house(root.path()).exists(), "the shared copy went");
+    assert!(
+        world_house(root.path()).is_file(),
+        "a shared delete must not reach into a world"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("every world using it"),
+        "the reach of a shared removal must be stated"
+    );
+}
+
+#[test]
+fn delete_with_a_world_cannot_reach_a_structure_only_in_the_shared_copy() {
+    // The failure that must NOT silently succeed. Before the grammar change a
+    // world-scoped delete would happily unlink the shared copy, taking the
+    // structure from every other world using it. Now it reports a miss, and
+    // the miss names the world so the user is not sent looking in the wrong
+    // place.
+    let root = world_with_construct(&[("bomber", b"x")]);
+    let shared = root
+        .path()
+        .join("development_behavior_packs/Construct[BP]/structures/bomber.mcstructure");
+    assert!(shared.is_file());
+
+    let out = bin_isolated(root.path())
+        .args([
+            "delete",
+            "bomber",
+            "--world",
+            "Test",
+            "--source",
+            "pack",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    assert!(shared.is_file(), "the shared copy must survive");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Test"), "the miss must name the world: {stderr}");
+}
+
+#[test]
+fn delete_refuses_the_pack_flag() {
+    // --world is the scope selector now, and --pack is a second overlapping one
+    // that can contradict it outright (`--world W --pack shared` asks to delete
+    // from the copy that --world exists to protect). Refusing beats guessing,
+    // and since --pack is declared only on the commands that read it, clap is
+    // the one doing the refusing.
+    let root = world_seeing_one_name_in_both_packs();
+    let out = bin_isolated(root.path())
+        .args([
+            "delete",
+            "house",
+            "--world",
+            "Test",
+            "--pack",
+            "shared",
             "--com-mojang",
             root.path().to_str().unwrap(),
         ])
@@ -2089,58 +2240,236 @@ fn a_name_in_both_packs_is_refused_and_points_at_pack_not_source() {
 
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("--pack world"), "stderr:\n{stderr}");
     assert!(
-        stderr.contains("pack:shared") && stderr.contains("pack:world"),
-        "both packs must be named: {stderr}"
+        stderr.contains("unexpected argument '--pack'"),
+        "stderr:\n{stderr}"
     );
+    assert!(stderr.contains("--world"), "it must point at the replacement");
     // Refused means nothing was touched.
     assert!(shared_house(root.path()).is_file());
     assert!(world_house(root.path()).is_file());
 }
 
 #[test]
-fn delete_pack_world_removes_the_worlds_copy_and_leaves_the_shared_one() {
-    let root = world_seeing_one_name_in_both_packs();
+fn a_read_only_command_refuses_the_force_flag() {
+    // --force answers exactly one question — overwrite the thing already
+    // there? — and `worlds` never writes anything, so it has nothing to
+    // answer. Declared only on the four commands that read it, so clap
+    // refuses it here instead of accepting it and doing nothing.
+    let root = world_with_construct(&[]);
     let out = bin()
         .args([
-            "delete",
+            "worlds",
+            "--force",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unexpected argument '--force'"),
+        "stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn add_refuses_the_com_mojang_flag() {
+    // --com-mojang widens the search, and `add` does not search: it writes the
+    // path it was given into the config file. Declared only on the commands
+    // that run discovery, so clap refuses it rather than letting it look like
+    // a second way to name the root being added.
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .args([
+            "add",
+            dir.path().to_str().unwrap(),
+            "--com-mojang",
+            dir.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unexpected argument '--com-mojang'"),
+        "stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn export_without_a_world_writes_the_shared_copy() {
+    // `export` reads the grammar `import` writes: absence means the shared copy
+    // of Construct, the same way it does for `import`, `delete` and `structures`. No
+    // world is named, so no world's copy can be the answer.
+    let root = world_seeing_one_name_in_both_packs();
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .current_dir(dir.path())
+        .args([
+            "export",
+            "house",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("house.mcstructure")).unwrap(),
+        b"shared-copy",
+        "with no --world the shared copy is the one exported"
+    );
+}
+
+#[test]
+fn export_with_a_world_writes_that_worlds_copy_not_the_shared_one() {
+    // The other half of the grammar. Both packs serving this world hold a
+    // `house`; --world says which one is meant, which is why --pack no longer
+    // has to.
+    let root = world_seeing_one_name_in_both_packs();
+    let dir = tempfile::tempdir().unwrap();
+    // --source pack because this fixture's `db/` is a stub that cannot be
+    // opened; the property under test is pack scoping, not the database.
+    let out = bin_isolated(root.path())
+        .current_dir(dir.path())
+        .args([
+            "export",
+            "house",
+            "--world",
             "Test",
+            "--source",
+            "pack",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("house.mcstructure")).unwrap(),
+        b"world-copy",
+        "--world selects the world's own copy, unambiguously"
+    );
+}
+
+#[test]
+fn export_with_a_world_cannot_reach_a_structure_only_in_the_shared_copy() {
+    // The scope guarantee `delete --world` makes, made by `export` too: a
+    // world-scoped read is about that world, so a name that exists only in the
+    // shared copy reports a miss naming the world rather than quietly
+    // answering with a structure the world does not have of its own.
+    let root = world_with_construct(&[("bomber", b"x")]);
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin_isolated(root.path())
+        .current_dir(dir.path())
+        .args([
+            "export",
+            "bomber",
+            "--world",
+            "Test",
+            "--source",
+            "pack",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    assert!(
+        !dir.path().join("bomber.mcstructure").exists(),
+        "a miss writes nothing"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Test"),
+        "the miss must name the world: {stderr}"
+    );
+}
+
+#[test]
+fn export_refuses_the_pack_flag() {
+    // --world is the scope selector now, and --pack was the second, overlapping
+    // one. `--world W --pack shared` asks for the copy --world just excluded,
+    // so the flag is gone rather than left to contradict itself — and since
+    // --pack is declared only on the commands that read it, clap refuses it.
+    let root = world_seeing_one_name_in_both_packs();
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .current_dir(dir.path())
+        .args([
+            "export",
             "house",
             "--pack",
+            "shared",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unexpected argument '--pack'"),
+        "stderr:\n{stderr}"
+    );
+    // Refused means nothing was written.
+    assert!(!dir.path().join("house.mcstructure").exists());
+}
+
+#[test]
+fn export_with_no_world_refuses_source_world() {
+    // The same refusal `structures` and `delete` make: a world's structures live in a
+    // world's database, and none was named.
+    let root = world_with_construct(&[("bomber", b"x")]);
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .current_dir(dir.path())
+        .args([
+            "export",
+            "bomber",
+            "--source",
             "world",
             "--com-mojang",
             root.path().to_str().unwrap(),
         ])
         .output()
         .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
 
-    assert!(
-        !world_house(root.path()).exists(),
-        "the world's copy is gone"
-    );
-    assert_eq!(
-        std::fs::read(shared_house(root.path())).unwrap(),
-        b"shared-copy",
-        "the shared copy is untouched"
-    );
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("Test's structures pack"), "stdout:\n{text}");
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--source world"), "stderr:\n{stderr}");
+    assert!(!dir.path().join("bomber.mcstructure").exists());
 }
 
 #[test]
-fn delete_pack_shared_removes_the_shared_copy_and_leaves_the_worlds() {
+fn structures_refuses_the_pack_flag() {
+    // --world is the scope selector here too. A listing under --world is a
+    // world's whole view, both packs included, and the SOURCE column already
+    // says which pack each row is in — so --pack narrowed a listing that was
+    // never ambiguous to begin with. Declared only on the command that still
+    // reads it, so clap does the refusing.
     let root = world_seeing_one_name_in_both_packs();
     let out = bin()
         .args([
-            "delete",
+            "structures",
+            "--world",
             "Test",
-            "house",
             "--pack",
             "shared",
             "--com-mojang",
@@ -2148,39 +2477,25 @@ fn delete_pack_shared_removes_the_shared_copy_and_leaves_the_worlds() {
         ])
         .output()
         .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
 
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        !shared_house(root.path()).exists(),
-        "the shared copy is gone"
-    );
-    assert_eq!(
-        std::fs::read(world_house(root.path())).unwrap(),
-        b"world-copy",
-        "the world's copy is untouched"
-    );
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        text.contains("shared copy of Construct") && text.contains("every world using it"),
-        "stdout:\n{text}"
+        stderr.contains("unexpected argument '--pack'"),
+        "stderr:\n{stderr}"
     );
 }
 
 #[test]
-fn pack_filters_a_listing_to_one_pack() {
-    // The same flag reads as well as it deletes: it is a filter on which pack
-    // is being talked about, not a delete-only escape hatch.
+fn a_world_listing_shows_both_packs_it_sees() {
+    // What --pack used to narrow: one name in both packs serving this world
+    // comes back as two rows, distinguished by scope, rather than one.
     let root = world_seeing_one_name_in_both_packs();
     let out = bin()
         .args([
-            "list",
+            "structures",
+            "--world",
             "Test",
-            "--pack",
-            "shared",
             // This fixture's `db/` is a stub directory, not a real LevelDB —
             // see the note on `world_with_construct`.
             "--source",
@@ -2198,21 +2513,409 @@ fn pack_filters_a_listing_to_one_pack() {
     );
 
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let rows = v["structures"].as_array().unwrap();
-    assert_eq!(rows.len(), 1, "{v}");
-    assert_eq!(rows[0]["name"], "house");
-    assert_eq!(rows[0]["scope"], "shared");
+    let scopes: Vec<&str> = v["structures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["name"] == "house")
+        .map(|e| e["scope"].as_str().unwrap())
+        .collect();
+    assert_eq!(scopes.len(), 2, "{v}");
+    assert!(scopes.contains(&"world"), "{v}");
+    assert!(scopes.contains(&"shared"), "{v}");
+}
+
+/// Backdates every file directly inside a world's `db/`, so the in-use
+/// heuristic reads the world as closed.
+///
+/// `inuse` calls a world in use when `db/` was written in the last ten
+/// seconds, which is exactly what a fixture that just inserted keys through
+/// the leveldb API looks like. Real worlds this tool is pointed at have been
+/// closed for longer than that; a fixture has to say so.
+fn close_world(world: &std::path::Path) {
+    let when = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+    for entry in std::fs::read_dir(world.join("db")).unwrap().flatten() {
+        let f = std::fs::File::options()
+            .write(true)
+            .open(entry.path())
+            .unwrap();
+        f.set_times(std::fs::FileTimes::new().set_modified(when))
+            .unwrap();
+    }
+}
+
+/// The identity of a `db/` directory: every filename with its length.
+///
+/// Opening a leveldb rewrites its file set — that is the measured fact spec §8
+/// rests on — so this is what proves a command did or did not open one.
+fn db_fingerprint(world: &std::path::Path) -> Vec<(String, u64)> {
+    let mut out: Vec<(String, u64)> = std::fs::read_dir(world.join("db"))
+        .unwrap()
+        .flatten()
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                e.metadata().map(|m| m.len()).unwrap_or(0),
+            )
+        })
+        .collect();
+    out.sort();
+    out
 }
 
 #[test]
-fn deleting_from_a_world_database_is_refused_for_now() {
-    // Stage 4 territory. The refusal must arrive before anything is touched.
-    let root = world_with_construct(&[]);
-    let out = bin()
+fn delete_removes_a_structure_from_a_world_database() {
+    // The tool's only leveldb write. The fixture world really contains
+    // `house`; after this it must not, and a fresh read of the world has to
+    // agree — the removal is verified against the live handle before the
+    // command reports it, and again here from a separate process.
+    let (root, world) = fixture_world_with_construct(&[], &[]);
+    close_world(&root.path().join("minecraftWorlds").join(world));
+
+    let out = bin_isolated(root.path())
         .args([
             "delete",
-            "Test",
             "house",
+            "--world",
+            world,
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("from this world's database"));
+
+    let listed = bin_isolated(root.path())
+        .args([
+            "structures",
+            "--world",
+            world,
+            "--json",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    let names: Vec<&str> = v["structures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&"house"), "house survived the delete: {v}");
+    // The neighbours are still there: a delete removes what it was asked for
+    // and nothing else.
+    assert!(names.contains(&"barn"), "{v}");
+    assert!(names.contains(&"understudy:players"), "{v}");
+}
+
+#[test]
+fn delete_removes_the_database_copy_and_the_pack_copy_together() {
+    // The case the delete-both rule exists for: one name, two places, and no
+    // flag to say which was meant. Both go.
+    let (root, world) = fixture_world_with_construct(&[], &[]);
+    let world_dir = root.path().join("minecraftWorlds").join(world);
+    close_world(&world_dir);
+    // The world's *own* pack: the shared copy is out of scope for --world, so
+    // a shared-copy fixture would prove nothing here.
+    add_world_construct(&world_dir, &[("house", b"pack-copy")]);
+    let pack_copy = world_dir.join("behavior_packs/Construct[BP]/structures/house.mcstructure");
+    assert!(pack_copy.is_file());
+
+    let out = bin_isolated(root.path())
+        .args([
+            "delete",
+            "house",
+            "--json",
+            "--world",
+            world,
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(!pack_copy.exists(), "the pack copy survived");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = v["deleted"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "one row per copy removed: {v}");
+    // Two rows share a name, so `source` is the field that tells them apart.
+    let sources: Vec<&str> = rows.iter().map(|r| r["source"].as_str().unwrap()).collect();
+    assert!(sources.contains(&"world"), "{v}");
+    assert!(sources.contains(&"pack"), "{v}");
+}
+
+#[test]
+fn delete_source_world_leaves_the_pack_copy_alone() {
+    // The flags still narrow what the bare form sweeps up.
+    let (root, world) = fixture_world_with_construct(&[], &[("house", b"pack-copy")]);
+    close_world(&root.path().join("minecraftWorlds").join(world));
+    let pack_copy = root
+        .path()
+        .join("development_behavior_packs/Construct[BP]/structures/house.mcstructure");
+
+    let out = bin_isolated(root.path())
+        .args([
+            "delete",
+            "house",
+            "--source",
+            "world",
+            "--json",
+            "--world",
+            world,
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(pack_copy.is_file(), "--source world must not touch a pack");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = v["deleted"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{v}");
+    assert_eq!(rows[0]["source"], "world");
+}
+
+#[test]
+fn delete_source_pack_never_opens_the_world_database() {
+    // The property that made `delete --source pack` shippable in stage 2, and
+    // it has to survive stage 4 giving the command a write path. Opening a
+    // leveldb rewrites its file set, so an unchanged fingerprint is proof the
+    // database was never opened at all.
+    let (root, world) = fixture_world_with_construct(&[], &[]);
+    let world_dir = root.path().join("minecraftWorlds").join(world);
+    close_world(&world_dir);
+    add_world_construct(&world_dir, &[("tower", b"pack-copy")]);
+    let before = db_fingerprint(&world_dir);
+
+    let out = bin_isolated(root.path())
+        .args([
+            "delete",
+            "tower",
+            "--source",
+            "pack",
+            "--world",
+            world,
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(before, db_fingerprint(&world_dir), "the database was opened");
+}
+
+#[test]
+fn delete_refuses_a_world_that_looks_in_use_and_writes_nothing() {
+    // The only guard on the only leveldb write. There is deliberately no
+    // --force: a second writer is how databases get corrupted rather than
+    // merely stale, so the refusal has to arrive before the open, which is
+    // itself a write.
+    let (root, world) = fixture_world_with_construct(&[], &[]);
+    let world_dir = root.path().join("minecraftWorlds").join(world);
+    let before = db_fingerprint(&world_dir);
+    // A world that keeps being written, the way a loaded one is. One write is
+    // deliberately not enough — `delete` writes `db/` itself, so a single
+    // recent write is as likely to be this tool's as the game's.
+    let _live = live_world_at(&world_dir.join("db"));
+
+    let out = bin_isolated(root.path())
+        .args([
+            "delete",
+            "house",
+            "--world",
+            world,
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(4));
+    // The simulator adds a log file of its own, so compare only the files
+    // that were there to begin with: opening a leveldb rewrites *those*.
+    let after = db_fingerprint(&world_dir);
+    for entry in &before {
+        assert!(
+            after.contains(entry),
+            "a refused delete must not have opened the database: {entry:?} changed"
+        );
+    }
+    // The two write paths are refused for different reasons. Telling a
+    // `delete` user their removal "would be silently discarded" describes
+    // `level.dat`'s hazard, not this one.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("is how a save gets corrupted"),
+        "the refusal must give the database's reason: {stderr}"
+    );
+    assert!(
+        !stderr.contains("silently discarded"),
+        "that is level.dat's reason, not this one: {stderr}"
+    );
+}
+
+#[test]
+fn a_second_delete_straight_after_the_first_is_not_blocked_by_it() {
+    // `delete` writes `db/`, and the in-use check is write-recency — so
+    // without a record of our own write the second command here reads the
+    // first one's as a running game and refuses. It did exactly that before
+    // `writemark` existed.
+    //
+    // Timing is part of the assertion: falling back to the watch would still
+    // reach the right answer, just `CONFIRM_WATCH` seconds later. The point of
+    // the mark is that no wait happens at all.
+    let (root, world) = fixture_world_with_construct(&[], &[]);
+    let world_dir = root.path().join("minecraftWorlds").join(world);
+    close_world(&world_dir);
+
+    let first = bin_isolated(root.path())
+        .args([
+            "delete",
+            "barn",
+            "--world",
+            world,
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        first.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let started = std::time::Instant::now();
+    let second = bin_isolated(root.path())
+        .args([
+            "delete",
+            "house",
+            "--world",
+            world,
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let took = started.elapsed();
+
+    assert!(
+        second.status.success(),
+        "a delete must not be blocked by this tool's own previous write; stderr: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert!(
+        took < construct_core::inuse::CONFIRM_WATCH,
+        "answered from the mark, so it must not have watched: took {took:?}"
+    );
+    // And it must not have announced a wait it never took.
+    let text = String::from_utf8_lossy(&second.stdout);
+    assert!(!text.contains("watching up to"), "stdout:\n{text}");
+}
+
+#[test]
+fn a_mark_from_our_own_write_does_not_wave_through_a_live_world() {
+    // The failure mode `writemark` could introduce if it were wrong: a stale
+    // "that write was ours" answer suppressing detection of a world the game
+    // really does have open. It must not, because the game writing since
+    // leaves a strictly newer mtime than the one recorded.
+    //
+    // This is the corrupting direction, so it gets its own test rather than
+    // resting on the unit-level equality check.
+    let (root, world) = fixture_world_with_construct(&[], &[]);
+    let world_dir = root.path().join("minecraftWorlds").join(world);
+    close_world(&world_dir);
+
+    // A real delete, which leaves a real mark behind.
+    assert!(
+        bin_isolated(root.path())
+            .args([
+                "delete",
+                "barn",
+                "--world",
+                world,
+                "--com-mojang",
+                root.path().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    // Now the game opens the world and starts writing over the top of it.
+    let _live = live_world_at(&world_dir.join("db"));
+
+    let out = bin_isolated(root.path())
+        .args([
+            "delete",
+            "house",
+            "--world",
+            world,
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(4),
+        "a mark must never suppress detection of a live world; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn delete_of_a_batch_with_one_bad_name_removes_nothing_from_the_database() {
+    // The plural contract, now that it spans two kinds of storage: every name
+    // resolves before anything is removed, so an unknown name at the end of
+    // the list leaves the database untouched.
+    let (root, world) = fixture_world_with_construct(&[], &[]);
+    let world_dir = root.path().join("minecraftWorlds").join(world);
+    close_world(&world_dir);
+
+    let out = bin_isolated(root.path())
+        .args([
+            "delete",
+            "house",
+            "nope",
+            "--world",
+            world,
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+
+    let listed = bin_isolated(root.path())
+        .args([
+            "structures",
+            "--world",
+            world,
+            "--json",
             "--source",
             "world",
             "--com-mojang",
@@ -2220,9 +2923,17 @@ fn deleting_from_a_world_database_is_refused_for_now() {
         ])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("--source pack"), "stderr:\n{stderr}");
+    let v: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    let names: Vec<&str> = v["structures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"house"),
+        "the named-first structure must survive a batch that could not resolve: {v}"
+    );
 }
 
 /// All files under `dir`, recursively.
@@ -3150,7 +3861,7 @@ fn status_reports_the_installed_version_and_which_worlds_have_it() {
 
 #[test]
 fn status_counts_the_structures_in_every_pack_it_can_see() {
-    // The cross-world view: `list` answers one world at a time, and a
+    // The cross-world view: `structures` answers one world at a time, and a
     // structure in the shared copy is in every world using it. Only this
     // shows both at once.
     let root = world_with_construct(&[("shared_prefab", b"x")]);
@@ -3326,15 +4037,55 @@ fn status_reports_an_update_is_available() {
     );
 }
 
-/// Marks a world's database as freshly written, the way Minecraft's autosave
-/// leaves it while the world is loaded. Measured against a live session: with
-/// a world open, Bedrock rewrites `db/` roughly every five seconds.
-fn mark_db_active(root: &std::path::Path) {
-    std::fs::write(
-        root.join("minecraftWorlds/Test/db/000021.log"),
-        b"chunk data",
-    )
-    .unwrap();
+/// Simulates a world Minecraft currently has loaded, until the guard drops.
+///
+/// A single write is no longer enough, and that is the point: `inuse`'s second
+/// phase watches for a *further* write precisely so it can tell a live world
+/// from a command that just finished writing one. Only something that keeps
+/// writing looks live. Measured against a real session, Bedrock rewrites `db/`
+/// every 5-10 seconds; this ticks faster so the check trips promptly.
+#[must_use = "the world stops looking live as soon as this is dropped"]
+struct LiveWorld {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    writer: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for LiveWorld {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(w) = self.writer.take() {
+            let _ = w.join();
+        }
+    }
+}
+
+fn mark_db_active(root: &std::path::Path) -> LiveWorld {
+    let db = root.join("minecraftWorlds/Test/db");
+    live_world_at(&db)
+}
+
+fn live_world_at(db: &std::path::Path) -> LiveWorld {
+    let log = db.join("000021.log");
+    std::fs::write(&log, b"chunk data").unwrap();
+
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = stop.clone();
+    let writer = std::thread::spawn(move || {
+        // Push the mtime forward explicitly rather than relying on the clock
+        // to tick between writes, so the watcher always sees it advance.
+        let mut when = std::time::SystemTime::now();
+        while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            when += std::time::Duration::from_secs(1);
+            if let Ok(f) = std::fs::File::options().write(true).open(&log) {
+                let _ = f.set_times(std::fs::FileTimes::new().set_modified(when));
+            }
+        }
+    });
+    LiveWorld {
+        stop,
+        writer: Some(writer),
+    }
 }
 
 #[test]
@@ -3353,7 +4104,7 @@ fn enable_beta_apis_refuses_with_exit_4_when_minecraft_has_the_world_open() {
         format!("[backups]\ndir = {:?}\nkeep = 5\n", backups),
     )
     .unwrap();
-    mark_db_active(root.path());
+    let _live = mark_db_active(root.path());
 
     let out = bin()
         .env("CONSTRUCT_CONFIG", &config)
@@ -3395,7 +4146,7 @@ fn install_world_refuses_with_exit_4_before_it_downloads_anything() {
     // instead is what proves the in-use check runs before the download —
     // a refused `--world` install must leave nothing half-done.
     let root = world_with_experiments(0);
-    mark_db_active(root.path());
+    let _live = mark_db_active(root.path());
 
     let out = bin()
         .env("CONSTRUCT_GITHUB_API", "http://127.0.0.1:1/")
@@ -3426,7 +4177,7 @@ fn install_without_a_world_ignores_whether_any_world_is_in_use() {
     // The in-use check is scoped to `--world`. Installing the packs alone
     // touches no world at all, so a live world is none of its business.
     let root = world_with_experiments(0);
-    mark_db_active(root.path());
+    let _live = mark_db_active(root.path());
     let addon = build_mcaddon_bytes();
     let (base, _server) = stub_github(addon);
 
@@ -3552,7 +4303,6 @@ fn merge_without_o_is_a_usage_error() {
     let out = bin()
         .args([
             "export",
-            "Test",
             "a",
             "b",
             "--merge",
@@ -3580,7 +4330,6 @@ fn merge_writes_one_file_from_several_structures() {
     let out = bin()
         .args([
             "export",
-            "Test",
             "north",
             "tower",
             "--merge",
@@ -3633,7 +4382,6 @@ fn merge_refuses_an_existing_target_without_force() {
     let out = bin()
         .args([
             "export",
-            "Test",
             "north",
             "tower",
             "--merge",
@@ -3662,7 +4410,6 @@ fn merge_reports_overlap_on_stderr_and_in_the_payload() {
     let out = bin()
         .args([
             "export",
-            "Test",
             "north",
             "tower",
             "--merge",
@@ -3711,7 +4458,6 @@ fn merge_with_on_overlap_error_exits_1_and_writes_nothing() {
     let out = bin()
         .args([
             "export",
-            "Test",
             "north",
             "tower",
             "--merge",
@@ -3743,7 +4489,6 @@ fn merging_one_structure_is_allowed() {
     let out = bin()
         .args([
             "export",
-            "Test",
             "solo",
             "--merge",
             "-o",
@@ -3847,14 +4592,11 @@ fn delete_removes_every_structure_named() {
     let root = world_with_construct(&[("barn", b"a"), ("silo", b"b"), ("hut", b"c")]);
     let dir = shared_structures(root.path());
 
-    let out = bin()
+    let out = bin_isolated(root.path())
         .args([
             "delete",
-            "Test",
             "barn",
             "silo",
-            "--source",
-            "pack",
             "--com-mojang",
             root.path().to_str().unwrap(),
         ])
@@ -3881,15 +4623,16 @@ fn delete_of_a_batch_with_one_bad_name_removes_nothing() {
     let root = world_with_construct(&[("barn", b"a"), ("silo", b"b")]);
     let dir = shared_structures(root.path());
 
-    let out = bin()
+    let out = bin_isolated(root.path())
         .args([
             "delete",
-            "Test",
             "barn",
             "nosuchthing",
             "silo",
             "--source",
             "pack",
+            "--world",
+            "Test",
             "--com-mojang",
             root.path().to_str().unwrap(),
         ])
@@ -3907,14 +4650,11 @@ fn delete_of_a_batch_with_one_bad_name_removes_nothing() {
 #[test]
 fn delete_json_carries_a_deleted_array_and_the_world() {
     let root = world_with_construct(&[("barn", b"a"), ("silo", b"b")]);
-    let out = bin()
+    let out = bin_isolated(root.path())
         .args([
             "delete",
-            "Test",
             "barn",
             "silo",
-            "--source",
-            "pack",
             "--json",
             "--com-mojang",
             root.path().to_str().unwrap(),
@@ -3929,12 +4669,16 @@ fn delete_json_carries_a_deleted_array_and_the_world() {
 
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["schema"], 1);
-    assert!(v["world"].as_str().unwrap().ends_with("Test"), "{v}");
+    // No world was named, so there is none to report — and `scope` sits at the
+    // top level because the grammar picks one scope per command now, where it
+    // used to be per row.
+    assert!(v["world"].is_null(), "{v}");
+    assert_eq!(v["scope"], "shared");
     let deleted = v["deleted"].as_array().unwrap();
     assert_eq!(deleted.len(), 2);
     assert_eq!(deleted[0]["name"], "barn");
     assert_eq!(deleted[0]["id"], "mystructure:barn");
-    assert_eq!(deleted[0]["scope"], "shared");
+    assert_eq!(deleted[0]["source"], "pack");
     assert_eq!(deleted[1]["name"], "silo");
 }
 
@@ -3943,13 +4687,10 @@ fn delete_of_a_single_structure_still_emits_a_one_row_array() {
     // The shape does not depend on the count — that is the whole reason for
     // moving to an array rather than switching between two payloads.
     let root = world_with_construct(&[("barn", b"a")]);
-    let out = bin()
+    let out = bin_isolated(root.path())
         .args([
             "delete",
-            "Test",
             "barn",
-            "--source",
-            "pack",
             "--json",
             "--com-mojang",
             root.path().to_str().unwrap(),
@@ -3964,9 +4705,10 @@ fn delete_of_a_single_structure_still_emits_a_one_row_array() {
 #[test]
 fn delete_with_no_structure_named_is_a_usage_error() {
     let root = world_with_construct(&[("barn", b"a")]);
-    let out = bin()
+    let out = bin_isolated(root.path())
         .args([
             "delete",
+            "--world",
             "Test",
             "--com-mojang",
             root.path().to_str().unwrap(),
@@ -4418,7 +5160,104 @@ fn completions_subcommand_generates_shell_scripts() {
 
 #[test]
 fn tab_completion_completes_world_names() {
+    // `export`'s world is a flag now, so this is where world names are asked
+    // for. The value after `--world` is the one place `export` still wants one.
     let root = world_with_construct(&[("barn", b"x")]);
+    let out = bin()
+        .env("_CLAP_COMPLETE_INDEX", "5")
+        .env("COMPLETE", "bash")
+        .args([
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+            "--",
+            "construct",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+            "export",
+            "--world",
+            "",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Test"), "should suggest world Test:\n{text}");
+}
+
+#[test]
+fn tab_completion_completes_structure_names_for_the_targeted_world() {
+    // What `--world` can actually export: the world's database and the world's
+    // own pack. The shared copy is out of scope, so offering its names here
+    // would hand back a completion the command then refuses.
+    //
+    // The world must be one that genuinely *sees* both packs — a structures
+    // pack of its own alongside the shared Construct. Give it a Construct of
+    // its own instead and `pack::serving` hides the shared copy by itself,
+    // which would let this pass without the scoping ever being exercised.
+    let root = world_with_construct(&[("bomber", b"x")]);
+    let src = root.path().join("hangar.mcstructure");
+    std::fs::write(&src, b"y").unwrap();
+    assert!(
+        bin()
+            .args([
+                "import",
+                src.to_str().unwrap(),
+                "--world",
+                "Test",
+                "--com-mojang",
+                root.path().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    let out = bin()
+        .env("_CLAP_COMPLETE_INDEX", "6")
+        .env("COMPLETE", "bash")
+        .args([
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+            "--",
+            "construct",
+            "--com-mojang",
+            root.path().to_str().unwrap(),
+            "export",
+            "--world",
+            "Test",
+            "",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("hangar"),
+        "should suggest the world's own pack structure hangar:\n{text}"
+    );
+    assert!(
+        !text.contains("bomber"),
+        "must not suggest a shared-copy structure --world cannot export:\n{text}"
+    );
+}
+
+#[test]
+fn tab_completion_completes_shared_structures_when_no_world_is_named() {
+    // The other half of the grammar: with no `--world`, `export` reads the
+    // shared copy, so that is what the names on offer must come from. A world's
+    // database is not reachable from here and must not be suggested.
+    let (root, _world_name) = fixture_world_with_construct(&[], &[("bomber", b"x")]);
     let out = bin()
         .env("_CLAP_COMPLETE_INDEX", "4")
         .env("COMPLETE", "bash")
@@ -4441,42 +5280,13 @@ fn tab_completion_completes_world_names() {
         String::from_utf8_lossy(&out.stderr)
     );
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("Test"), "should suggest world Test:\n{text}");
-}
-
-#[test]
-fn tab_completion_completes_structure_names_for_the_targeted_world() {
-    let (root, world_name) = fixture_world_with_construct(&[], &[("bomber", b"x")]);
-    let out = bin()
-        .env("_CLAP_COMPLETE_INDEX", "5")
-        .env("COMPLETE", "bash")
-        .args([
-            "--com-mojang",
-            root.path().to_str().unwrap(),
-            "--",
-            "construct",
-            "--com-mojang",
-            root.path().to_str().unwrap(),
-            "export",
-            world_name,
-            "",
-        ])
-        .output()
-        .unwrap();
-
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        text.contains("house"),
-        "should suggest world-db structure house:\n{text}"
-    );
     assert!(
         text.contains("bomber"),
-        "should suggest pack structure bomber:\n{text}"
+        "should suggest the shared copy's bomber:\n{text}"
+    );
+    assert!(
+        !text.contains("house"),
+        "must not suggest a world-database structure:\n{text}"
     );
 }
 

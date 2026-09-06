@@ -660,7 +660,7 @@ fn depth_does_not_change_the_flat_or_one_level_rules() {
 #[test]
 fn every_segment_is_left_exactly_as_it_sits_on_disk() {
     // Namespace, intermediate folders, and stem alike: the id is what the
-    // filesystem says, so what `list` prints is what `delete` can address.
+    // filesystem says, so what `structures` prints is what `delete` can address.
     let root = tempfile::tempdir().unwrap();
     let pack = root.path().join("P");
     touch(
@@ -672,7 +672,7 @@ fn every_segment_is_left_exactly_as_it_sits_on_disk() {
 
 #[test]
 fn writing_still_refuses_a_separator_in_a_name() {
-    // Reading and writing stay asymmetric on purpose (§17): `list` reports whatever
+    // Reading and writing stay asymmetric on purpose (§17): `structures` reports whatever
     // depth exists, but nothing this tool writes creates a nested path, because the
     // character that would enable it is the one that makes traversal possible.
     assert!(structures::path_for(Path::new("/p"), "stuff:towers/diamond").is_err());

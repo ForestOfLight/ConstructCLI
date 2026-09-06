@@ -64,13 +64,12 @@ pub fn open_via_snapshot(world: &World) -> Result<OpenedStore> {
     let copy = tmp.path().join("db");
     let copied = link_or_copy_dir(&db, &copy)?;
 
-    // Enforces spec §8's central promise at the point it matters most: a read
-    // opens only a copy, never the original. This is an unrecoverable
-    // invariant violation, not a runtime error a caller could handle, so it
-    // panics rather than returning a `Result` — do not "fix" that.
-    crate::store::bedrock::guard_test_path(&copy);
-
-    let store = BedrockStore::open(&copy)?;
+    // `open_copy` panics if handed anything outside a temp directory — spec
+    // §8's central promise, enforced inside the opener rather than here so it
+    // cannot be forgotten. This is an unrecoverable invariant violation, not a
+    // runtime error a caller could handle, so it panics rather than returning
+    // a `Result` — do not "fix" that.
+    let store = BedrockStore::open_copy(&copy)?;
 
     Ok(OpenedStore {
         inner: Box::new(store),

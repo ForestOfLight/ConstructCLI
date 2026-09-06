@@ -6,7 +6,7 @@
 //! reachable), and which worlds have Construct's behaviour pack enabled.
 //!
 //! It also reports where this installation's worlds keep their structures.
-//! `list` answers that one world at a time; a structure in the shared copy is
+//! `structures` answers that one world at a time; a structure in the shared copy is
 //! in every world using it, and only a cross-world view shows that at a
 //! glance.
 //!

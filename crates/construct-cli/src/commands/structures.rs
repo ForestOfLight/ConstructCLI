@@ -31,21 +31,13 @@ pub fn run(
     world: &World,
     installations: &[Installation],
     source: Option<Source>,
-    pack_scope: Option<pack::Scope>,
     out: &mut Out,
 ) -> Result<()> {
     let loaded = catalog::for_world(world, installations, source, out)?;
-    // `--pack` is about packs, so naming one drops world-database rows along
-    // with the other pack's — the same rule `catalog::resolve` applies.
-    let entries: Vec<Entry> = match pack_scope {
-        None => loaded.entries,
-        Some(s) => loaded
-            .entries
-            .into_iter()
-            .filter(|e| e.scope == Some(s))
-            .collect(),
-    };
-    render(Some(world.qualified()), &entries, out);
+    // Everything the world sees, both packs included: `--world` names the
+    // world, and a world's view is what this listing is for. The SOURCE column
+    // says which pack each row is in, so nothing needs narrowing here.
+    render(Some(world.qualified()), &loaded.entries, out);
     Ok(())
 }
 

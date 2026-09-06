@@ -47,7 +47,12 @@ pub enum CoreError {
     },
 
     #[error("world is in use: {}", world.display())]
-    WorldInUse { world: PathBuf },
+    WorldInUse {
+        world: PathBuf,
+        /// What the refused write would have put at risk. The two are
+        /// different dangers and want different advice.
+        at_risk: crate::inuse::AtRisk,
+    },
 
     #[error("not enough space to snapshot {}: need {need} bytes, {available} available", world.display())]
     InsufficientSpace {
@@ -112,8 +117,8 @@ pub enum CoreError {
     #[error("unusable structure name {name:?}: {reason}")]
     BadStructureName { name: String, reason: String },
 
-    #[error("{what} is not implemented yet")]
-    NotImplemented { what: String },
+    #[error("internal invariant violated: {what}")]
+    Internal { what: String },
 
     #[error("no platform data directory for backups; set [backups] dir in config.toml")]
     NoBackupDir,

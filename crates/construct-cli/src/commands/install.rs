@@ -173,7 +173,7 @@ pub fn run(
     // write below means a refused `--world` install downloads nothing and
     // leaves nothing half-done; the user closes the world and re-runs.
     if let Some(world) = world {
-        inuse::refuse_if_in_use(world)?;
+        crate::commands::refuse_if_in_use(world, inuse::AtRisk::LevelDat, out)?;
     }
 
     let release = releases.release(version)?;
@@ -252,7 +252,7 @@ pub fn run(
         // Placement above always writes into the shared
         // dev-pack root. But a world with its own `behavior_packs/Construct[BP]`
         // copy is governed by that copy, not the shared copy (`pack::for_world`'s
-        // precedence — the same one `import`/`copy`/`delete`/`list` resolve
+        // precedence — the same one `import`/`copy`/`delete`/`structures` resolve
         // through). Without this, install would report a version bump the
         // world never actually gets, and every later structure command would
         // keep writing into the untouched local copy.

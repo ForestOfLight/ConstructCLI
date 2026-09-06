@@ -16,5 +16,6 @@ pub mod merge;
 pub mod pack;
 pub mod store;
 pub mod worldpacks;
+pub mod writemark;
 
 pub use error::{CoreError, Result};

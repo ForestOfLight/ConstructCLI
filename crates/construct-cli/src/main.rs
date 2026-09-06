@@ -44,7 +44,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
         .iter()
         .map(|r| (r.name.clone(), r.path.clone()))
         .collect();
-    for (i, path) in cli.com_mojang.iter().enumerate() {
+    for (i, path) in cli.command.com_mojang().iter().enumerate() {
         extra_roots.push((format!("flag{}", i + 1), path.clone()));
     }
 
@@ -108,26 +108,28 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
 
     match &cli.command {
         Command::Add { path } => commands::add::run(path, out),
-        Command::Worlds if installations.is_empty() => Err(no_installations()),
-        Command::Worlds => commands::worlds::run(&worlds, out),
-        Command::List { world: Some(world) } => {
+        Command::Worlds { .. } if installations.is_empty() => Err(no_installations()),
+        Command::Worlds { .. } => commands::worlds::run(&worlds, out),
+        Command::Structures {
+            world: Some(world),
+            source,
+            ..
+        } => {
             let w = resolve_world(world)?;
-            commands::list::run(
-                &w,
-                &installations,
-                cli.source.map(Into::into),
-                cli.pack.map(Into::into),
-                out,
-            )
+            commands::structures::run(&w, &installations, source.map(Into::into), out)
         }
-        Command::List { world: None } => {
-            if cli.source == Some(cli::SourceArg::World) {
+        Command::Structures {
+            world: None,
+            source,
+            ..
+        } => {
+            if *source == Some(cli::SourceArg::World) {
                 // Nothing to read: a world's structures live in a world's
                 // database, and no world was named. Usage error, not a
                 // failure — nothing was attempted.
                 eprintln!(
                     "error: --source world needs a world to read from\n\n\
-                     construct list <world> --source world"
+                     construct structures --world <world> --source world"
                 );
                 std::process::exit(2);
             }
@@ -136,7 +138,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
                 loaded.config.default_installation.as_deref(),
             )?;
-            commands::list::shared(installation, out)
+            commands::structures::shared(installation, out)
         }
         Command::Export {
             world,
@@ -144,13 +146,25 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
             output,
             merge,
             on_overlap,
+            source,
+            force,
+            ..
         } => {
             if *merge && output.is_none() {
                 // --merge produces one file, and there is no structure name to
                 // derive it from — the result is not any one of the inputs.
                 eprintln!(
                     "error: --merge writes a single file and needs -o to name it\n\n\
-                     construct export <world> <s1> <s2>... --merge -o merged.mcstructure"
+                     construct export <s1> <s2>... --merge -o merged.mcstructure"
+                );
+                std::process::exit(2);
+            }
+            if world.is_none() && *source == Some(cli::SourceArg::World) {
+                // The same refusal `structures` and `delete` make: a world's
+                // structures live in a world's database, and none was named.
+                eprintln!(
+                    "error: --source world needs a world to read from\n\n\
+                     construct export <structure> --world <world> --source world"
                 );
                 std::process::exit(2);
             }
@@ -163,7 +177,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 Some(Err(found)) => {
                     eprintln!(
                         "error: -o writes a .mcstructure file, but {found} was given\n\n\
-                         construct export <world> <structure> -o {}.mcstructure",
+                         construct export <structure> -o {}.mcstructure",
                         output
                             .as_deref()
                             .and_then(|p| p.file_stem())
@@ -186,21 +200,51 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 );
                 std::process::exit(2);
             }
-            let w = resolve_world(world)?;
-            commands::export::run(
-                &w,
-                &installations,
-                structures,
-                output,
-                cli.source.map(Into::into),
-                cli.pack.map(Into::into),
-                cli.force,
-                *merge,
-                (*on_overlap).into(),
-                out,
-            )
+            // Two scopes, two functions — the same shape `delete` has, and for
+            // the same reason: absence means the shared copy of Construct and
+            // `--world` means that world, and neither can reach the other's
+            // files.
+            match world {
+                Some(reference) => {
+                    let w = resolve_world(reference)?;
+                    commands::export::for_world(
+                        &w,
+                        &installations,
+                        structures,
+                        output,
+                        source.map(Into::into),
+                        *force,
+                        *merge,
+                        (*on_overlap).into(),
+                        out,
+                    )
+                }
+                None => {
+                    let installation = discovery::installation::choose(
+                        &installations,
+                        std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
+                        loaded.config.default_installation.as_deref(),
+                    )?;
+                    commands::export::shared(
+                        installation,
+                        structures,
+                        output,
+                        source.map(Into::into),
+                        *force,
+                        *merge,
+                        (*on_overlap).into(),
+                        out,
+                    )
+                }
+            }
         }
-        Command::Import { files, world, name } => {
+        Command::Import {
+            files,
+            world,
+            name,
+            force,
+            ..
+        } => {
             if name.is_some() && files.len() > 1 {
                 // --name renames one import and cannot name several, exactly
                 // as -o names one output file. Usage error, not a failure:
@@ -227,7 +271,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 w.as_ref(),
                 installation,
                 name.as_deref(),
-                cli.force,
+                *force,
                 out,
             )
         }
@@ -235,6 +279,10 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
             src_world,
             dst_world,
             structures,
+            source,
+            pack,
+            force,
+            ..
         } => {
             let src = resolve_world(src_world)?;
             let dst = resolve_world(dst_world)?;
@@ -243,28 +291,66 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 &dst,
                 structures,
                 &installations,
-                cli.source.map(Into::into),
-                cli.pack.map(Into::into),
-                cli.force,
+                source.map(Into::into),
+                pack.map(Into::into),
+                *force,
                 out,
             )
         }
-        Command::Delete { world, structures } => {
-            let w = resolve_world(world)?;
-            commands::delete::run(
-                &w,
-                structures,
-                &installations,
-                cli.source.map(Into::into),
-                cli.pack.map(Into::into),
-                out,
-            )
-        }
-        Command::EnableBetaApis { world } => {
+        // `--pack` is deliberately absent from `delete`: `--world` is its scope
+        // selector, and the two can contradict each other outright
+        // (`--world W --pack shared` asks to delete from the shared copy while
+        // scoped to a world that must not touch it). clap refuses the flag.
+        Command::Delete {
+            structures,
+            world,
+            source,
+            ..
+        } => match world {
+            Some(reference) => {
+                let w = resolve_world(reference)?;
+                commands::delete::for_world(
+                    &w,
+                    structures,
+                    &installations,
+                    source.map(Into::into),
+                    out,
+                )
+            }
+            None => {
+                if *source == Some(cli::SourceArg::World) {
+                    // The same refusal `structures --source world` makes: a
+                    // world's structures live in a world's database, and no
+                    // world was named.
+                    eprintln!(
+                        "error: --source world needs a world to delete from\n\n\
+                         construct delete <structure> --world <world> --source world"
+                    );
+                    std::process::exit(2);
+                }
+                let installation = discovery::installation::choose(
+                    &installations,
+                    std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
+                    loaded.config.default_installation.as_deref(),
+                )?;
+                commands::delete::shared(
+                    installation,
+                    structures,
+                    source.map(Into::into),
+                    out,
+                )
+            }
+        },
+        Command::EnableBetaApis { world, .. } => {
             let w = resolve_world(world)?;
             commands::enable_beta_apis::run(&w, &loaded.config.backups, out)
         }
-        Command::Install { version, world } => {
+        Command::Install {
+            version,
+            world,
+            force,
+            ..
+        } => {
             let w = world.as_deref().map(resolve_world).transpose()?;
             let installation = match &w {
                 Some(w) => discovery::installation::for_world(&installations, w)?,
@@ -281,11 +367,11 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 w.as_ref(),
                 installation,
                 &loaded.config.backups,
-                cli.force,
+                *force,
                 out,
             )
         }
-        Command::Status => {
+        Command::Status { .. } => {
             let installation = discovery::installation::choose(
                 &installations,
                 std::env::var("CONSTRUCT_INSTALLATION").ok().as_deref(),
@@ -393,7 +479,7 @@ fn report(err: &CoreError) {
                 eprintln!("  construct <command> ... --pack world   # or: --pack shared");
             } else {
                 eprintln!("\nDisambiguate with --source:");
-                eprintln!("  construct list <world> --source world   # or: --source pack");
+                eprintln!("  construct structures --world <world> --source world   # or: --source pack");
             }
             // Construct's own list resolves this by letting the pack copy win
             // (§17). The CLI refuses instead — but the user is usually asking
@@ -429,21 +515,46 @@ fn report(err: &CoreError) {
         CoreError::BadStructureName { .. } => {
             eprintln!("\nChoose a name explicitly:\n  construct import <file> --name <name>");
         }
-        CoreError::NotImplemented { .. } => {
-            eprintln!("\nUse --source pack to delete an imported structure.");
+        CoreError::Db { .. } => {
+            // Every command that names a structure searches the world's
+            // database as well as its packs, so an unopenable database stops
+            // even a command that only ever meant a pack file. `delete` is the
+            // one that must refuse rather than carry on: skipping the database
+            // half would report a structure deleted while a copy of it
+            // survived there.
+            eprintln!(
+                "\nIf you meant a structure in Construct's folder, --source pack \
+                 skips the database:\n  construct <command> ... --source pack"
+            );
         }
         CoreError::UnwritableLevelDat { written: false, .. } => {
             eprintln!("\nThe world was not modified.");
         }
-        CoreError::WorldInUse { .. } => {
+        CoreError::WorldInUse { at_risk, .. } => {
+            // Not a guess any more. Phase one suspected it because `db/` was
+            // written recently; phase two then watched and saw a *further*
+            // write land, which a finished command cannot produce.
             eprintln!(
-                "\nMinecraft appears to have this world open — its database was written \
-                 in the last {} seconds.\n\
-                 The game keeps level.dat in memory and rewrites it whenever it saves, so \
-                 a change made now would be silently discarded.\n\n\
-                 Close the world in Minecraft (returning to the main menu is enough), then \
-                 run this again. The world was not modified.",
-                construct_core::inuse::ACTIVITY_WINDOW.as_secs()
+                "\nMinecraft has this world open — a new write landed in its database while \
+                 this command watched it for up to {} seconds.",
+                construct_core::inuse::CONFIRM_WATCH.as_secs()
+            );
+            // The two write paths are stopped for different reasons, and the
+            // reason is the part worth reading.
+            match at_risk {
+                construct_core::inuse::AtRisk::LevelDat => eprintln!(
+                    "The game keeps level.dat in memory and rewrites it whenever it saves, \
+                     so a change made now would be silently discarded."
+                ),
+                construct_core::inuse::AtRisk::Database => eprintln!(
+                    "Writing to a world's database while the game has it open is how a save \
+                     gets corrupted, so this stops before opening it at all. There is no \
+                     --force."
+                ),
+            }
+            eprintln!(
+                "\nClose the world in Minecraft (returning to the main menu is enough), then \
+                 run this again. The world was not modified."
             );
         }
         CoreError::RateLimited => {
@@ -504,8 +615,7 @@ fn exit_code(err: &CoreError) -> i32 {
         | CoreError::AmbiguousStructure { .. }
         | CoreError::AmbiguousInstallation { .. }
         | CoreError::MalformedReference { .. }
-        | CoreError::BadStructureName { .. }
-        | CoreError::NotImplemented { .. } => 2,
+        | CoreError::BadStructureName { .. } => 2,
         CoreError::WorldInUse { .. } => 4,
         _ => 1,
     }

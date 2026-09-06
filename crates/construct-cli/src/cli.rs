@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use clap_complete::engine::ArgValueCandidates;
 use std::path::PathBuf;
 
@@ -9,29 +9,24 @@ use std::path::PathBuf;
     about = "Move structures between Minecraft Bedrock worlds"
 )]
 pub struct Cli {
-    /// Extra com.mojang root to probe. Repeatable.
-    #[arg(long, global = true, value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
-    pub com_mojang: Vec<PathBuf>,
-
     /// Emit one JSON document on stdout instead of human output.
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// Overwrite an existing target file. Never relaxes the world-in-use refusal.
-    #[arg(long, global = true)]
-    pub force: bool,
-
-    /// Disambiguate a structure name present in both a world and a pack.
-    #[arg(long, global = true, value_enum)]
-    pub source: Option<SourceArg>,
-
-    /// Disambiguate a structure name present in both packs a world sees —
-    /// its own and the shared copy of Construct.
-    #[arg(long, global = true, value_enum)]
-    pub pack: Option<PackArg>,
-
     #[command(subcommand)]
     pub command: Command,
+}
+
+/// Where to look for Minecraft, flattened into every command that searches.
+///
+/// Declared here rather than globally on `Cli` so `add` and `completions` —
+/// the two commands that never run discovery — refuse it instead of parsing
+/// it and doing nothing with it.
+#[derive(Args)]
+pub struct Discovery {
+    /// Extra com.mojang root to probe. Repeatable.
+    #[arg(long, value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
+    pub com_mojang: Vec<PathBuf>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
@@ -78,21 +73,28 @@ pub enum Command {
     },
 
     /// List all discovered worlds.
-    Worlds,
+    Worlds {
+        #[command(flatten)]
+        discovery: Discovery,
+    },
 
     /// List the structures in a world, or in the shared copy of Construct.
-    List {
-        /// World name, qualified reference, or path. Without one, the
-        /// shared copy of Construct is listed on its own.
-        #[arg(add = ArgValueCandidates::new(crate::complete::complete_worlds))]
+    Structures {
+        /// List this world's structures, by name, qualified reference, or
+        /// path.
+        ///
+        /// Omitted, the shared copy of Construct is listed on its own.
+        #[arg(short = 'w', long, value_name = "WORLD", add = ArgValueCandidates::new(crate::complete::complete_worlds))]
         world: Option<String>,
+        /// Disambiguate a structure name present in both a world and a pack.
+        #[arg(long, value_enum)]
+        source: Option<SourceArg>,
+        #[command(flatten)]
+        discovery: Discovery,
     },
 
     /// Write structures out as .mcstructure files.
     Export {
-        /// World name, qualified reference, or path.
-        #[arg(add = ArgValueCandidates::new(crate::complete::complete_worlds))]
-        world: String,
         /// One or more structure names.
         #[arg(required = true, add = ArgValueCandidates::new(crate::complete::complete_structures))]
         structures: Vec<String>,
@@ -106,9 +108,23 @@ pub enum Command {
         /// How to resolve positions where two structures both have a block.
         #[arg(long, value_name = "MODE", default_value = "last")]
         on_overlap: OverlapArg,
+        /// Read from this world only, never from the shared Construct.
+        ///
+        /// Omitted, the shared copy of Construct is the source — the same way
+        /// `import` places into the shared copy unless told otherwise.
+        #[arg(short = 'w', long, value_name = "WORLD", add = ArgValueCandidates::new(crate::complete::complete_worlds))]
+        world: Option<String>,
+        /// Disambiguate a structure name present in both a world and a pack.
+        #[arg(long, value_enum)]
+        source: Option<SourceArg>,
+        /// Overwrite the output file if it already exists.
+        #[arg(long)]
+        force: bool,
+        #[command(flatten)]
+        discovery: Discovery,
     },
 
-    /// Import .mcstructure files into a world.
+    /// Import .mcstructure files into a world or the shared Construct pack.
     Import {
         /// One or more .mcstructure files to import.
         #[arg(required = true, value_hint = clap::ValueHint::FilePath)]
@@ -120,6 +136,11 @@ pub enum Command {
         /// single file.
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+        /// Overwrite a structure of the same name already in the target pack.
+        #[arg(long)]
+        force: bool,
+        #[command(flatten)]
+        discovery: Discovery,
     },
 
     /// Copy structures from one world into another world.
@@ -133,16 +154,43 @@ pub enum Command {
         /// One or more structure names.
         #[arg(required = true, add = ArgValueCandidates::new(crate::complete::complete_structures))]
         structures: Vec<String>,
+        /// Where in SRC_WORLD to read from: its database or a pack.
+        ///
+        /// Applies to the source only. Nothing selects the destination —
+        /// the write always lands in DST_WORLD's own structures home.
+        /// Use it when a name exists in both places in the source world.
+        #[arg(long, value_enum)]
+        source: Option<SourceArg>,
+        /// Which of SRC_WORLD's packs to read from.
+        ///
+        /// Applies to the source only, like --source. Use it when a name
+        /// exists in both packs the source world sees — its own and the
+        /// shared copy of Construct.
+        #[arg(long, value_enum)]
+        pack: Option<PackArg>,
+        /// Overwrite a structure of the same name already in DST_WORLD.
+        #[arg(long)]
+        force: bool,
+        #[command(flatten)]
+        discovery: Discovery,
     },
 
-    /// Remove imported structures. `--source world` is not implemented yet.
+    /// Remove structures from the shared Construct, or from one world.
     Delete {
-        /// World name, qualified reference, or path.
-        #[arg(add = ArgValueCandidates::new(crate::complete::complete_worlds))]
-        world: String,
         /// One or more structure names.
         #[arg(required = true, add = ArgValueCandidates::new(crate::complete::complete_structures))]
         structures: Vec<String>,
+        /// Delete from this world only, never from the shared Construct.
+        ///
+        /// Omitted, the shared copy of Construct is the target — the same way
+        /// `import` places into the shared copy unless told otherwise.
+        #[arg(short = 'w', long, value_name = "WORLD", add = ArgValueCandidates::new(crate::complete::complete_worlds))]
+        world: Option<String>,
+        /// Disambiguate a structure name present in both a world and a pack.
+        #[arg(long, value_enum)]
+        source: Option<SourceArg>,
+        #[command(flatten)]
+        discovery: Discovery,
     },
 
     /// Turn a world's Beta APIs experiment on.
@@ -150,9 +198,11 @@ pub enum Command {
         /// World name, qualified reference, or path.
         #[arg(add = ArgValueCandidates::new(crate::complete::complete_worlds))]
         world: String,
+        #[command(flatten)]
+        discovery: Discovery,
     },
 
-    /// Install or upgrade Construct
+    /// Install or upgrade ZConstruct
     Install {
         /// A specific version, e.g. 1.2.0. Defaults to the latest release.
         #[arg(long, value_name = "VERSION")]
@@ -160,10 +210,18 @@ pub enum Command {
         /// Also enable Construct in this world and turn Beta APIs on.
         #[arg(short = 'w', long, value_name = "WORLD", add = ArgValueCandidates::new(crate::complete::complete_worlds))]
         world: Option<String>,
+        /// Reinstall the version already installed instead of doing nothing.
+        #[arg(long)]
+        force: bool,
+        #[command(flatten)]
+        discovery: Discovery,
     },
 
     /// Show the installed version, the latest available, and where it's enabled.
-    Status,
+    Status {
+        #[command(flatten)]
+        discovery: Discovery,
+    },
 
     /// Generate shell tab-completion scripts.
     Completions {
@@ -171,6 +229,28 @@ pub enum Command {
         #[arg(value_enum)]
         shell: ShellArg,
     },
+}
+
+impl Command {
+    /// The extra roots this command was given, for the one discovery pass
+    /// `main` runs before dispatching. Matched exhaustively on purpose: a new
+    /// command has to say whether it searches for Minecraft or not.
+    pub fn com_mojang(&self) -> &[PathBuf] {
+        match self {
+            Self::Worlds { discovery }
+            | Self::Structures { discovery, .. }
+            | Self::Export { discovery, .. }
+            | Self::Import { discovery, .. }
+            | Self::Copy { discovery, .. }
+            | Self::Delete { discovery, .. }
+            | Self::EnableBetaApis { discovery, .. }
+            | Self::Install { discovery, .. }
+            | Self::Status { discovery } => &discovery.com_mojang,
+            // Neither searches: `add` writes a path into the config file, and
+            // `completions` prints a script.
+            Self::Add { .. } | Self::Completions { .. } => &[],
+        }
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]

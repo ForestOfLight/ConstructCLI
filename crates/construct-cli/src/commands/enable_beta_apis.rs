@@ -29,7 +29,7 @@ pub fn run(world: &World, backups: &Backups, out: &mut Out) -> Result<()> {
     // is about to overwrite anyway. Neither answer is trustworthy while the
     // world is open, so the command stops here rather than reporting a result
     // that will not survive.
-    inuse::refuse_if_in_use(world)?;
+    crate::commands::refuse_if_in_use(world, inuse::AtRisk::LevelDat, out)?;
 
     // Read first, without touching anything: a no-op (Beta APIs already on)
     // must not take a backup at all, or ten no-op runs would evict every
