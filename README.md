@@ -64,10 +64,13 @@ construct install                         # download and install the latest Cons
 construct install --version 1.2.0         # a specific release
 construct install --world <world>         # also enable it in a world and turn Beta APIs on
 construct import house.mcstructure                    # copy into Construct's structures/
+construct import house.mcstructure barn.mcstructure   # several at once
 construct import house.mcstructure --world <world>    # into that world's own Construct copy
-construct import house.mcstructure --name my_house    # override the derived name
-construct copy <src-world> house <dst-world>          # read from one world, write into another's Construct
+construct import house.mcstructure --name my_house    # override the derived name (one file only)
+construct copy <src-world> <dst-world> house          # read from one world, write into another's Construct
+construct copy <src-world> <dst-world> house barn     # several at once
 construct delete <world> house --source pack          # remove an imported structure
+construct delete <world> house barn --source pack     # several at once
 construct delete <world> house --pack world          # ...when both packs have that name
 construct list                            # just the shared pack: what every world using it gets
 construct status                          # installed version, latest available, where it's enabled, and where structures live

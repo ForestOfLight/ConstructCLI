@@ -196,7 +196,19 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 out,
             )
         }
-        Command::Import { file, world, name } => {
+        Command::Import { files, world, name } => {
+            if name.is_some() && files.len() > 1 {
+                // --name renames one import and cannot name several, exactly
+                // as -o names one output file. Usage error, not a failure:
+                // nothing was attempted.
+                eprintln!(
+                    "error: --name renames a single import, but {} files were given\n\n\
+                     Drop --name to derive each name from its file stem, or import them \
+                     one at a time.",
+                    files.len()
+                );
+                std::process::exit(2);
+            }
             let w = world.as_deref().map(resolve_world).transpose()?;
             let installation = match &w {
                 Some(w) => discovery::installation::for_world(&installations, w)?,
@@ -207,7 +219,7 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 )?,
             };
             commands::import::run(
-                file,
+                files,
                 w.as_ref(),
                 installation,
                 name.as_deref(),
@@ -217,15 +229,15 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
         }
         Command::Copy {
             src_world,
-            structure,
             dst_world,
+            structures,
         } => {
             let src = resolve_world(src_world)?;
             let dst = resolve_world(dst_world)?;
             commands::copy::run(
                 &src,
-                structure,
                 &dst,
+                structures,
                 &installations,
                 cli.source.map(Into::into),
                 cli.pack.map(Into::into),
@@ -233,11 +245,11 @@ fn run(cli: &Cli, out: &mut Out) -> construct_core::Result<()> {
                 out,
             )
         }
-        Command::Delete { world, structure } => {
+        Command::Delete { world, structures } => {
             let w = resolve_world(world)?;
             commands::delete::run(
                 &w,
-                structure,
+                structures,
                 &installations,
                 cli.source.map(Into::into),
                 cli.pack.map(Into::into),

@@ -99,34 +99,38 @@ pub enum Command {
         on_overlap: OverlapArg,
     },
 
-    /// Copy a .mcstructure file into Construct's structures folder.
+    /// Copy .mcstructure files into Construct's structures folder.
     Import {
-        /// The .mcstructure file to import.
-        file: PathBuf,
+        /// One or more .mcstructure files to import.
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
         /// Target this world's Construct copy.
         #[arg(long, value_name = "WORLD")]
         world: Option<String>,
-        /// Override the name derived from the file stem.
+        /// Override the name derived from the file stem. Only valid with a
+        /// single file.
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
     },
 
-    /// Copy a structure into another world's Construct.
+    /// Copy structures into another world's Construct.
     Copy {
         /// Source world name, qualified reference, or path.
         src_world: String,
-        /// Structure name.
-        structure: String,
         /// Destination world name, qualified reference, or path.
         dst_world: String,
+        /// One or more structure names.
+        #[arg(required = true)]
+        structures: Vec<String>,
     },
 
-    /// Remove an imported structure. `--source world` is not implemented yet.
+    /// Remove imported structures. `--source world` is not implemented yet.
     Delete {
         /// World name, qualified reference, or path.
         world: String,
-        /// Structure name.
-        structure: String,
+        /// One or more structure names.
+        #[arg(required = true)]
+        structures: Vec<String>,
     },
 
     /// Read or set a world's experimental toggles.

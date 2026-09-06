@@ -13,9 +13,9 @@ anchors for editing and a list of the seams where the grammar is inconsistent.
 | `worlds` | — | — |
 | `list` | `[world]` | — |
 | `export` | **`world`** **`structures…`** | `-o/--output v`, `--merge`, `--on-overlap v` (`last`\|`first`\|`error`, default `last`) |
-| `import` | **`file`** | `--world v`, `--name v` |
-| `copy` | **`src_world`** **`structure`** **`dst_world`** | — |
-| `delete` | **`world`** **`structure`** | — |
+| `import` | **`files…`** | `--world v`, `--name v` |
+| `copy` | **`src_world`** **`dst_world`** **`structures…`** | — |
+| `delete` | **`world`** **`structures…`** | — |
 | `experiment` | **`world`** | **`--beta-apis [v]`** (`on`\|`off`) |
 | `install` | — | `--version v`, `--world v` |
 | `status` | — | — |
@@ -63,11 +63,12 @@ candidates for clap-native expression (`conflicts_with`, `requires`,
 
 | Rule | Where |
 | ---- | ----- |
-| `--merge` requires `-o` | `main.rs:147` |
-| `-o` with >1 structure and no `--merge` | `main.rs:177` |
-| `-o` must end `.mcstructure` (missing ext is filled in, wrong ext refused) | `main.rs:160`, `mcstructure_path` at `main.rs:297` |
-| `--source world` with no world positional on `list` | `main.rs:124` |
-| `--beta-apis` required, `num_args = 0..=1` (get/set in one flag) | `cli.rs:133` |
+| `--merge` requires `-o` | `main.rs:148` |
+| `-o` with >1 structure and no `--merge` | `main.rs:178` |
+| `-o` must end `.mcstructure` (missing ext is filled in, wrong ext refused) | `main.rs:161`, `mcstructure_path` at `main.rs:309` |
+| `--name` with >1 file on `import` | `main.rs:205` |
+| `--source world` with no world positional on `list` | `main.rs:125` |
+| `--beta-apis` required, `num_args = 0..=1` (get/set in one flag) | `cli.rs:142` |
 
 ## Seams worth reworking
 
@@ -80,8 +81,11 @@ candidates for clap-native expression (`conflicts_with`, `requires`,
 3. **`install --version` shadows the conventional `-V/--version`.** clap keeps
    them distinct because the global is `-V` on the root, but `construct install
    --version` reads as "print version".
-4. **Arity is inconsistent**: `export` takes N structures, `copy`/`delete` take
-   exactly one, `import` takes one file. No plural form anywhere else.
+4. ~~**Arity is inconsistent**~~ — closed. `export`, `copy`, `delete`, and
+   `import` all take N, each resolving the whole batch before it writes or
+   unlinks anything, so a bad name leaves the job untouched rather than half
+   done. Closing it moved `copy`'s destination ahead of its structures
+   (`copy <src> <dst> <s…>`), which is the one breaking change in the set.
 5. **Globals are accepted where they do nothing** — `construct worlds --pack
    shared` parses and is silently ignored. Consider per-command args or
    `global = false`.
@@ -99,9 +103,17 @@ candidates for clap-native expression (`conflicts_with`, `requires`,
 
 - **JSON payloads** — one struct per command, `schema: 1` + `warnings` injected
   at emit (`output.rs:56`). Keys today: `worlds.rs:7,12` · `list.rs:11,18` ·
-  `export.rs:21,27,201,207` · `import.rs:16` · `copy.rs:19` · `delete.rs:19` ·
-  `experiment.rs:15` · `install.rs:17` · `status.rs:25,36`. `list`, `export`,
-  `copy` identify worlds by *qualified reference*; human lines use display name.
+  `export.rs:21,27,201,207` · `import.rs:16,26` · `copy.rs:20,40` ·
+  `delete.rs:19,25` · `experiment.rs:15` · `install.rs:17` · `status.rs:25,36`.
+  `list`, `export`, `copy` identify worlds by *qualified reference*; human
+  lines use display name.
+- **The plural commands always emit an array**, one row per item, whatever the
+  count — `export`/`copy`/`import` under `written`, `delete` under `deleted`.
+  Fields that describe the invocation rather than a row sit at the top level:
+  `copy`'s `from`/`to`/`scope` and `import`'s `pack`/`scope`, because one
+  destination home is chosen per command. `delete` keeps `scope` per row —
+  its entries are found by name across every pack the world sees, so two in
+  one batch can come from different packs.
 - **Exit codes** (`main.rs:483`): 0 ok · 1 fail · 2 usage/ambiguous/malformed/
   not-implemented · 3 not-found · 4 world in use · 5 partial install.
 - **Error hints in `report`** (`main.rs:321`) hard-code command syntax in prose:
@@ -110,9 +122,10 @@ candidates for clap-native expression (`conflicts_with`, `requires`,
   --name <name>`, `construct experiment <world> --beta-apis on`,
   `construct install --world <world>`. Grep `construct ` in `main.rs` and
   `install.rs` after any rename.
-- **Tests** (`crates/construct-cli/tests/cli.rs`, 3.7k lines) pin flag spellings:
-  `--com-mojang` ×79, `--json` ×28, `--world` ×22, `--source` ×21,
-  `--beta-apis` ×8, `--merge` ×7, `--name` ×5, `--force` ×5, `--pack` ×3.
+- **Tests** (`crates/construct-cli/tests/cli.rs`, 4.3k lines) pin flag spellings:
+  `--com-mojang` ×97, `--json` ×34, `--source` ×30, `--world` ×29,
+  `--beta-apis` ×8, `--merge` ×7, `--name` ×7, `--force` ×5, `--pack` ×3.
+  They also pin `copy`'s positional order, which this task changed.
 - **README usage block** (`README.md`, "## Usage") lists ~20 example
   invocations verbatim.
 
