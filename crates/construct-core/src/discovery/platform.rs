@@ -74,10 +74,11 @@ pub fn candidates(
         });
     }
 
-    // mcpelauncher: macOS then Linux. Both may be probed; only one will exist.
+    // mcpelauncher: macOS, conventional Linux, then Flatpak Linux.
     for rel in [
         "Library/Application Support/mcpelauncher/games/com.mojang",
         ".local/share/mcpelauncher/games/com.mojang",
+        ".var/app/io.mrarm.mcpelauncher/data/mcpelauncher/games/com.mojang",
     ] {
         let base = home.join(rel);
         out.push(Candidate {
@@ -333,5 +334,17 @@ mod tests {
             .find(|i| i.name == "mcpelauncher")
             .expect("mcpelauncher");
         assert!(mcpe.world_roots.is_empty());
+    }
+
+    #[test]
+    fn flatpak_mcpelauncher_root_is_probed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let com_mojang = tmp
+            .path()
+            .join(".var/app/io.mrarm.mcpelauncher/data/mcpelauncher/games/com.mojang");
+        fs::create_dir_all(&com_mojang).unwrap();
+
+        let found = resolve(candidates(tmp.path(), None, None));
+        assert!(found.iter().any(|i| i.dev_pack_root == com_mojang));
     }
 }
