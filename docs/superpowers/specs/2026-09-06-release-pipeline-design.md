@@ -75,12 +75,23 @@ Three stages in one workflow file.
 **`verify`** — runs on ubuntu, roughly 30 seconds, and exists to fail fast
 before three platform builds are spent on a bad tag.
 
-- Read `workspace.package.version` via `cargo metadata`.
+- Read `workspace.package.version` by parsing the root `Cargo.toml` directly,
+  not via `cargo metadata`. `cargo metadata` has to resolve the
+  `third_party/checkouts/` path dependencies, so it only works once
+  `scripts/setup-deps.sh` has cloned three upstream repositories. Parsing the
+  manifest keeps this gate genuinely cheap.
 - Assert it equals `github.ref_name` with a leading `v` stripped. Fail with a
   message naming both values.
-- Run `cargo package --workspace --no-verify` so packaging problems surface now
-  rather than on the day crates.io becomes viable. This is expected to succeed
-  today; it does not attempt to publish.
+- Assert every patched dependency carries a licence, per the precondition
+  above. This gate fails today, by design, and clears on its own once the
+  question is answered.
+
+An earlier draft of this spec also ran `cargo package --workspace --no-verify`
+here, on the assumption it would pass today. It does not — both workspace
+members carry versionless `path` dependencies, so it fails with "all
+dependencies must have a version requirement specified when packaging."
+Packaging cannot succeed until the crates.io blocker chain below is resolved,
+so the check is omitted rather than left to break every release.
 
 **`build`** — a matrix job, `needs: verify`. Each runner performs:
 
@@ -238,27 +249,40 @@ any of items 1 through 4 are attempted.
 Release workflows resist local testing: `act` cannot help, because the matrix
 needs real macOS and Windows runners.
 
-The plan is to push `v0.0.1-test`, confirm that all three archives build, that
-`SHA256SUMS` covers them, that the notices file is present and correct inside
-each archive, and that the release is marked as a prerelease. Then delete both
-the release and the tag.
+The workflow therefore carries a `workflow_dispatch` trigger with a `dry_run`
+input alongside the tag trigger. A dry run builds all three platforms and
+uploads the archives as workflow artifacts, but skips the `publish` job
+entirely. Nothing reaches the public, which matters: publishing a throwaway
+`v0.0.1-test` release would raise exactly the same redistribution question as a
+real one, and would need an exception carved into the licence gate to get past
+it. A dry run needs no exception.
 
-The `verify` job is also exercised negatively: push a tag whose version does not
-match `Cargo.toml` and confirm the workflow fails before the matrix starts.
+What a dry run leaves untested is the final `gh release create` call itself.
+That is one well-documented command, and the first real tag exercises it.
+
+The precondition gate is exercised separately and locally, by running
+`scripts/check-release-preconditions.sh` with a mismatched tag, with a matching
+tag, and with the licence present and absent.
 
 ## Files touched
 
 - `.github/workflows/release.yml` — new
+- `scripts/check-release-preconditions.sh` — new, the `verify` job's two gates
+- `scripts/package-release.sh` — new, assembles one platform's archive
 - `about.toml` — new, `cargo-about` configuration and clarification entries
+- `about.hbs` — new, the notices template
 - `Cargo.toml` — add `[profile.release] strip = true`
+- `.gitignore` — ignore `/dist` and the generated `THIRD-PARTY-NOTICES.md`
 - `README.md` — Install section rewritten
+- `docs/manual-verification.md` — add a clean-machine check for the archives
 - `.github/workflows/ci.yml` — unchanged
+
+Logic lives in `scripts/` rather than in workflow YAML so that it can be run and
+tested locally. The workflow only sequences it.
 
 ## To verify during implementation
 
 - `Swatinem/rust-cache` behaviour across the `verify` and `build` jobs, so the
   C++ leveldb build is not recompiled unnecessarily.
-- Whether `cargo-about` needs a pinned version to keep notices output stable
-  between releases.
 - That `scripts/setup-deps.sh` runs correctly under the release workflow's
   Windows shell, as it does in CI today.
