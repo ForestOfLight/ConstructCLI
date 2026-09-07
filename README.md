@@ -44,8 +44,18 @@ sudo install construct-<version>-<target>/construct /usr/local/bin/
 construct --version
 ```
 
+macOS marks anything downloaded through a browser as quarantined. Extracting
+with `tar` in Terminal, as above, avoids that. If macOS still refuses to open
+the binary, clear the flag:
+
+```
+xattr -d com.apple.quarantine construct
+```
+
 On Windows, extract the zip and move `construct.exe` into a directory that is
-already on your `PATH`.
+already on your `PATH`. If you don't have one, create
+`%LOCALAPPDATA%\Programs\bin`, put `construct.exe` there, and add that folder
+to your `PATH` from Settings → "Edit environment variables for your account".
 
 Intel Macs, 32-bit systems, and Linux distributions older than Debian 12 or
 Ubuntu 22.04 have no published binary — build from source instead.
@@ -55,14 +65,22 @@ Ubuntu 22.04 have no published binary — build from source instead.
 Every release includes a `SHA256SUMS` file. Download it alongside the archive
 and check them against each other:
 
+On Linux:
+
 ```
 sha256sum --check --ignore-missing SHA256SUMS
+```
+
+On macOS, which ships `shasum` rather than `sha256sum`:
+
+```
+shasum -a 256 --check --ignore-missing SHA256SUMS
 ```
 
 On Windows PowerShell:
 
 ```
-(Get-FileHash construct-<version>-x86_64-pc-windows-msvc.zip).Hash
+(Get-FileHash construct-<version>-x86_64-pc-windows-msvc.zip).Hash.ToLower()
 ```
 
 Compare the result against the matching line in `SHA256SUMS`.
