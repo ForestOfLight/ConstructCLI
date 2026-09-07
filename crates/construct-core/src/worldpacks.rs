@@ -51,9 +51,6 @@ pub fn upsert(path: &Path, entry: PackRef) -> Result<bool> {
         path: path.to_path_buf(),
         reason: e.to_string(),
     })?;
-    // Same temp-file-plus-rename approach as `leveldat::write`: a crash or a
-    // full disk mid-write must not leave a truncated or empty file, which
-    // would silently disable every pack the world had enabled.
     let dir = path.parent().unwrap_or(Path::new("."));
     let tmp = dir.join(format!(
         ".{}.construct-tmp",
@@ -62,7 +59,6 @@ pub fn upsert(path: &Path, entry: PackRef) -> Result<bool> {
             .unwrap_or("world_packs.json")
     ));
     std::fs::write(&tmp, &text)?;
-    // Same directory, so the rename is atomic on every platform we target.
     std::fs::rename(&tmp, path)?;
     Ok(true)
 }
@@ -71,8 +67,6 @@ pub fn upsert(path: &Path, entry: PackRef) -> Result<bool> {
 mod tests {
     use super::*;
 
-    /// Exactly the formatting a real world uses: tabs, spaces before colons,
-    /// and a stray blank first line.
     const REAL: &str = "\n[\n\t\n\t{\n\t\t\"pack_id\" : \"8c0c0153-d8b9-482a-889f-aef922b8fe58\",\n\t\t\"version\" : [ 1, 0, 0 ]\n\t}\n]";
 
     #[test]
@@ -193,8 +187,6 @@ mod tests {
 
     #[test]
     fn a_malformed_file_is_an_error_rather_than_being_overwritten() {
-        // Silently replacing an unreadable list would drop every other pack the
-        // world had enabled.
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("world_behavior_packs.json");
         std::fs::write(&path, "{ not an array").unwrap();

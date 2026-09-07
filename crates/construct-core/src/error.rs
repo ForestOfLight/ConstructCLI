@@ -3,9 +3,9 @@ use thiserror::Error;
 
 /// Every failure `construct-core` can produce.
 ///
-/// Variants carry the data a caller needs to render a good message — the
-/// candidates for an ambiguity, the paths probed for a missing root — rather
-/// than a pre-formatted string.
+/// Variants carry the data a caller needs to render a message — the candidates
+/// for an ambiguity, the paths probed for a missing root — rather than a
+/// pre-formatted string.
 #[derive(Debug, Error)]
 pub enum CoreError {
     #[error("no Minecraft installation found")]
@@ -74,12 +74,13 @@ pub enum CoreError {
     UnwritableLevelDat {
         path: PathBuf,
         reason: String,
-        /// Whether a write already landed on disk before this error was
-        /// raised. `to_bytes` refuses before touching disk (`false`); the
-        /// post-write verification in `apply_beta_apis` fires only after
-        /// `write` has already renamed a new file into place (`true`). The
-        /// two cases need different advice: one leaves the world untouched,
-        /// the other leaves it in a state nobody asked for.
+        /// Whether a write already landed on disk. `to_bytes` refuses before
+        /// touching disk (`false`); `apply_beta_apis`'s post-write
+        /// verification fires only after a new file was renamed into place
+        /// (`true`).
+        ///
+        /// The two need different advice: one leaves the world untouched, the
+        /// other leaves it in a state nobody asked for.
         written: bool,
     },
 
@@ -140,21 +141,14 @@ pub enum CoreError {
 }
 
 impl CoreError {
-    /// The stable machine-readable name for this failure, emitted as
-    /// `error.kind` under `--json`.
+    /// The machine-readable name for this failure, emitted as `error.kind`
+    /// under `--json`. Exit codes carry only 0/1/2, so *what* went wrong is
+    /// said here and nowhere else.
     ///
-    /// This is the CLI's whole failure vocabulary. Exit codes carry only 0/1/2
-    /// — whether it worked, and whether the input was at fault — so *what* went
-    /// wrong is said here and nowhere else. It lives beside the enum rather
-    /// than in the CLI because a GUI links this library directly: the kind is
-    /// part of the error's identity, not a rendering choice.
+    /// # Stability
     ///
-    /// The match is exhaustive on purpose. A new variant must name itself
-    /// rather than inherit a wildcard's answer, the same way `Command::paths`
-    /// in the CLI forces a new command to answer for itself.
-    ///
-    /// The spelling is the variant name in kebab-case, and callers branch on
-    /// it, so treat these strings as the public contract they are.
+    /// The variant name in kebab-case. Callers branch on these strings, so
+    /// they are a public contract.
     pub fn kind(&self) -> &'static str {
         match self {
             Self::NoInstallations { .. } => "no-installations",

@@ -1,3 +1,4 @@
+use crate::context;
 use clap::builder::StyledStr;
 use clap_complete::engine::CompletionCandidate;
 use construct_core::catalog::{self, Source};
@@ -7,14 +8,12 @@ use construct_core::pack;
 use construct_core::store;
 use std::path::PathBuf;
 
-/// Complete discovered Minecraft Bedrock worlds.
 pub fn complete_worlds() -> Vec<CompletionCandidate> {
     let (installations, worlds) = discover_environment();
     let mut candidates = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     for w in &worlds {
-        // Display name
         if seen.insert(w.display_name.clone()) {
             let help_text = format!("{} ({})", w.installation, w.folder);
             candidates.push(
@@ -22,14 +21,12 @@ pub fn complete_worlds() -> Vec<CompletionCandidate> {
             );
         }
 
-        // Folder name (if different from display name)
         if w.folder != w.display_name && seen.insert(w.folder.clone()) {
             let help_folder = format!("{} ({})", w.installation, w.display_name);
             candidates
                 .push(CompletionCandidate::new(&w.folder).help(Some(StyledStr::from(help_folder))));
         }
 
-        // Qualified reference (installation/folder or installation/account/folder)
         if (installations.len() > 1 || w.account.is_some()) && seen.insert(w.qualified()) {
             let qualified = w.qualified();
             let help_qual = format!("{} - {}", w.installation, w.display_name);
@@ -41,12 +38,6 @@ pub fn complete_worlds() -> Vec<CompletionCandidate> {
     candidates
 }
 
-/// Complete structure names for whatever the command line is pointing at.
-///
-/// The names on offer are the ones the command could actually go on to use.
-/// `export`/`delete` narrow to one world under `--world` and to the shared copy
-/// of Construct without it, so completion narrows the same way — a name the
-/// command would then refuse is worse than no suggestion at all.
 pub fn complete_structures() -> Vec<CompletionCandidate> {
     let (installations, worlds) = discover_environment();
     let mut candidates = Vec::new();
@@ -75,7 +66,6 @@ pub fn complete_structures() -> Vec<CompletionCandidate> {
                 return Vec::new();
             };
 
-            // 1. World database structures
             if let Ok(store) = store::open_world_store(&world)
                 && let Ok(entries) = catalog::from_world(&store)
             {
@@ -84,11 +74,8 @@ pub fn complete_structures() -> Vec<CompletionCandidate> {
                 }
             }
 
-            // 2. Pack structures
             if let Ok(inst) = discovery::installation::for_world(&installations, &world) {
                 for home in pack::serving(&world, inst) {
-                    // A world-scoped command cannot reach the shared copy, so
-                    // its names are not on offer for one.
                     let source = home.kind.source();
                     if scoped && source == Source::SharedPack {
                         continue;
@@ -109,86 +96,27 @@ pub fn complete_structures() -> Vec<CompletionCandidate> {
     candidates
 }
 
-/// The installation a command with no world named would resolve, by the same
-/// precedence `main.rs` uses. Completion must not exit, so every failure here
-/// is simply "no suggestions".
 fn choose_installation(installations: &[Installation]) -> Option<&Installation> {
-    let explicit = extract_config_from_args();
-    let loaded = config::load(explicit.as_deref(), &|k| std::env::var(k).ok()).ok();
     discovery::installation::choose(
         installations,
-        loaded
-            .as_ref()
-            .and_then(|l| l.config.default_installation.as_deref()),
+        loaded_config().default_installation.as_deref(),
     )
     .ok()
 }
 
-/// Helper to discover installations and worlds safely without throwing or exiting.
 fn discover_environment() -> (Vec<Installation>, Vec<World>) {
-    let extra_paths = extract_paths_from_args();
-    let explicit = extract_config_from_args();
-    let loaded = config::load(explicit.as_deref(), &|k| std::env::var(k).ok()).ok();
-
-    let mut extra_roots: Vec<(String, PathBuf)> = loaded
-        .as_ref()
-        .map(|l| {
-            l.config
-                .roots
-                .iter()
-                .map(|r| (r.name.clone(), r.path.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    // Same split `main` makes: a world folder is a world, anything else a root.
-    // Worlds recorded by `add` start the list, exactly as they do there.
-    let mut extra_worlds: Vec<PathBuf> = loaded
-        .as_ref()
-        .map(|l| l.config.other_worlds.clone())
-        .unwrap_or_default();
-    let mut flag_roots = 0;
-    for path in &extra_paths {
-        match discovery::classify(path) {
-            discovery::PathKind::World => extra_worlds.push(path.clone()),
-            discovery::PathKind::Root => {
-                flag_roots += 1;
-                extra_roots.push((format!("flag{flag_roots}"), path.clone()));
-            }
-        }
-    }
-
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_default();
-    let appdata = std::env::var("APPDATA").ok().map(PathBuf::from);
-    let localappdata = std::env::var("LOCALAPPDATA").ok().map(PathBuf::from);
-
-    let mut candidates = discovery::platform::candidates(
-        std::path::Path::new(&home),
-        appdata.as_deref(),
-        localappdata.as_deref(),
-    );
-
-    for (name, root) in &extra_roots {
-        candidates.push(discovery::platform::Candidate {
-            name: name.clone(),
-            dev_pack_root: root.clone(),
-            world_root_parents: vec![root.clone()],
-            per_account: false,
-        });
-    }
-
-    let installations = discovery::platform::resolve(candidates);
-    let worlds = discovery::enumerate(&installations, &extra_worlds);
-    (installations, worlds)
+    let found = context::discover(&loaded_config(), &extract_paths_from_args());
+    (found.installations, found.worlds)
 }
 
-/// Extract `--path <path>` arguments from the invoking command line args.
-/// The `--config` on the line being completed, if there is one.
-///
-/// Completion must resolve the same file the command would, or it offers
-/// candidates from a config the run will not use.
+fn loaded_config() -> config::Config {
+    config::load(extract_config_from_args().as_deref(), &|k| {
+        std::env::var(k).ok()
+    })
+    .map(|l| l.config)
+    .unwrap_or_default()
+}
+
 fn extract_config_from_args() -> Option<PathBuf> {
     let args: Vec<String> = get_command_words();
     let mut i = 0;
@@ -222,31 +150,18 @@ fn extract_paths_from_args() -> Vec<PathBuf> {
     paths
 }
 
-/// Which structures the word being completed could name.
 enum Target {
-    World {
-        reference: String,
-        /// `true` when the command reads that world and nothing else, so the
-        /// shared copy of Construct is not on offer. `export` and `delete` under
-        /// `--world`; never `copy`, whose source world sees both packs and has
-        /// `--source shared-pack` to name the far one.
-        scoped: bool,
-    },
-    /// `export`/`delete` with no `--world`: the shared copy of Construct.
+    World { reference: String, scoped: bool },
     Shared,
-    /// Nothing to complete from — an unrecognised command, or `copy` before its
-    /// source world has been typed.
     None,
 }
 
-/// Work out what the active command line is asking for structures from.
 fn extract_target_from_args() -> Target {
     let words = get_command_words();
     if words.is_empty() {
         return Target::None;
     }
 
-    // Find subcommand
     let mut subcmd_idx = None;
     let mut subcmd = "";
     for (i, word) in words.iter().enumerate() {
@@ -261,9 +176,6 @@ fn extract_target_from_args() -> Target {
         return Target::None;
     };
     let start = idx + 1;
-    // Iterate positional arguments after the subcommand (skipping flags), and
-    // pick up `--world`'s value on the way — for `export` and `delete` the
-    // world is a flag, not a positional.
     let mut positionals = Vec::new();
     let mut world_flag: Option<String> = None;
     let mut expect_world = false;
@@ -275,7 +187,6 @@ fn extract_target_from_args() -> Target {
         }
         if expect_world {
             expect_world = false;
-            // The word being completed is empty; treat it as "not typed yet".
             if !word.is_empty() {
                 world_flag = Some(word.clone());
             }
@@ -297,7 +208,6 @@ fn extract_target_from_args() -> Target {
                 || word == "--source"
                 || word == "--path"
             {
-                // Options that take an argument
                 skip_next = true;
             }
             continue;
@@ -306,8 +216,6 @@ fn extract_target_from_args() -> Target {
     }
 
     match subcmd {
-        // export <structures...> [--world W]
-        // delete <structures...> [--world W]
         "export" | "delete" => match world_flag {
             Some(reference) => Target::World {
                 reference,
@@ -315,7 +223,6 @@ fn extract_target_from_args() -> Target {
             },
             None => Target::Shared,
         },
-        // copy <src_world> <dst_world> <structures...> (structures come from src_world)
         "copy" => match positionals.first() {
             Some(reference) => Target::World {
                 reference: reference.clone(),
@@ -327,10 +234,6 @@ fn extract_target_from_args() -> Target {
     }
 }
 
-/// Get the words passed to the completion invocation.
-///
-/// Under `clap_complete`, the command words being completed are passed after `--` in `argv`.
-/// If no `--` is found (e.g. during testing), falls back to `std::env::args()`.
 fn get_command_words() -> Vec<String> {
     let args: Vec<String> = std::env::args().collect();
     if let Some(pos) = args.iter().position(|a| a == "--") {

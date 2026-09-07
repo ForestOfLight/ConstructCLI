@@ -29,7 +29,6 @@ fn a_single_block_structure_decodes() {
 
 #[test]
 fn the_second_layer_carries_waterlogging() {
-    // A waterlogged block: the block itself on layer 0, water on layer 1.
     let mut b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:oak_fence");
     b.palette.push(block("minecraft:water"));
     b.layer1 = vec![1];
@@ -66,10 +65,6 @@ fn block_position_data_decodes_keyed_by_index() {
 
 #[test]
 fn a_block_position_data_of_the_wrong_tag_type_is_refused_not_dropped() {
-    // block_position_data must be a compound. A List (or any other wrong
-    // type) must be refused by name, not silently treated as empty — for a
-    // real structure that would mean a chest's inventory vanishing with no
-    // error at all.
     let b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:chest");
     let nbtx::Value::Compound(mut root) = b.nbt() else {
         unreachable!()
@@ -117,8 +112,6 @@ fn entities_decode_untouched() {
 
 #[test]
 fn the_real_construct_fixture_decodes() {
-    // The one committed real file: proves the model agrees with what the game
-    // actually writes, which no builder can establish on its own.
     let bytes = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/construct.mcstructure"
@@ -130,8 +123,6 @@ fn the_real_construct_fixture_decodes() {
     assert_eq!(s.layers[1].len(), 343);
     assert_eq!(s.palette.len(), 6);
 }
-
-// --- the game's own load-time validation rules, from the reference doc ---
 
 #[test]
 fn a_missing_required_field_is_refused() {
@@ -197,9 +188,6 @@ fn a_layer_length_that_disagrees_with_size_is_refused() {
 
 #[test]
 fn a_missing_default_palette_is_refused() {
-    // The doc: "If the `default` palette is not present, loading the structure
-    // results in no blocks being placed." Silently producing nothing is worse
-    // than refusing.
     let b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
     let nbtx::Value::Compound(mut root) = b.nbt() else {
         unreachable!()
@@ -212,9 +200,6 @@ fn a_missing_default_palette_is_refused() {
     let bytes = nbtx::to_le_bytes(&nbtx::Value::Compound(root)).unwrap();
 
     let err = mcstructure::decode(&bytes, "test").unwrap_err();
-    // "default" alone would also match the generic "required field \"default\"
-    // is missing" fallback message; assert on wording only the dedicated
-    // no-default-palette message contains.
     assert!(
         format!("{err}").contains("no blocks"),
         "error must give the dedicated no-default-palette reason: {err}"
@@ -230,9 +215,6 @@ fn a_negative_size_is_refused() {
     root.insert("size".into(), int_list(&[-1, 1, 1]));
     let bytes = nbtx::to_le_bytes(&nbtx::Value::Compound(root)).unwrap();
     let err = mcstructure::decode(&bytes, "test").unwrap_err();
-    // Must be refused by the dedicated negative-dimension guard, not merely
-    // fail later for some other reason (e.g. a stale layer length): the
-    // message must name the negative dimension specifically.
     assert!(
         format!("{err}").contains("negative dimension"),
         "error must name the negative dimension, not just any failure: {err}"
@@ -248,12 +230,6 @@ fn bytes_that_are_not_nbt_at_all_are_refused_by_name() {
     );
 }
 
-// --- encoding ---
-
-/// Decoding an encoded structure must give back an equal structure. Byte
-/// equality is deliberately *not* asserted: nbtx stores compounds in a
-/// HashMap, so key order is not stable, and a golden-file comparison would
-/// fail for reasons that mean nothing (spec §12).
 fn assert_round_trips(s: &construct_core::mcstructure::Structure) {
     let bytes = mcstructure::encode(s, "test").unwrap();
     let again = mcstructure::decode(&bytes, "test").unwrap();
@@ -319,9 +295,6 @@ fn a_structure_with_entities_round_trips() {
 
 #[test]
 fn an_empty_entity_list_survives_encoding() {
-    // This is the case that made stage 3 impossible before nbtx was patched:
-    // a structure with no entities has an empty list, which stock nbtx wrote
-    // five bytes short and could not read back.
     let b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
     let s = mcstructure::decode(&b.bytes(), "test").unwrap();
     assert!(s.entities.is_empty());
@@ -339,9 +312,6 @@ fn the_real_construct_fixture_round_trips() {
     let s = mcstructure::decode(&bytes, "construct.mcstructure").unwrap();
     assert_round_trips(&s);
 
-    // The payload length must be preserved exactly. This is the assertion that
-    // catches the empty-list defect regressing: each unwritten empty list
-    // costs exactly five bytes.
     let re = mcstructure::encode(&s, "construct.mcstructure").unwrap();
     assert_eq!(
         re.len(),
@@ -352,8 +322,6 @@ fn the_real_construct_fixture_round_trips() {
 
 #[test]
 fn encoding_refuses_a_structure_whose_layers_disagree_with_its_size() {
-    // Guards against merge handing the encoder an inconsistent grid: the file
-    // would be written and then fail to load in-game, far from the cause.
     let b = Build::solid([2, 1, 1], [0, 0, 0], "minecraft:stone");
     let mut s = mcstructure::decode(&b.bytes(), "test").unwrap();
     s.layers[0].push(0);
@@ -365,16 +333,13 @@ fn encoding_refuses_a_structure_whose_layers_disagree_with_its_size() {
 fn encoding_refuses_a_palette_index_out_of_range() {
     let b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
     let mut s = mcstructure::decode(&b.bytes(), "test").unwrap();
-    s.layers[0] = vec![5]; // palette has one entry
+    s.layers[0] = vec![5];
     let err = mcstructure::encode(&s, "test").unwrap_err();
     assert!(format!("{err}").contains("palette"), "{err}");
 }
 
 #[test]
 fn encoding_refuses_a_negative_size_dimension() {
-    // Direct construction: decode would reject this first, but Structure's
-    // fields are pub, and merge will build them directly. The encoder must
-    // catch what merge produces.
     let s = mcstructure::Structure {
         format_version: 1,
         size: mcstructure::Size { x: -5, y: 3, z: 2 },
@@ -398,9 +363,6 @@ fn encoding_refuses_a_negative_size_dimension() {
 
 #[test]
 fn deeply_nested_nbt_is_refused_rather_than_overflowing_the_stack() {
-    // A 250 KB file of 50,000 nested compounds used to abort the process with
-    // a stack overflow — exit 134, not a catchable panic. The depth limit in
-    // the patched nbtx turns it into an ordinary refusal.
     let depth = 50_000;
     let mut bytes = Vec::new();
     for _ in 0..depth {

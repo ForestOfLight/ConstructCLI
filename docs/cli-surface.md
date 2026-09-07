@@ -91,7 +91,7 @@ has since been retired outright — see the next section.
   no honest answer. A listing is different: a world's view genuinely *contains*
   the shared copy's rows when that is what the world runs, so narrowing to them
   answers a real question — and it is the only way to list a world's structures
-  without opening its database. `main.rs:check_source_against_world` takes a
+  without opening its database. `support::usage::check_source_against_world` takes a
   flag for the difference.
 - **`--source world-db` or `world-pack` with no `--world` is refused
   everywhere it can appear.** Both name a place inside a world and none was
@@ -119,14 +119,14 @@ has since been retired outright — see the next section.
   redirect where that lands. Per-run selection is a second config file and
   `--config`.
   `--path` roots get synthetic names
-  `flag1`, `flag2`, … (`main.rs:44`); world folders given to `--path` wear the
+  `flag1`, `flag2`, … (`context::discover`); world folders given to `--path` wear the
   reserved name `path` instead and are not numbered.
 - **`install --world` does three separate things**: enable both packs in the
   world, ensure a structures home exists, flip Beta APIs on (`install.rs:123`).
-  Partial failure exits 1 from inside the command rather than returning `Err`,
-  bypassing `exit_code`: the success payload is already on stdout and stdout
-  carries exactly one document, so `error` is merged into that payload
-  (`out.emit_with_error`, kind `partial-install`) instead of replacing it.
+  Partial failure returns `Failure::AlreadyReported` rather than a `CoreError`:
+  the success payload is already on stdout and stdout carries exactly one
+  document, so `error` is merged into that payload (`out.emit_with_error`, kind
+  `partial-install`) instead of a second document replacing it.
 - **`install` rescues a Construct in the wrong folder first.** Before placing
   anything it folds a copy sitting in `com.mojang/behavior_packs` /
   `resource_packs` into the `development_*` sibling beside it
@@ -137,20 +137,24 @@ has since been retired outright — see the next section.
   differs by content is kept as `<name>-1.mcstructure` rather than dropped.
   Reported in the human output and in `migrated[]` under `--json`.
 
-## Validation hand-rolled in `main.rs`, not expressed in clap
+## Validation hand-rolled in each command's `dispatch`, not expressed in clap
 
-Each of these prints its own `error:` + usage line and `exit(2)`. All are
-candidates for clap-native expression (`conflicts_with`, `requires`,
-`ArgGroup`, a value parser) in any rework:
+Each of these returns `Failure::Usage`, which `report::render` prints as
+`error:` + usage line and which exits 2 — emitting no JSON document, since
+nothing was attempted. All are candidates for clap-native expression
+(`conflicts_with`, `requires`, `ArgGroup`, a value parser) in any rework:
 
 | Rule | Where |
 | ---- | ----- |
-| `--merge` requires `-n` | `main.rs:148` |
-| `-n` with >1 structure and no `--merge` | `main.rs:178` |
-| `-n` must end `.mcstructure` (missing ext is filled in, wrong ext refused) | `main.rs:161`, `mcstructure_path` at `main.rs:309` |
-| `--name` with >1 file on `import` | `main.rs:205` |
-| `--source world-db`/`world-pack` with no `--world` on `structures`, `export`, `delete` | `main.rs:check_source_against_world` |
+| `--merge` requires `-n` | `export::dispatch` |
+| `-n` with >1 structure and no `--merge` | `export::dispatch` |
+| `-n` must end `.mcstructure` (missing ext is filled in, wrong ext refused) | `export::output_path` → `export::mcstructure_path` |
+| `--name` with >1 file, or with a folder, on `import` | `import::check_name_against_paths` |
+| `--source world-db`/`world-pack` with no `--world` on `structures`, `export`, `delete` | `support::usage::check_source_against_world` |
 | `--source shared-pack` with `--world` on `export`, `delete` | the same, with `world_excludes_shared` set |
+
+Each is a plain function over its own `Args` struct, so all of them are
+covered by unit tests beside the code rather than only by spawning the binary.
 
 ## Seams worth reworking
 
@@ -236,8 +240,9 @@ candidates for clap-native expression (`conflicts_with`, `requires`,
   enable-beta-apis <world>`, `construct install --world <world>`. The
   ambiguity hint is the exception — it now reads the matched `source` values
   back rather than naming values in prose, so it cannot drift from the enum.
-  Grep `construct ` in `main.rs` and `install.rs` after any rename.
-- **Tests** (`crates/construct-cli/tests/cli.rs`) pin flag spellings:
+  Grep `construct ` in `report.rs`, `commands/`, and `support/` after any rename.
+- **Tests** (`crates/construct-cli/tests/cli/`, one module per command area,
+  fixtures in `tests/cli/support/`) pin flag spellings:
   `--path`, `--world`, `--json`, `--source`, `--name`, `--merge`, `--force`.
   Three of them pin that `--pack` is *not* accepted, so a reintroduction would
   be caught. They also pin flag *position*: everything but `--json` must follow

@@ -1,8 +1,7 @@
-//! `manifest.json`, read with a small local serde struct.
-//!
-//! Deliberately not `bedrock_addon`: the fields that matter here are the header
-//! UUID, the version, and whether any module is `resources`. Twenty lines of
-//! serde keeps the unpublished git-dependency surface down to `bedrock_level`.
+//! `manifest.json`, read with a small local serde struct rather than
+//! `bedrock_addon` — only the header UUID, the version, and whether a module is
+//! `resources` matter here, and this keeps the git-dependency surface to
+//! `bedrock_level`.
 
 use crate::error::{CoreError, Result};
 use serde::Deserialize;
@@ -61,8 +60,6 @@ pub fn parse(text: &str, path: &Path) -> Result<Manifest> {
         ))
     })?;
 
-    // A resource pack is the one carrying a `resources` module. Behaviour packs
-    // carry `data` and `script`; this is the only field that tells them apart.
     let kind = if raw.modules.iter().any(|m| m.r#type == "resources") {
         PackKind::Resource
     } else {
@@ -77,7 +74,6 @@ pub fn parse(text: &str, path: &Path) -> Result<Manifest> {
     })
 }
 
-/// Reads `pack_dir/manifest.json`.
 pub fn read(pack_dir: &Path) -> Result<Manifest> {
     let path: PathBuf = pack_dir.join("manifest.json");
     let text = std::fs::read_to_string(&path).map_err(|e| CoreError::BadPack {
@@ -92,7 +88,6 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    /// Trimmed from the real Construct[BP]/manifest.json.
     const BP: &str = r#"{
         "format_version": 2,
         "header": {
@@ -140,8 +135,6 @@ mod tests {
 
     #[test]
     fn a_dependency_module_name_does_not_break_parsing() {
-        // Dependencies mix `{uuid, version:[..]}` with `{module_name, version:"2.10.0-beta"}`.
-        // The struct ignores dependencies entirely; this asserts it stays ignored.
         assert!(parse(BP, Path::new("m.json")).is_ok());
     }
 

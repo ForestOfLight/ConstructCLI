@@ -21,9 +21,9 @@ pub trait StructureStore {
 
     /// Every structure id with the byte length of its value.
     ///
-    /// Separate from `ids` because `structures` needs both and the leveldb backend can
-    /// produce them in a single pass. The default implementation is the obvious
-    /// two-step; backends that can do better should.
+    /// Separate from [`StructureStore::ids`] because `structures` needs both
+    /// and the leveldb backend produces them in one pass. The default
+    /// implementation is the two-step; backends that can do better should.
     fn sizes(&self) -> Result<Vec<(String, u64)>> {
         let mut out = Vec::new();
         for id in self.ids()? {
@@ -63,16 +63,14 @@ impl StructureStore for MemoryStore {
     }
 }
 
-/// An opened store plus whatever it needs to stay alive.
 pub struct OpenedStore {
     pub(crate) inner: Box<dyn StructureStore>,
-    /// Held so the snapshot directory outlives the database handle.
     pub(crate) _snapshot: Option<tempfile::TempDir>,
     /// `Some(bytes)` when the read came from a snapshot rather than the world.
     ///
-    /// The figure is bytes *copied*, which on a linking snapshot is far less
-    /// than the size of `db/`: the table files are hardlinked and cost nothing.
-    /// See [`snapshot::link_or_copy_dir`].
+    /// Bytes *copied*, which on a linking snapshot is far less than the size of
+    /// `db/`: table files are hardlinked and cost nothing. See
+    /// [`snapshot::link_or_copy_dir`].
     pub via_snapshot: Option<u64>,
 }
 
@@ -84,24 +82,20 @@ impl StructureStore for OpenedStore {
         self.inner.get(id)
     }
     fn sizes(&self) -> Result<Vec<(String, u64)>> {
-        // Must forward rather than fall back to the trait default, or every real
-        // caller — which always goes through `OpenedStore` — loses the one-pass
-        // `BedrockStore` override this method exists for.
         self.inner.sizes()
     }
 }
 
 /// Opens a world's structures for reading.
 ///
-/// This *always* copies `db/` and opens the copy. Opening a leveldb database runs
-/// recovery and rewrites it, so there is no such thing as a read-only open with
-/// this backend — the only safe read is one that never touches the original.
-/// There is deliberately no direct path and no fallback logic here.
+/// *Always* copies `db/` and opens the copy. Opening a leveldb runs recovery
+/// and rewrites it, so this backend has no read-only open — the only safe read
+/// is one that never touches the original. There is deliberately no direct path
+/// and no fallback.
 ///
-/// The one command that opens a world's own database is `delete`, and it does
-/// so through [`bedrock::BedrockStore::open_live`] rather than here — a write
-/// has to touch the original, and the copy this function makes would be thrown
-/// away unwritten.
+/// `delete` is the one command that opens a world's own database, and it goes
+/// through [`bedrock::BedrockStore::open_live`]: a write has to touch the
+/// original, and the copy made here would be thrown away unwritten.
 pub fn open_world_store(world: &World) -> Result<OpenedStore> {
     let db = world.db_path();
     if !db.is_dir() {

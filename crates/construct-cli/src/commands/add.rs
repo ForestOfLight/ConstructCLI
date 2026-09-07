@@ -1,12 +1,15 @@
+use crate::cli::AddArgs;
+use crate::context::Context;
+use crate::failure;
 use crate::output::Out;
 use construct_core::{CoreError, Result, config};
 use std::path::{Path, PathBuf};
 
-pub fn run(path: &Path, explicit_config: Option<&Path>, out: &mut Out) -> Result<()> {
-    // `add` writes the same file every other command reads, so it resolves it
-    // the same way — `--config`, then `CONSTRUCT_CONFIG`, then the platform
-    // directory. Writing elsewhere than the file in force would record a root
-    // nothing later reads.
+pub fn dispatch(args: &AddArgs, ctx: &Context, out: &mut Out) -> failure::Result {
+    Ok(run(&args.path, ctx.config_flag.as_deref(), out)?)
+}
+
+fn run(path: &Path, explicit_config: Option<&Path>, out: &mut Out) -> Result<()> {
     let config_path = match explicit_config {
         Some(p) => p.to_path_buf(),
         None => {

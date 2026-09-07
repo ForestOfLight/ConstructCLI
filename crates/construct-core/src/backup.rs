@@ -1,9 +1,8 @@
 //! Copies taken before anything is modified.
 //!
-//! Backups live outside the world folder: a `db.backup-*` inside a world would
-//! confuse Minecraft, bloat the world, and ride along into any world export.
-//! Retention is keyed on the qualified reference rather than the folder name,
-//! which is not unique across roots.
+//! Backups live outside the world folder — one inside would confuse Minecraft
+//! and ride along into any world export — and are keyed on the qualified
+//! reference, since folder names are not unique across roots.
 
 use crate::config::Backups;
 use crate::error::{CoreError, Result};
@@ -14,15 +13,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// The directory backups go in: `[backups] dir`, else `backups/` under
 /// [`crate::config::data_dir`].
 ///
-/// The data-directory override sits *below* `[backups] dir` because that is
-/// the documented user knob; the other one only stands in for the platform
-/// lookup. See [`crate::config::data_dir`] for why it exists.
+/// `CONSTRUCT_DATA_DIR` ranks below `[backups] dir`, which is the documented
+/// user knob; the other only stands in for the platform lookup.
 pub fn root(backups: &Backups) -> Result<PathBuf> {
     root_from(backups, &|k| std::env::var(k).ok())
 }
 
-/// `root`, with the environment injected — the same seam [`crate::config::load`]
-/// uses, so precedence is testable without mutating the process environment.
 fn root_from(backups: &Backups, env: &dyn Fn(&str) -> Option<String>) -> Result<PathBuf> {
     if let Some(dir) = &backups.dir {
         return Ok(dir.clone());
@@ -46,10 +42,6 @@ pub fn sanitize(reference: &str) -> String {
         .collect()
 }
 
-/// Parse a backup filename suffix into (epoch_seconds, disambiguator).
-///
-/// Expected format: `{stamp}` or `{stamp}-{n}`.
-/// Returns `None` if the suffix cannot be parsed.
 fn parse_suffix(suffix: &str) -> Option<(u64, u64)> {
     if let Some(dash_idx) = suffix.rfind('-') {
         let (stamp_str, n_str) = suffix.split_at(dash_idx);
@@ -72,15 +64,11 @@ pub fn file(src: &Path, world_reference: &str, backups: &Backups) -> Result<Path
         .and_then(|n| n.to_str())
         .unwrap_or("backup")
         .to_string();
-    // Epoch seconds rather than a formatted date: a date needs a dependency,
-    // and the full path is printed to the user anyway.
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    // Find the highest existing n for this timestamp to avoid gaps
-    // when old backups are deleted by pruning.
     let prefix = format!("{name}.");
     let mut next_n = 0u64;
     if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -107,15 +95,6 @@ pub fn file(src: &Path, world_reference: &str, backups: &Backups) -> Result<Path
     Ok(at)
 }
 
-/// Keeps the newest `keep` backups of one file, by numeric suffix.
-///
-/// Sorts by the numeric suffix in the filename (e.g., the epoch seconds and
-/// potential `-n` disambiguator), which is monotonic by construction. This
-/// is more reliable than sorting by modification time, which may be coarse
-/// on some filesystems.
-///
-/// Best-effort: a backup that cannot be removed is not worth failing a write
-/// that already succeeded.
 fn prune(dir: &Path, name: &str, keep: usize) {
     let prefix = format!("{name}.");
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -135,7 +114,6 @@ fn prune(dir: &Path, name: &str, keep: usize) {
     if found.len() <= keep {
         return;
     }
-    // Sort by (stamp, n) in descending order (newest first)
     found.sort_by_key(|item| Reverse((item.0, item.1)));
     for (_, _, path) in found.into_iter().skip(keep) {
         let _ = std::fs::remove_file(path);
@@ -184,7 +162,6 @@ mod tests {
             sanitize("mcpelauncher/Amelix CMP"),
             "mcpelauncher_Amelix_CMP"
         );
-        // Nothing that could climb out of the backup directory survives.
         assert_eq!(sanitize("../../etc"), "______etc");
     }
 
@@ -230,7 +207,6 @@ mod tests {
             .flatten()
             .collect();
         assert_eq!(kept.len(), 3, "keep = 3");
-        // The newest survives, whatever the clock did.
         assert!(made.last().unwrap().exists());
         assert!(!made[0].exists());
     }
@@ -255,7 +231,6 @@ mod tests {
         std::fs::write(&level, b"x").unwrap();
         let cfg = backups(&tmp.path().join("b"), 1);
 
-        // The folder name is the same in both; the qualified reference is not.
         let a = file(&level, "release/Survival", &cfg).unwrap();
         let b = file(&level, "preview/Survival", &cfg).unwrap();
         assert!(
@@ -272,23 +247,18 @@ mod tests {
         let world_dir = store.join(sanitize(world_ref));
         std::fs::create_dir_all(&world_dir).unwrap();
 
-        // Manually create backups at different timestamps
         std::fs::write(world_dir.join("level.dat.1000"), b"old").unwrap();
         std::fs::write(world_dir.join("level.dat.1000-1"), b"old").unwrap();
         std::fs::write(world_dir.join("level.dat.1000-2"), b"old").unwrap();
         std::fs::write(world_dir.join("level.dat.1000-3"), b"old").unwrap();
         std::fs::write(world_dir.join("level.dat.2000"), b"newer").unwrap();
 
-        // Prune to keep only 2 backups
         prune(&world_dir, "level.dat", 2);
 
-        // The newer timestamp's entry should survive, even though older timestamp has higher n values
         assert!(
             world_dir.join("level.dat.2000").exists(),
             "newer timestamp should survive"
         );
-        // At least one more from the older timestamp may survive, but the pattern is that
-        // we keep by (timestamp, n) ordering
         let kept: Vec<_> = std::fs::read_dir(&world_dir).unwrap().flatten().collect();
         assert_eq!(kept.len(), 2, "should keep exactly 2 backups");
     }
@@ -302,19 +272,16 @@ mod tests {
         let store = tmp.path().join("backups");
         let cfg = backups(&store, 10);
 
-        // Create multiple backups of a file with a dash in its name
         let b1 = file(&source, "test/World", &cfg).unwrap();
         let b2 = file(&source, "test/World", &cfg).unwrap();
         let b3 = file(&source, "test/World", &cfg).unwrap();
 
-        // All should exist and have correct content
         assert_eq!(std::fs::read(&b1).unwrap(), b"content");
         assert_eq!(std::fs::read(&b2).unwrap(), b"content");
         assert_eq!(std::fs::read(&b3).unwrap(), b"content");
         assert_ne!(b1, b2);
         assert_ne!(b2, b3);
 
-        // Verify filenames are correctly parsed (contain the source name)
         let b1_name = b1.file_name().unwrap().to_string_lossy();
         assert!(b1_name.starts_with("level-legacy.dat."));
     }
@@ -326,19 +293,15 @@ mod tests {
         let world_dir = store.join(sanitize("test/World"));
         std::fs::create_dir_all(&world_dir).unwrap();
 
-        // Create backups of our source file
         std::fs::write(world_dir.join("level.dat.1000"), b"1").unwrap();
         std::fs::write(world_dir.join("level.dat.1000-1"), b"2").unwrap();
         std::fs::write(world_dir.join("level.dat.1000-2"), b"3").unwrap();
 
-        // Create unrelated files in the same directory
         std::fs::write(world_dir.join("not-a-backup.txt"), b"unrelated").unwrap();
         std::fs::write(world_dir.join("options.txt.1000"), b"another-world").unwrap();
 
-        // Prune level.dat backups to keep only 1
         prune(&world_dir, "level.dat", 1);
 
-        // Our unrelated files should survive
         assert!(
             world_dir.join("not-a-backup.txt").exists(),
             "unrelated file should survive"
@@ -348,7 +311,6 @@ mod tests {
             "another world's backup should survive"
         );
 
-        // We should have 1 level.dat backup + 2 unrelated = 3 files total
         let kept: Vec<_> = std::fs::read_dir(&world_dir).unwrap().flatten().collect();
         assert_eq!(kept.len(), 3, "should keep 1 level.dat + 2 unrelated");
     }

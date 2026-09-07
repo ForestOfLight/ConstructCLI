@@ -12,7 +12,6 @@ pub enum LastPlayedSource {
     DirMtime,
 }
 
-/// One discovered world.
 #[derive(Debug, Clone)]
 pub struct World {
     pub installation: String,
@@ -49,13 +48,12 @@ impl World {
 pub const PATH_INSTALLATION: &str = "path";
 
 /// Every world under every installation, plus any named directly by path.
-/// Unreadable entries are skipped rather than failing the whole enumeration.
+/// Unreadable entries are skipped rather than failing the enumeration.
 ///
 /// `extra_worlds` are directories that are themselves worlds — a save folder
-/// sitting outside any `com.mojang`. They join the set under
-/// [`PATH_INSTALLATION`]. A directory that discovery already reached keeps the
-/// identity it was found with, so the discovered entry wins over the explicit
-/// one and neither is listed twice.
+/// outside any `com.mojang` — and join the set under [`PATH_INSTALLATION`]. A
+/// directory discovery already reached keeps the identity it was found with, so
+/// the discovered entry wins and neither is listed twice.
 pub fn enumerate(installations: &[Installation], extra_worlds: &[PathBuf]) -> Vec<World> {
     let mut out = Vec::new();
 
@@ -83,7 +81,6 @@ pub fn enumerate(installations: &[Installation], extra_worlds: &[PathBuf]) -> Ve
         }
     }
 
-    // Newest first — the world you want is almost always the one you just played.
     out.sort_by(|a, b| {
         b.last_played
             .cmp(&a.last_played)
@@ -92,9 +89,7 @@ pub fn enumerate(installations: &[Installation], extra_worlds: &[PathBuf]) -> Ve
     out
 }
 
-/// Reads one world directory, or `None` when it is not a world.
 fn read_world(path: &Path, installation: &str, account: Option<String>) -> Option<World> {
-    // A world is a directory containing level.dat. Nothing else counts.
     if !path.join("level.dat").is_file() {
         return None;
     }
@@ -119,10 +114,6 @@ fn read_world(path: &Path, installation: &str, account: Option<String>) -> Optio
     })
 }
 
-/// Whether two paths name the same directory. Canonicalization is what makes
-/// `./Saves/W` and an absolute `/home/u/Saves/W` compare equal; when it fails
-/// on either side the raw paths are compared, which is no worse than not
-/// deduplicating at all.
 fn same_dir(a: &Path, b: &Path) -> bool {
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(a), Ok(b)) => a == b,
@@ -184,9 +175,6 @@ mod tests {
         fs::write(dir.join("level.dat"), bytes).unwrap();
     }
 
-    /// A valid, parseable `level.dat` that simply has no `LastPlayed` field —
-    /// distinct from a garbage/unparseable file, which falls back to dir-mtime
-    /// for a different reason.
     fn level_dat_without_last_played(dir: &Path) {
         let root = nbtx::Value::Compound(
             [(
@@ -251,8 +239,6 @@ mod tests {
 
     #[test]
     fn falls_back_to_dir_mtime_when_level_dat_has_no_last_played() {
-        // level.dat parses fine here; it just lacks the field — a distinct case
-        // from an unparseable level.dat, which is covered separately above.
         let tmp = tempfile::tempdir().unwrap();
         let dir = world_at(&tmp.path().join("minecraftWorlds"), "A=", "W");
         level_dat_without_last_played(&dir);
@@ -321,7 +307,6 @@ mod tests {
 
     #[test]
     fn a_folder_name_containing_a_space_is_handled() {
-        // "Amelix CMP" is a real world folder on the target machine.
         let tmp = tempfile::tempdir().unwrap();
         let dir = world_at(
             &tmp.path().join("minecraftWorlds"),
@@ -361,8 +346,6 @@ mod tests {
 
     #[test]
     fn a_discovered_world_named_again_explicitly_keeps_its_installation() {
-        // The same directory reached both ways must not appear twice, and the
-        // discovered identity wins — `mcpelauncher/A=`, not `path/A=`.
         let tmp = tempfile::tempdir().unwrap();
         let dir = world_at(&tmp.path().join("minecraftWorlds"), "A=", "W");
         level_dat_with(&dir, 1);

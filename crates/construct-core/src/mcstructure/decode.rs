@@ -1,19 +1,13 @@
 //! Decoding `.mcstructure` bytes into [`Structure`].
 //!
-//! Most of the validation here mirrors the load-time rules the game itself
-//! enforces, documented in `docs/bedrock-mcstructure-files.md`: exactly two
-//! index layers, both the same length, that length equal to the product of
-//! `size`, and a `default` palette present. Two checks go beyond that
-//! documentation and are this tool's own added strictness rather than a
-//! documented game rule: a negative `size` dimension is rejected outright,
-//! and a `block_position_data` key at or past the volume is rejected too.
-//! Refusing here turns a structure that would fail to load — or load wrong,
-//! silently — into an error naming the field.
+//! Validation mirrors the game's load-time rules (see
+//! `docs/bedrock-mcstructure-files.md`), turning a file that would fail to load
+//! — or load wrong, silently — into an error naming the field. A negative
+//! `size` and an out-of-range `block_position_data` key are refused too, which
+//! the game does not document.
 //!
-//! Nesting depth is bounded by the patched `nbtx` (see
-//! `third_party/patches/0004-*`): NBT is parsed by recursive descent, so an
-//! unbounded file of nested compounds would exhaust the stack — an abort, not
-//! an error this function could return.
+//! Nesting depth is bounded by the patched `nbtx`: NBT parses by recursive
+//! descent, so unbounded nesting would abort rather than return an error.
 
 use super::geometry::{Coord, Size};
 use super::nbt::{as_compound, as_int, as_int_vec, as_list, as_triple, bad, field};
@@ -25,10 +19,10 @@ pub const VOID: i32 = -1;
 
 /// One entry of `block_palette`.
 ///
-/// Deliberately not `Eq`: `nbtx::Value` implements `PartialEq` and `Hash` but
-/// has no `Eq` impl and cannot have one, because it holds `Float(f32)` and
-/// `Double(f64)`. Palette deduplication therefore uses a linear scan rather
-/// than a `HashMap` — see `merge::unify_palettes`.
+/// Deliberately not `Eq`: `nbtx::Value` holds `Float(f32)` and `Double(f64)`,
+/// so it has `PartialEq` and `Hash` but cannot have `Eq`. Palette
+/// deduplication therefore uses a linear scan rather than a `HashMap` — see
+/// `merge::unify_palettes`.
 #[derive(Debug, Clone, PartialEq, Hash)]
 pub struct BlockState {
     pub name: String,
@@ -39,7 +33,6 @@ pub struct BlockState {
     pub version: i32,
 }
 
-/// A decoded `.mcstructure`.
 #[derive(Debug, Clone)]
 pub struct Structure {
     pub format_version: i32,

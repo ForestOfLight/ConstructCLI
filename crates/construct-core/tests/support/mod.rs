@@ -1,12 +1,3 @@
-//! A builder for `.mcstructure` NBT, so tests can state a fixture's shape
-//! instead of hand-assembling bytes.
-//!
-//! Fixtures are built rather than committed as binaries: the five shapes spec
-//! §12 asks for are then readable in the test that uses them, and no opaque
-//! blob has to be trusted. One real committed file
-//! (`tests/fixtures/construct.mcstructure`) covers what a builder cannot —
-//! that the codec agrees with what the game actually writes.
-
 use std::collections::HashMap;
 
 pub fn compound(pairs: Vec<(&str, nbtx::Value)>) -> nbtx::Value {
@@ -22,7 +13,6 @@ pub fn int_list(v: &[i32]) -> nbtx::Value {
     nbtx::Value::List(v.iter().copied().map(nbtx::Value::Int).collect())
 }
 
-/// One entry of `block_palette`.
 pub fn block(name: &str) -> nbtx::Value {
     compound(vec![
         ("name", nbtx::Value::String(name.to_string())),
@@ -43,8 +33,6 @@ pub struct Build {
 }
 
 impl Build {
-    /// A structure of `size` filled with palette entry 0 on layer 0 and void
-    /// on layer 1 — the shape the overwhelming majority of real files have.
     pub fn solid(size: [i32; 3], origin: [i32; 3], name: &str) -> Self {
         let volume = (size[0] * size[1] * size[2]) as usize;
         Self {

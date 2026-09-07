@@ -3,7 +3,6 @@ use construct_core::install::mcaddon;
 use std::io::Write;
 use std::path::Path;
 
-/// Builds a synthetic `.mcaddon` from (path, contents) pairs.
 fn make_addon(at: &Path, entries: &[(&str, &[u8])]) {
     let file = std::fs::File::create(at).unwrap();
     let mut zip = zip::ZipWriter::new(file);
@@ -69,9 +68,6 @@ fn extract_finds_the_behaviour_and_resource_packs_by_module_type() {
 
 #[test]
 fn an_entry_that_would_escape_the_directory_refuses_the_whole_archive() {
-    // A *complete* archive — both packs present — so the only possible reason
-    // for failure is the traversal entry, not a missing resource pack wearing
-    // the same `BadPack` variant.
     let tmp = tempfile::tempdir().unwrap();
     let addon = tmp.path().join("evil.mcaddon");
     complete_addon_plus(&addon, "../escaped.txt");
@@ -88,9 +84,6 @@ fn an_entry_that_would_escape_the_directory_refuses_the_whole_archive() {
 
 #[test]
 fn an_entry_with_an_absolute_path_writes_nothing_to_that_path() {
-    // The canary lives in a directory the test itself owns and can observe —
-    // unlike the temp directory `extract()` creates internally, which the
-    // test never sees the path of.
     let canary = tempfile::tempdir().unwrap();
     let target = canary.path().join("PWNED");
 
@@ -103,8 +96,6 @@ fn an_entry_with_an_absolute_path_writes_nothing_to_that_path() {
     assert!(!target.exists());
 }
 
-/// A complete, otherwise-valid archive plus one extra entry — so a rejection
-/// can only be attributed to that entry, never to a missing pack.
 fn complete_addon_plus(at: &Path, extra_name: &str) {
     make_addon(
         at,
@@ -168,7 +159,6 @@ fn an_archive_with_no_resource_pack_says_so() {
 
 #[test]
 fn folder_names_do_not_decide_which_pack_is_which() {
-    // Swapped names, correct module types.
     let tmp = tempfile::tempdir().unwrap();
     let addon = tmp.path().join("swapped.mcaddon");
     make_addon(
@@ -194,7 +184,6 @@ fn a_file_that_is_not_a_zip_is_a_bad_pack() {
     assert!(mcaddon::extract(&not_zip).is_err());
 }
 
-/// A pack directory on disk, as if previously installed.
 fn installed_pack(
     root: &Path,
     folder: &str,
@@ -226,7 +215,6 @@ fn installed_pack(
 
 #[test]
 fn an_upgrade_keeps_every_imported_structure() {
-    // The highest-priority test in the spec: this folder holds the user's data.
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("development_behavior_packs");
     installed_pack(
@@ -269,12 +257,10 @@ fn an_upgrade_keeps_every_imported_structure() {
         std::fs::read(structures.join("castle.mcstructure")).unwrap(),
         b"also mine"
     );
-    // A file the new version ships wins over the copy already there.
     assert_eq!(
         std::fs::read(structures.join("construct.mcstructure")).unwrap(),
         b"new shipped"
     );
-    // And the new version's own files arrived.
     assert_eq!(
         std::fs::read(placed.dir.join("scripts.js")).unwrap(),
         b"v1.2.0"
@@ -341,7 +327,6 @@ fn installing_the_version_already_present_is_a_no_op() {
         b"untouched"
     );
 
-    // --force reinstalls the same version, and still keeps the structures.
     let placed = install::place(&root, &new, true).unwrap();
     assert!(placed.changed);
     assert_eq!(placed.preserved, 1);
@@ -350,13 +335,6 @@ fn installing_the_version_already_present_is_a_no_op() {
 #[test]
 #[cfg(unix)]
 fn a_copy_failure_partway_through_leaves_the_original_completely_intact() {
-    // The Critical finding this test exists for: a naive delete-then-copy
-    // destroys the original before the copy is known to succeed, so a copy
-    // failure (disk full, most plausibly) leaves the user with neither the
-    // old pack nor the new one. This provokes a real failure partway through
-    // staging the new pack — before the original is ever touched — and
-    // asserts the original pack is exactly as it was: same manifest, same
-    // version, every structure present with its original bytes.
     use std::os::unix::fs::PermissionsExt;
 
     let tmp = tempfile::tempdir().unwrap();
@@ -377,8 +355,6 @@ fn a_copy_failure_partway_through_leaves_the_original_completely_intact() {
         [1, 2, 0],
         &[],
     );
-    // A subdirectory of the new pack that the recursive copy cannot read
-    // into, so `copy_dir(src, &staging)` errors out partway through.
     let unreadable = new.join("scripts");
     std::fs::create_dir_all(&unreadable).unwrap();
     std::fs::write(unreadable.join("main.js"), b"// code").unwrap();
@@ -386,8 +362,6 @@ fn a_copy_failure_partway_through_leaves_the_original_completely_intact() {
 
     let result = install::place(&root, &new, false);
 
-    // Restore permissions unconditionally so the tempdir can clean itself up
-    // regardless of what the assertions below find.
     std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     assert!(
@@ -395,9 +369,6 @@ fn a_copy_failure_partway_through_leaves_the_original_completely_intact() {
         "expected the unreadable subdirectory to fail the staged copy"
     );
 
-    // The original must be completely untouched: same manifest, same
-    // version, and every user structure still there with its original
-    // bytes.
     let manifest = construct_core::pack::manifest::read(&existing).unwrap();
     assert_eq!(manifest.version, [1, 1, 0]);
     assert_eq!(manifest.uuid, construct_core::pack::CONSTRUCT_BP_UUID);
@@ -411,7 +382,6 @@ fn a_copy_failure_partway_through_leaves_the_original_completely_intact() {
         b"also mine"
     );
 
-    // And nothing was left behind that would corrupt a later run.
     let leftovers: Vec<_> = std::fs::read_dir(&root)
         .unwrap()
         .flatten()
@@ -426,12 +396,6 @@ fn a_copy_failure_partway_through_leaves_the_original_completely_intact() {
 
 #[test]
 fn a_crash_between_remove_and_rename_recovers_on_the_next_run() {
-    // Reconstructs the point-of-no-return state by hand: `dest` has already
-    // been removed, and a staging directory sits beside it holding the
-    // complete, already-merged replacement -- exactly what a crash between
-    // `remove_dir_all` and `rename` leaves on disk. The next `place()` call,
-    // with no idea a crash happened, must recover it rather than throw it
-    // away: at this point it is the only place the user's structures exist.
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("development_behavior_packs");
 
@@ -447,12 +411,7 @@ fn a_crash_between_remove_and_rename_recovers_on_the_next_run() {
         [1, 2, 0],
         &[("bomber", b"mine"), ("castle", b"also mine")],
     );
-    // The sentinel `place` writes only after every copy into the stage has
-    // returned `Ok`. This hand-built directory models a stage that really
-    // did finish before the crash, so it must carry one.
     std::fs::write(staging_dir.join(".constructcli-staging-complete"), b"").unwrap();
-    // `dest` (Construct[BP]) intentionally does not exist -- it was already
-    // removed by the run that crashed before it could rename the stage in.
 
     let new = tmp.path().join("new/Construct[BP]");
     installed_pack(
@@ -494,13 +453,6 @@ fn a_crash_between_remove_and_rename_recovers_on_the_next_run() {
 
 #[test]
 fn a_foreign_staging_directory_is_never_deleted_or_mistaken_for_the_installed_pack() {
-    // A staging directory this invocation did not create: either another
-    // process's stage still being written, or a leftover whose destination
-    // exists again. It carries a fully readable manifest with the *same*
-    // UUID as the real pack -- the exact shape that would be mistaken for
-    // the installed copy if staging directories were not explicitly
-    // excluded from the UUID lookup, since `.` sorts before the real pack's
-    // name and `find_by_uuid` returns the first match.
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("development_behavior_packs");
     let existing = installed_pack(
@@ -534,8 +486,6 @@ fn a_foreign_staging_directory_is_never_deleted_or_mistaken_for_the_installed_pa
 
     let placed = install::place(&root, &new, false).unwrap();
 
-    // The upgrade found and used the *real* pack, not the foreign staging
-    // directory -- its prior version and preserved structure prove it.
     assert_eq!(placed.from, Some([1, 1, 0]));
     assert_eq!(placed.dir, existing);
     assert_eq!(
@@ -543,9 +493,6 @@ fn a_foreign_staging_directory_is_never_deleted_or_mistaken_for_the_installed_pa
         b"mine"
     );
 
-    // The foreign staging directory -- something this call did not create,
-    // and whose destination already existed -- must still be exactly as it
-    // was: never deleted, never recovered into place.
     let foreign = root.join(&foreign_name);
     assert!(
         foreign.is_dir(),
@@ -559,12 +506,6 @@ fn a_foreign_staging_directory_is_never_deleted_or_mistaken_for_the_installed_pa
 
 #[test]
 fn an_unfinished_staging_directory_is_not_recovered() {
-    // `copy_dir` walks its source in filesystem order, so a crash during
-    // staging can leave a directory with a perfectly readable manifest.json
-    // but the rest of the pack still missing -- a crash between "manifest
-    // copied" and "everything else copied," not between remove and rename.
-    // Recovery must not promote that shape: no sentinel means "not
-    // provably finished," never "close enough."
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("development_behavior_packs");
     std::fs::create_dir_all(&root).unwrap();
@@ -574,8 +515,6 @@ fn an_unfinished_staging_directory_is_not_recovered() {
         std::process::id(),
         987654321u64
     );
-    // Only the manifest landed before the (simulated) crash -- no
-    // scripts.js, and critically, no completion sentinel.
     installed_pack(
         &root,
         &staging_name,
@@ -583,9 +522,6 @@ fn an_unfinished_staging_directory_is_not_recovered() {
         [1, 2, 0],
         &[],
     );
-    // `Construct[BP]`, the real destination, does not exist yet -- this is
-    // what a first install's starting state normally looks like, not
-    // evidence that anything finished.
 
     let new = tmp.path().join("new/Construct[BP]");
     installed_pack(

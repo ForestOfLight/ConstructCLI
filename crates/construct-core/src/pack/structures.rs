@@ -1,13 +1,14 @@
-//! Construct's `structures/` folder: ordinary `.mcstructure` files, no database.
+//! Construct's `structures/` folder: ordinary `.mcstructure` files, no
+//! database.
 //!
-//! A file directly in `structures/` is `mystructure:<stem>` — confirmed by
+//! A file directly in `structures/` is `mystructure:<stem>`, confirmed by
 //! Construct's own source, which strips exactly that prefix from the ids the
 //! game hands it. Below that, the first subfolder is the namespace and every
-//! folder after it is part of the name (`structures/stuff/towers/diamond` is
-//! `stuff:towers/diamond`) — documented in `docs/bedrock-mcstructure-files.md`, a local copy
-//! of tryashtar's `.mcstructure` format documentation (github.com/tryashtar), not committed here.
-//! An earlier version of this file walked only one level deep, on the mistaken
-//! assumption that nothing deeper was addressable in-game.
+//! folder after it is part of the name: `structures/stuff/towers/diamond` is
+//! `stuff:towers/diamond`.
+//!
+//! The walk goes to full depth — everything below the first subfolder is
+//! addressable in-game. See `docs/bedrock-mcstructure-files.md`.
 
 use crate::error::{CoreError, Result};
 use crate::store::key;
@@ -38,15 +39,6 @@ pub fn list(pack_dir: &Path) -> Vec<PackStructure> {
     out
 }
 
-/// Walks `dir` (a subtree of `root`, the pack's `structures/` folder) to full
-/// depth, deriving each `.mcstructure` file's id from its path relative to
-/// `root`: no directory component means the default namespace, otherwise the
-/// first component is the namespace and everything after it — including the
-/// file stem — is the name, joined with `/`.
-///
-/// `DirEntry::file_type` reports a symlink as a symlink rather than following
-/// it, so a directory symlink here is never recursed into; the walk cannot be
-/// led outside the pack by one.
 fn collect(root: &Path, dir: &Path, out: &mut Vec<PackStructure>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -66,8 +58,6 @@ fn collect(root: &Path, dir: &Path, out: &mut Vec<PackStructure>) {
         let Ok(rel) = path.strip_prefix(root) else {
             continue;
         };
-        // Components joined with `/` regardless of platform separator: the
-        // result is a Minecraft identifier, not a filesystem path.
         let mut components: Vec<&str> = rel
             .components()
             .filter_map(|c| c.as_os_str().to_str())
@@ -91,18 +81,6 @@ fn collect(root: &Path, dir: &Path, out: &mut Vec<PackStructure>) {
     }
 }
 
-/// One segment of a structure id, validated for use as a path component.
-///
-/// This is a security boundary, not a nicety: ids arrive from file stems and
-/// from `--name`, so a segment containing a separator or `..` would let a
-/// crafted name write outside the pack.
-///
-/// Capitals are allowed. They are not an edge case: structures the game
-/// itself saved carry them routinely, and refusing them meant `copy` and
-/// `import --name` could not address a structure `structures` had just printed.
-/// Note that a case-insensitive filesystem — macOS's default — treats
-/// `House` and `house` as one file, so importing the second alongside the
-/// first refuses as a collision there and creates a separate file elsewhere.
 fn safe_segment(segment: &str, whole: &str) -> Result<()> {
     let bad = |reason: &str| CoreError::BadStructureName {
         name: whole.to_string(),
@@ -142,16 +120,6 @@ pub fn path_for(pack_dir: &Path, id: &str) -> Result<PathBuf> {
         });
     }
     safe_segment(namespace, id)?;
-    // A name may carry `/` to address a nested file, exactly as `collect`
-    // reports one: `stuff:towers/diamond` is `structures/stuff/towers/diamond`.
-    // Depth is not an escape hatch — every segment faces the same check the
-    // single-segment name always did, so `..` is refused at any depth and an
-    // empty segment (from `a//b` or a trailing `/`) is refused too.
-    //
-    // The default namespace is the exception, and not a stylistic one: it is
-    // the one namespace with no folder of its own, so `mystructure:a/b` would
-    // write `structures/a/b`, which `collect` reads back as `a:b`. A name that
-    // cannot round-trip is refused rather than written under a different id.
     if namespace == key::DEFAULT_NAMESPACE && name.contains('/') {
         return Err(CoreError::BadStructureName {
             name: id.to_string(),
@@ -200,11 +168,10 @@ pub fn remove(path: &Path) -> Result<()> {
 
 /// A structure name from a file stem: trimmed, spaces to `_`, case kept.
 ///
-/// Anything outside `[A-Za-z0-9_.-]` is rejected rather than mangled — a
-/// mangled name is one Construct will not list, so the user gets told to pass
-/// `--name`. Case is part of that: the names the game itself stores keep
-/// theirs (`10HzCounter`, `CanopyPlayers:players`, both measured in local
-/// worlds), so lowercasing a stem would hand back a name quietly different
+/// Anything outside `[A-Za-z0-9_.-]` is rejected rather than mangled, since a
+/// mangled name is one Construct will not list — the user is told to pass
+/// `--name` instead. Case is kept for the same reason: the game stores names
+/// like `10HzCounter`, so lowercasing would hand back a name quietly different
 /// from the one asked for.
 pub fn derive_name(stem: &str) -> Result<String> {
     let derived: String = stem.trim().replace(' ', "_");

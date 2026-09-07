@@ -1,14 +1,12 @@
 //! Encoding [`Structure`] back to `.mcstructure` bytes.
 //!
-//! The same invariants `decode` enforces are checked again on the way out.
-//! They are not redundant: `merge` builds a `Structure` in memory, and a grid
-//! that disagrees with its own `size` would be written happily and then fail
-//! to load in-game, with nothing pointing back at the merge that caused it.
+//! `decode`'s invariants are checked again on the way out, because `merge`
+//! builds a `Structure` in memory: a grid disagreeing with its own `size`
+//! would write happily and fail to load in-game.
 //!
-//! Byte-identical output is not a goal and is not achievable: `nbtx` stores
-//! compounds in a `HashMap`, so key order varies between runs. NBT compounds
-//! are unordered, so this is cosmetic — but it is why every round-trip test
-//! compares decoded values rather than bytes (spec §12).
+//! Output is not byte-stable — `nbtx` stores compounds in a `HashMap`, so key
+//! order varies. Compounds are unordered, so round-trip tests compare decoded
+//! values rather than bytes (§12).
 
 use super::decode::{Structure, VOID};
 use super::nbt::bad;

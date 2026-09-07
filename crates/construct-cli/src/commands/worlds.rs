@@ -1,4 +1,8 @@
+use crate::cli::WorldsArgs;
+use crate::context::Context;
+use crate::failure;
 use crate::output::Out;
+use crate::support::format::{human_size, truncate};
 use construct_core::discovery::World;
 use construct_core::{Result, discovery};
 use serde::Serialize;
@@ -18,11 +22,17 @@ struct Row<'a> {
     path: String,
     size_bytes: u64,
     last_played: Option<i64>,
-    /// "level.dat" or "dir-mtime" — the two disagree often enough to matter.
     last_played_source: &'static str,
 }
 
-pub fn run(worlds: &[World], out: &Out) -> Result<()> {
+pub fn dispatch(_args: &WorldsArgs, ctx: &Context, out: &mut Out) -> failure::Result {
+    if ctx.nothing_to_search() {
+        return Err(ctx.no_installations().into());
+    }
+    Ok(run(&ctx.worlds, out)?)
+}
+
+fn run(worlds: &[World], out: &Out) -> Result<()> {
     if !out.is_json() {
         out.line(format!(
             "{:<28} {:<14} {:>8}  {}",
@@ -62,27 +72,4 @@ pub fn run(worlds: &[World], out: &Out) -> Result<()> {
             .collect(),
     });
     Ok(())
-}
-
-pub fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
-    let mut v = bytes as f64;
-    let mut unit = 0;
-    while v >= 1024.0 && unit < UNITS.len() - 1 {
-        v /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{v:.1} {}", UNITS[unit])
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        s.chars().take(max - 1).collect::<String>() + "…"
-    }
 }

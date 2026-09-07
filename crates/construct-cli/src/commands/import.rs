@@ -1,10 +1,9 @@
-//! Copying `.mcstructure` files into Construct's `structures/` folder.
-//!
-//! No database is involved in either direction: a structure's leveldb value is
-//! byte-identical to a `.mcstructure` file, so this is a file copy with a name
-//! derived under Construct's rules.
-
+use crate::cli::ImportArgs;
+use crate::context::Context;
+use crate::failure::{self, Failure};
 use crate::output::Out;
+use crate::support::packs::{home_for_write, warn_if_another_pack_has_it};
+use crate::support::phrasing::{pack_phrase, target_field};
 use construct_core::discovery::{Installation, World};
 use construct_core::pack::{self, structures};
 use construct_core::store::key;
@@ -14,11 +13,6 @@ use std::path::{Path, PathBuf};
 
 #[derive(Serialize)]
 struct Payload {
-    /// The pack every file in this batch landed in, and what that means for
-    /// reach. One destination home is chosen per invocation, so these
-    /// describe the command rather than any one row. `target` is spelled as a
-    /// `--source` value — `world-pack` or `shared-pack` — so a reader can
-    /// name the same place back to `structures` or `export`.
     pack: String,
     target: &'static str,
     written: Vec<Written>,
@@ -32,12 +26,8 @@ struct Written {
     bytes: u64,
 }
 
-/// The structure id a file imports under: `--name` when given, else derived
-/// from the file stem under Construct's rules.
 fn id_for(file: &Path, name: Option<&str>) -> Result<String> {
     match name {
-        // An explicit --name is the user's own choice; it still has to be a
-        // name Construct can address, so it goes through the same validation.
         Some(n) => Ok(key::qualify(n)),
         None => {
             let stem = file.file_stem().and_then(|s| s.to_str()).ok_or_else(|| {
@@ -51,21 +41,11 @@ fn id_for(file: &Path, name: Option<&str>) -> Result<String> {
     }
 }
 
-/// One file the command will import, and the id it lands under.
 struct Planned {
     file: PathBuf,
     id: String,
 }
 
-/// Every `.mcstructure` under `dir`, deepest paths included, sorted by path so
-/// a directory import reports in a stable order.
-///
-/// Files that are not `.mcstructure` are skipped rather than refused: a folder
-/// of structures routinely carries a README or a `.DS_Store`, and naming them
-/// on the command line was never how they got here. `file_type` reports a
-/// symlink as a symlink rather than following it, so a directory symlink is
-/// never recursed into and the walk cannot be led outside `dir` — the same
-/// guarantee `pack::structures::collect` relies on when reading a pack.
 fn mcstructures_under(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut found = Vec::new();
     walk(dir, &mut found)?;
@@ -86,14 +66,6 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-/// The id a file inside an imported directory lands under.
-///
-/// The directory's own name becomes the namespace and its tree becomes the
-/// name, so `Amelix/sub/tower.mcstructure` imports as `Amelix:sub/tower` and
-/// lands at `structures/Amelix/sub/tower.mcstructure` — the same tree, in the
-/// pack. Every segment goes through `derive_name`, so a folder named `My
-/// Builds` imports as `My_Builds` and a segment that cannot be a name at all
-/// stops the command instead of being mangled into one.
 fn id_under_directory(root_name: &str, file: &Path, dir: &Path) -> Result<String> {
     let rel = file.strip_prefix(dir).map_err(|_| CoreError::Internal {
         what: format!("{} is not under {}", file.display(), dir.display()),
@@ -124,11 +96,6 @@ fn id_under_directory(root_name: &str, file: &Path, dir: &Path) -> Result<String
     Ok(format!("{}:{}", namespace, rest.join("/")))
 }
 
-/// Turns the paths named on the command line into the files to import.
-///
-/// A file imports under its own stem, exactly as it always has. A directory
-/// expands to every `.mcstructure` beneath it, keeping its tree. The two mix
-/// freely in one invocation.
 fn expand(paths: &[PathBuf], name: Option<&str>) -> Result<Vec<Planned>> {
     let mut planned = Vec::new();
     for path in paths {
@@ -140,9 +107,6 @@ fn expand(paths: &[PathBuf], name: Option<&str>) -> Result<Vec<Planned>> {
             continue;
         }
 
-        // `file_name` is `None` for `.`, `..` and a root, none of which offer
-        // a name to file the tree under. Asking for the folder to be named
-        // outright beats guessing one from the current directory.
         let root_name = path.file_name().and_then(|s| s.to_str()).ok_or_else(|| {
             CoreError::BadStructureName {
                 name: path.display().to_string(),
@@ -169,12 +133,6 @@ fn expand(paths: &[PathBuf], name: Option<&str>) -> Result<Vec<Planned>> {
     Ok(planned)
 }
 
-/// Construct's in-game list only shows `mystructure:` structures (§17), so a
-/// namespaced name lands somewhere the addon will not display.
-///
-/// Warned once per namespace rather than once per structure: a folder import
-/// puts every one of its files in the same namespace, and forty identical
-/// lines bury the forty that actually differ.
 fn warn_about_namespaces_outside_the_default(ids: &[String], out: &mut Out) {
     let default = format!("{}:", key::DEFAULT_NAMESPACE);
     let mut seen: Vec<&str> = Vec::new();
@@ -196,29 +154,63 @@ fn warn_about_namespaces_outside_the_default(ids: &[String], out: &mut Out) {
     }
 }
 
-pub fn run(
-    paths: &[PathBuf],
+fn check_name_against_paths(args: &ImportArgs) -> failure::Result {
+    if args.name.is_none() {
+        return Ok(());
+    }
+    if let Some(dir) = args.paths.iter().find(|p| p.is_dir()) {
+        return Err(Failure::usage(
+            format!(
+                "--name renames a single import, but {} is a folder",
+                dir.display()
+            ),
+            "A folder imports every structure under it, keeping its tree. \
+             Drop --name, or name a single file to rename it.",
+        ));
+    }
+    if args.paths.len() > 1 {
+        return Err(Failure::usage(
+            format!(
+                "--name renames a single import, but {} files were given",
+                args.paths.len()
+            ),
+            "Drop --name to derive each name from its file stem, or import them \
+             one at a time.",
+        ));
+    }
+    Ok(())
+}
+
+pub fn dispatch(args: &ImportArgs, ctx: &Context, out: &mut Out) -> failure::Result {
+    check_name_against_paths(args)?;
+    let world = ctx.optional_world(args.world.as_deref())?;
+    let installation = ctx.installation_for(world.as_ref())?;
+    let opts = Options {
+        paths: &args.paths,
+        name: args.name.as_deref(),
+        force: args.force,
+    };
+    Ok(run(world.as_ref(), installation, &opts, out)?)
+}
+
+pub struct Options<'a> {
+    pub paths: &'a [PathBuf],
+    pub name: Option<&'a str>,
+    pub force: bool,
+}
+
+fn run(
     world: Option<&World>,
     installation: &Installation,
-    name: Option<&str>,
-    force: bool,
+    opts: &Options,
     out: &mut Out,
 ) -> Result<()> {
-    // Read every file and settle every id before writing anything, the way
-    // `export` plans every target first. `home_for_write` below can *create*
-    // a structures pack, so a batch that cannot be read must fail before it
-    // has that side effect.
     let mut sources: Vec<(PathBuf, String, Vec<u8>)> = Vec::new();
-    for Planned { file, id } in expand(paths, name)? {
+    for Planned { file, id } in expand(opts.paths, opts.name)? {
         let bytes = std::fs::read(&file)?;
         sources.push((file, id, bytes));
     }
 
-    // Two files deriving one id would silently collapse into a single
-    // structure — the second write landing on the first, or failing halfway
-    // through the batch once the first has already landed. Neither is an
-    // outcome to discover afterwards, so it is refused up front. `--name`
-    // cannot reach here: `main.rs` refuses it for more than one file.
     for i in 1..sources.len() {
         if let Some((earlier, _, _)) = sources[..i].iter().find(|(_, id, _)| *id == sources[i].1) {
             return Err(CoreError::BadStructureName {
@@ -232,29 +224,20 @@ pub fn run(
         }
     }
 
-    // With a world, the write belongs in that world's structures home — its
-    // own copy of Construct if it has one, else its structures pack, created
-    // here if it has none. Without a world there is no per-world home to
-    // choose, and the shared copy of Construct is the deliberate answer: "put this in
-    // every world that uses it" is a thing to want, and the line below says
-    // that is what happened.
     let home = match world {
-        Some(w) => crate::commands::home_for_write(w, installation, out)?,
+        Some(w) => home_for_write(w, installation, out)?,
         None => pack::Home {
             dir: pack::for_installation(installation)?.pack.dir,
             kind: pack::HomeKind::SharedConstruct,
         },
     };
 
-    // Settle and check every destination before the first write, so one
-    // collision stops the command rather than leaving half the batch
-    // imported.
     let mut plan = Vec::new();
     for (file, id, bytes) in sources {
         let target = structures::path_for(&home.dir, &id)?;
         plan.push((file, id, bytes, target));
     }
-    if !force {
+    if !opts.force {
         for (_, _, _, target) in &plan {
             if target.exists() {
                 return Err(CoreError::TargetExists {
@@ -270,9 +253,9 @@ pub fn run(
     let mut written = Vec::new();
     for (file, id, bytes, _) in plan {
         if let Some(w) = world {
-            crate::commands::warn_if_another_pack_has_it(w, installation, &home.dir, &id, out);
+            warn_if_another_pack_has_it(w, installation, &home.dir, &id, out);
         }
-        let path = structures::write(&home.dir, &id, &bytes, force)?;
+        let path = structures::write(&home.dir, &id, &bytes, opts.force)?;
 
         out.line(format!(
             "imported {} as {}",
@@ -289,18 +272,76 @@ pub fn run(
         });
     }
 
-    // Once, after the whole batch: one destination home is chosen per
-    // invocation, so where the files landed is an answer about the command
-    // rather than about any one structure — and so is the reload advice.
     out.line(format!(
         "into {}",
-        crate::commands::pack_phrase(home.kind, world.map(|w| w.display_name.as_str()))
+        pack_phrase(home.kind, world.map(|w| w.display_name.as_str()))
     ));
     out.line("Reload the world before Construct sees it.");
     out.emit(Payload {
         pack: home.dir.display().to_string(),
-        target: crate::commands::target_field(home.kind),
+        target: target_field(home.kind),
         written,
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::Discovery;
+
+    fn args(paths: &[&str], name: Option<&str>) -> ImportArgs {
+        ImportArgs {
+            paths: paths.iter().map(PathBuf::from).collect(),
+            world: None,
+            name: name.map(str::to_string),
+            force: false,
+            discovery: Discovery { path: Vec::new() },
+        }
+    }
+
+    fn message_of(result: failure::Result) -> String {
+        match result {
+            Err(Failure::Usage { message, .. }) => message,
+            Err(_) => panic!("expected a usage refusal, got another failure"),
+            Ok(()) => panic!("expected a usage refusal, got Ok"),
+        }
+    }
+
+    #[test]
+    fn no_name_never_refuses() {
+        assert!(check_name_against_paths(&args(&["a.mcstructure", "b.mcstructure"], None)).is_ok());
+    }
+
+    #[test]
+    fn name_with_one_file_is_what_it_is_for() {
+        assert!(check_name_against_paths(&args(&["a.mcstructure"], Some("castle"))).is_ok());
+    }
+
+    #[test]
+    fn name_with_several_files_is_refused_and_counts_them() {
+        let message = message_of(check_name_against_paths(&args(
+            &["a.mcstructure", "b.mcstructure"],
+            Some("castle"),
+        )));
+        assert_eq!(
+            message,
+            "--name renames a single import, but 2 files were given"
+        );
+    }
+
+    #[test]
+    fn name_with_a_folder_is_refused_as_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = ImportArgs {
+            paths: vec![dir.path().to_path_buf()],
+            world: None,
+            name: Some("castle".to_string()),
+            force: false,
+            discovery: Discovery { path: Vec::new() },
+        };
+        let message = message_of(check_name_against_paths(&args));
+        assert!(message.starts_with("--name renames a single import, but "));
+        assert!(message.ends_with(" is a folder"));
+    }
 }

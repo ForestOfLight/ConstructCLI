@@ -49,7 +49,6 @@ pub fn candidates(id: &str) -> Vec<Vec<u8>> {
 /// The qualified id in a leveldb key, or `None` if it is not a structure key.
 pub fn decode(key: &[u8]) -> Option<String> {
     let body = key.strip_prefix(PREFIX)?;
-    // Bedrock writes plenty of binary keys; a non-UTF-8 body is not ours.
     std::str::from_utf8(body)
         .ok()
         .filter(|s| !s.is_empty())
@@ -129,8 +128,6 @@ mod tests {
 
     #[test]
     fn an_unqualified_key_is_reachable_by_its_own_name() {
-        // A world Minecraft did not write can hold `structuretemplate_foo` with no
-        // namespace. `structures` shows it, so `export` must be able to fetch it.
         assert_eq!(encode_exact("foo"), b"structuretemplate_foo".to_vec());
         assert_eq!(
             candidates("foo"),

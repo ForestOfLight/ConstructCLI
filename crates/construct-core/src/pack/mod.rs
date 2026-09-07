@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 /// folder name — a renamed folder is still the same pack, and two folders
 /// carrying this UUID are two copies of one pack.
 pub const CONSTRUCT_BP_UUID: &str = "8c0c0153-d8b9-482a-889f-aef922b8fe58";
-/// Construct's resource-pack header UUID.
 pub const CONSTRUCT_RP_UUID: &str = "375ec465-3dc1-429f-8b4c-a337889e1ed4";
 
 #[derive(Debug, Clone)]
@@ -51,17 +50,14 @@ pub fn world_behavior_root(world: &World) -> PathBuf {
 
 /// Every readable pack directly under `root`.
 ///
-/// A directory with no manifest, or one that will not parse, is skipped: a
-/// single corrupt pack must not hide every other pack on the machine. A
-/// directory whose name begins with `.` is skipped outright, without even
-/// trying to read a manifest from it: no Minecraft pack is named that way,
-/// but `install::place` stages a pack under such a name while swapping it
-/// in, and mid-swap (or after a crash, before the next run recovers or
-/// abandons it) that staging directory can carry a fully valid manifest
-/// with the same header UUID as the pack it is staging. Every caller of
-/// `packs_in`/`find_by_uuid` — this module's own `for_world`,
-/// `for_installation`, and `install::place` alike — must never mistake it
-/// for the installed copy.
+/// A directory with no manifest, or one that will not parse, is skipped: one
+/// corrupt pack must not hide every other pack on the machine.
+///
+/// A dotted directory is skipped without reading a manifest at all. No
+/// Minecraft pack is named that way, but `install::place` stages under such a
+/// name, and mid-swap that staging directory carries a valid manifest with the
+/// same header UUID as the pack it is replacing. No caller of
+/// `packs_in`/`find_by_uuid` may mistake it for the installed copy.
 pub fn packs_in(root: &Path) -> Vec<Pack> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
@@ -98,7 +94,7 @@ pub struct Target {
     pub pack: Pack,
     pub scope: Scope,
     /// The copy that was found and *not* used, if there was one. §11 asks the
-    /// command to state which of two copies it chose.
+    /// command to say which of two copies it chose.
     pub also_at: Option<PathBuf>,
 }
 
@@ -126,7 +122,6 @@ pub fn for_world(world: &World, installation: &Installation) -> Result<Target> {
     }
 }
 
-/// A pack whose `structures/` folder this tool reads or writes for one world.
 #[derive(Debug, Clone)]
 pub struct Home {
     pub dir: PathBuf,
@@ -160,12 +155,12 @@ impl HomeKind {
 }
 
 /// Where this tool writes structures for `world`, or `None` when the world has
-/// nowhere yet and a shell pack has to be created first.
+/// nowhere yet and a shell pack must be created first.
 ///
-/// A world's own copy of Construct already has a per-world `structures/`, so
-/// it is the home when present; splitting one world's structures across it and
-/// a shell pack beside it would divide them for no gain. The shared copy is
-/// never a home: writing there would put the structure in every world.
+/// A world's own copy of Construct already has a per-world `structures/`, so it
+/// is the home when present — splitting a world's structures across it and a
+/// shell pack beside it would divide them for no gain. The shared copy is never
+/// a home: writing there would put the structure in every world.
 pub fn home(world: &World) -> Option<Home> {
     let world_root = world_behavior_root(world);
     if let Some(pack) = find_by_uuid(&world_root, CONSTRUCT_BP_UUID) {
@@ -182,15 +177,13 @@ pub fn home(world: &World) -> Option<Home> {
 
 /// Every pack whose `structures/` the game loads for `world`, home first.
 ///
-/// Wider than [`home`] on purpose: reads report what the world actually has,
-/// and a world running the shared copy of Construct really does see that pack's
+/// Wider than [`home`]: a world running the shared copy really does see its
 /// structures. Empty only when Construct is installed nowhere this world can
-/// reach — the caller turns that into [`CoreError::ConstructNotInstalled`],
-/// since an empty list and "no Construct at all" are different answers.
+/// reach, which callers report as [`CoreError::ConstructNotInstalled`].
 ///
-/// The two Construct copies never both appear: they carry the same header
-/// UUID, so a world holding its own copy loads that one and never the shared
-/// one. The shell pack has a UUID of its own and so is always additive.
+/// The two Construct copies never both appear — same header UUID, so a world
+/// with its own loads that one. The shell pack has its own UUID and is always
+/// additive.
 pub fn serving(world: &World, installation: &Installation) -> Vec<Home> {
     let world_root = world_behavior_root(world);
     let mut out = Vec::new();

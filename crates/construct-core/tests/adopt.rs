@@ -1,11 +1,7 @@
-//! `install::adopt`: rescuing a Construct that was hand-dropped into
-//! `behavior_packs` instead of `development_behavior_packs`.
-
 use construct_core::install::adopt::{self, AdoptKind};
 use construct_core::pack::CONSTRUCT_BP_UUID;
 use std::path::{Path, PathBuf};
 
-/// A minimal but real pack directory: a parseable manifest carrying `uuid`.
 fn pack_at(root: &Path, folder: &str, uuid: &str) -> PathBuf {
     let dir = root.join(folder);
     std::fs::create_dir_all(&dir).unwrap();
@@ -31,7 +27,6 @@ fn read(path: &Path) -> Vec<u8> {
     std::fs::read(path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
 }
 
-/// The two sibling roots under one `com.mojang`.
 fn roots() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let dev = tmp.path().join("development_behavior_packs");
@@ -91,9 +86,6 @@ fn a_stray_construct_moves_into_the_development_root() {
 
 #[test]
 fn a_moved_pack_takes_a_free_name_when_its_own_is_taken() {
-    // An unrelated pack already occupies the folder name. Overwriting it
-    // would destroy someone else's pack; `place` matches by UUID, so the
-    // folder name it lands under does not matter.
     let (_tmp, dev, stray) = roots();
     let squatter = pack_at(
         &dev,
@@ -258,8 +250,6 @@ fn a_nested_structure_is_rescued_inside_its_own_namespace_folder() {
 
 #[test]
 fn a_stray_with_no_structures_folder_still_merges_and_is_removed() {
-    // The resource pack's shape: nothing to carry across, but the duplicate
-    // still has to stop shadowing the development copy.
     let (_tmp, dev, stray) = roots();
     pack_at(&dev, "Construct[RP]", CONSTRUCT_BP_UUID);
     let from = pack_at(&stray, "Construct[RP]", CONSTRUCT_BP_UUID);

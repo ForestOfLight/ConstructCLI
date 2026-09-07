@@ -40,7 +40,7 @@ missing from the world instead of being deleted from under everyone.
 scope and `--world W --pack shared` asks for two contradictory things at once. It is no longer
 declared on `delete` at all — `--source` and `--pack` stopped being globals and are now
 per-command args on the commands that read them — so clap makes the refusal rather than a
-hand-rolled check in `main.rs`.
+hand-rolled check in the command's `dispatch`.
 
 
 
@@ -196,7 +196,7 @@ only in a `structures/` tree this tool or Construct did not build entirely itsel
 
 - `encode_exact` duplicates `encode`'s body; `manifest::read` reconstructs `BadPack` inline
   rather than reusing `parse`'s closure; `installation::for_world` repeats `choose`'s
-  `names()` one-liner; `commands/catalog.rs` and `commands/copy.rs` each phrase their own
+  `names()` one-liner; `support/catalog.rs` and `commands/copy.rs` each phrase their own
   `also_at` warning.
 - `import` reads the whole source file before validating the derived name or resolving the
   target pack, so it fails slower than it needs to on a bad name.

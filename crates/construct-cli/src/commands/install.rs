@@ -1,9 +1,9 @@
-//! Downloading Construct from GitHub and placing it, §10's sequence in order:
-//! query the release, match the `.mcaddon` asset, download, extract, verify
-//! it is actually Construct, place both packs, then (with `--world`) enable
-//! them and flip Beta APIs on.
-
+use crate::cli::InstallArgs;
+use crate::context::Context;
+use crate::failure::{self, Failure};
 use crate::output::Out;
+use crate::support::github;
+use crate::support::packs::{create_structures_pack, refuse_if_in_use};
 use construct_core::config::Backups;
 use construct_core::discovery::{Installation, World};
 use construct_core::install::adopt::{self, AdoptKind};
@@ -30,43 +30,22 @@ struct Payload {
     structures_error: Option<String>,
 }
 
-/// One pack rescued out of a non-development root, for `--json`.
 #[derive(Serialize)]
 struct Migrated {
-    /// `moved` when the development root had no copy and the misplaced one
-    /// became it, `merged` when it already had one and only structures were
-    /// carried across.
     kind: &'static str,
     from: String,
     to: String,
-    /// Structure files written into the development copy. Always 0 for a
-    /// `moved`, where the pack arrived whole.
     merged: usize,
     rescued: Vec<Rescued>,
-    /// Set when the structures all arrived but the emptied misplaced folder
-    /// could not be removed.
     left_behind: Option<String>,
 }
 
-/// A structure that existed in both copies under one name with different
-/// contents, and so was kept under a second name rather than dropped.
 #[derive(Serialize)]
 struct Rescued {
     from: String,
     to: String,
 }
 
-/// Folds a Construct sitting in `stray_root` — `behavior_packs` or
-/// `resource_packs`, the non-development siblings a by-hand install is easy
-/// to drop into — back into `dev_root`, and says so.
-///
-/// Runs before `install::place`, so a rescued pack is the one `place` then
-/// upgrades and its structures are carried across the version bump by
-/// `place`'s ordinary preservation rather than needing anything special here.
-///
-/// A failure is warned about, not returned: the misplaced copy is left
-/// untouched by a failed `adopt`, which is exactly the state the user was
-/// already in, and it is no reason to refuse to install Construct.
 fn migrate_stray(
     dev_root: &Path,
     stray_root: &Path,
@@ -139,15 +118,6 @@ fn migrate_stray(
     })
 }
 
-/// Confirms an extracted pack really is Construct's, by header UUID rather
-/// than by folder name or position in the archive.
-///
-/// `install::place` is generic over any pack — it has no idea what it is
-/// installing. This command is the one that asked GitHub specifically for
-/// Construct, so it is the one that has to check the answer: without this, a
-/// `.mcaddon` that is not Construct would be installed under whatever UUID it
-/// carries, and every later lookup by `CONSTRUCT_BP_UUID`/`CONSTRUCT_RP_UUID`
-/// would miss it — the command would report success while achieving nothing.
 fn verify_uuid(dir: &Path, expected: &str, kind: &str) -> Result<()> {
     let found = manifest::read(dir)?.uuid;
     if found != expected {
@@ -161,7 +131,21 @@ fn verify_uuid(dir: &Path, expected: &str, kind: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn run(
+pub fn dispatch(args: &InstallArgs, ctx: &Context, out: &mut Out) -> failure::Result {
+    let world = ctx.optional_world(args.world.as_deref())?;
+    let installation = ctx.installation_for(world.as_ref())?;
+    run(
+        &github::client(),
+        args.version.as_deref(),
+        world.as_ref(),
+        installation,
+        &ctx.settings.backups,
+        args.force,
+        out,
+    )
+}
+
+fn run(
     releases: &dyn Releases,
     version: Option<&str>,
     world: Option<&World>,
@@ -169,16 +153,9 @@ pub fn run(
     backups: &Backups,
     force: bool,
     out: &mut Out,
-) -> Result<()> {
-    // Refuse up front, before the network call and before anything is placed.
-    // Two of the three things `--world` promises — enabling the packs in the
-    // world and flipping Beta APIs — write files Minecraft holds in memory
-    // and rewrites from memory on every save, so against a live world they
-    // are discarded silently. Checking here rather than at the level.dat
-    // write below means a refused `--world` install downloads nothing and
-    // leaves nothing half-done; the user closes the world and re-runs.
+) -> failure::Result {
     if let Some(world) = world {
-        crate::commands::refuse_if_in_use(world, inuse::AtRisk::LevelDat, out)?;
+        refuse_if_in_use(world, inuse::AtRisk::LevelDat, out)?;
     }
 
     let release = releases.release(version)?;
@@ -190,15 +167,9 @@ pub fn run(
     releases.download(asset, &archive)?;
     let extracted = mcaddon::extract(&archive)?;
 
-    // Refuse before anything is placed if the archive is not really Construct.
     verify_uuid(&extracted.behavior, pack::CONSTRUCT_BP_UUID, "behaviour")?;
     verify_uuid(&extracted.resource, pack::CONSTRUCT_RP_UUID, "resource")?;
 
-    // Before anything is placed: a Construct the player dropped into
-    // `behavior_packs`/`resource_packs` instead of the `development_*`
-    // sibling beside it. The game loads both roots, so the misplaced copy
-    // shadows the one about to be installed, and no command here can see the
-    // structures inside it.
     let root = &installation.dev_pack_root;
     let migrated: Vec<Migrated> = [
         (
@@ -247,20 +218,12 @@ pub fn run(
         out.line(format!("  kept {} imported structure(s)", bp.preserved));
     }
 
-    // Everything below this line is the `--world` half.
     let mut level_dat_error = None;
     let mut enable_error = None;
     let mut structures_error = None;
     let mut structures_pack = None;
     let mut beta_apis = None;
     if let Some(world) = world {
-        // Placement above always writes into the shared
-        // dev-pack root. But a world with its own `behavior_packs/Construct[BP]`
-        // copy is governed by that copy, not the shared copy (`pack::for_world`'s
-        // precedence — the same one `import`/`copy`/`delete`/`structures` resolve
-        // through). Without this, install would report a version bump the
-        // world never actually gets, and every later structure command would
-        // keep writing into the untouched local copy.
         if let Ok(target) = pack::for_world(world, installation)
             && let Some(shared) = &target.also_at
         {
@@ -273,10 +236,6 @@ pub fn run(
             ));
         }
 
-        // The packs are already placed on disk; from here a failure is
-        // partial, not total, same as the level.dat flip below. Try both
-        // upserts rather than stopping at the first failure — they touch
-        // independent files, so one failing is no reason to skip the other.
         let bp_upsert = worldpacks::upsert(
             &worldpacks::behavior_path(world),
             worldpacks::PackRef {
@@ -310,17 +269,12 @@ pub fn run(
             }
         }
 
-        // Give the world somewhere of its own to keep structures. A world
-        // whose Construct copy is its own already has a per-world
-        // `structures/` and needs no second pack; every other world would
-        // otherwise share the installation's, which is what made "which
-        // worlds have which structures" unanswerable.
         match pack::home(world) {
             Some(home) => {
                 out.line(format!("  structures in {}", home.dir.display()));
                 structures_pack = Some(home.dir.display().to_string());
             }
-            None => match crate::commands::create_structures_pack(world, &bp.dir) {
+            None => match create_structures_pack(world, &bp.dir) {
                 Ok(created) => {
                     out.line(format!("  structures pack at {}", created.dir.display()));
                     structures_pack = Some(created.dir.display().to_string());
@@ -333,9 +287,6 @@ pub fn run(
         }
 
         let level = world.path.join("level.dat");
-        // The packs are already in place; from here a failure is partial, not
-        // total. Back up before touching anything: a backup taken after a
-        // bad write would preserve the bad write.
         match backup::file(&level, &world.qualified(), backups)
             .and_then(|_| leveldat::apply_beta_apis(&level, true))
         {
@@ -349,25 +300,10 @@ pub fn run(
             }
         }
     }
-    // Only worth saying without `--world`. A `--world` install refuses to run
-    // at all while the world is open (the check at the top of this function),
-    // so by the time it succeeds there is no live session to reload — the user
-    // opens the world and Construct is already there. That also disposes of
-    // the partial-install branch below, which only `--world` can reach: what is
-    // left there is finishing the enable and/or the flip, not reloading.
     if world.is_none() {
         out.line("Reload the world before Construct appears.");
     }
 
-    // §11: the packs installed but a later step failing is partial, not total,
-    // success. It is still a failure — `install --world` was asked to do three
-    // things and did not do them all — so it exits non-zero, but the payload is
-    // worth keeping: the version and the pack paths are what a caller needs to
-    // recover, and returning an error here would throw them away.
-    //
-    // stdout is exactly one document, so the `error` is merged into that
-    // payload rather than emitted beside it. That keeps "non-zero exit implies
-    // `error.kind`" true everywhere, with no exception for a caller to learn.
     let partial = enable_error.is_some() || level_dat_error.is_some() || structures_error.is_some();
     let payload = Payload {
         version: manifest::version_string(bp.to),
@@ -418,8 +354,5 @@ pub fn run(
              construct install --world {world_name}"
         );
     }
-    // Exiting rather than returning keeps the payload above intact: an `Err`
-    // would take main.rs's error arm, which emits a document of its own, and
-    // stdout may carry only one.
-    std::process::exit(1);
+    Err(Failure::AlreadyReported)
 }

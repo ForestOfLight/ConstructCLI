@@ -6,30 +6,23 @@ use std::path::{Path, PathBuf};
 
 /// A parsed `level.dat`.
 ///
-/// The root is kept as a generic [`nbtx::Value`] rather than a typed struct so
-/// that keys this tool does not understand survive a read. Stage 2 rewrites the
-/// `experiments` compound in place, and a wholesale replacement would silently
+/// The root stays a generic [`nbtx::Value`] rather than a typed struct so keys
+/// this tool does not understand survive a read. Writes mutate the
+/// `experiments` compound in place; a wholesale replacement would silently
 /// disable whatever else the world had enabled.
 #[derive(Debug, Clone)]
 pub struct LevelDat {
     pub version: i32,
     pub root: nbtx::Value,
-    /// The payload length this file was read with.
     payload_len: usize,
-    /// Whether re-serializing the untouched value reproduces a payload of the
-    /// same length. See §9: `nbtx` turns array tags into lists (one byte longer
-    /// each) and writes empty lists five bytes short and unparseable. Both
-    /// change the length, so this is a reliable refusal rather than a guess.
     faithful: bool,
 }
 
-/// Reads and parses the `level.dat` at `path`.
 pub fn read(path: &Path) -> Result<LevelDat> {
     let bytes = std::fs::read(path)?;
     parse(&bytes, path)
 }
 
-/// Parses `level.dat` bytes. Separated from [`read`] so tests need no files.
 pub fn parse(bytes: &[u8], path: &Path) -> Result<LevelDat> {
     let bad = |reason: &str| CoreError::BadLevelDat {
         path: path.to_path_buf(),
@@ -51,10 +44,6 @@ pub fn parse(bytes: &[u8], path: &Path) -> Result<LevelDat> {
     let root: nbtx::Value =
         nbtx::from_le_bytes(&mut cursor).map_err(|e| bad(&format!("invalid NBT: {e}")))?;
 
-    // The fidelity gate (§9, §10): re-serialize the untouched value and check
-    // its length against what we just read. `nbtx` cannot round-trip array
-    // tags or empty lists, and both defects change the payload's length, so a
-    // mismatch here reliably means a write would corrupt this file.
     let faithful = nbtx::to_le_bytes(&root)
         .map(|re| re.len() == payload.len())
         .unwrap_or(false);
@@ -83,20 +72,15 @@ impl LevelDat {
         }
     }
 
-    /// The `experiments` compound's byte flags, or `None` when the world has no
-    /// such compound. Ordered so callers render it deterministically.
+    /// The `experiments` compound's byte flags, or `None` when the world has
+    /// none.
     ///
     /// # Warning
     ///
-    /// This returns a read-only projection filtered to `Byte` values. Any non-`Byte`
-    /// sibling entries in the `experiments` compound are excluded from the result.
-    /// This is safe for display and inspection today because `self.root` retains
-    /// every original entry unchanged.
-    ///
-    /// **Do NOT use this projection to reconstruct the compound for writing.** Stage 2
-    /// will rewrite `experiments` in place by mutating `self.root`. If you reconstruct
-    /// the compound from this projection, you will silently drop any non-`Byte` sibling,
-    /// disabling whatever else the world had enabled. Stage 2 mutates in place instead.
+    /// A read-only projection: non-`Byte` siblings are excluded. **Never
+    /// reconstruct the compound from it to write it** — that drops those
+    /// siblings and disables whatever else the world had enabled.
+    /// [`LevelDat::set_beta_apis`] mutates in place instead.
     pub fn experiments(&self) -> Option<BTreeMap<String, i8>> {
         let nbtx::Value::Compound(map) = self.field("experiments")? else {
             return None;
@@ -111,15 +95,13 @@ impl LevelDat {
         )
     }
 
-    /// The payload length this file was read with, and what [`Self::is_faithful`]
-    /// was measured against.
     pub fn payload_len(&self) -> usize {
         self.payload_len
     }
 
-    /// False when this file's NBT cannot be re-serialized without changing —
-    /// an array tag or an empty list (§9). [`Self::to_bytes`] refuses to write
-    /// such a file rather than silently corrupt it.
+    /// False when this file's NBT cannot be re-serialized unchanged — an array
+    /// tag or an empty list (§9). [`Self::to_bytes`] refuses to write such a
+    /// file rather than corrupt it.
     pub fn is_faithful(&self) -> bool {
         self.faithful
     }
@@ -132,9 +114,9 @@ impl LevelDat {
     /// Sets the Beta APIs state, creating the compound if the world has none.
     ///
     /// Read-modify-write, never a replacement: worlds carry other experiment
-    /// keys and rewriting the compound wholesale would silently disable them.
-    /// Disabling leaves the two companion flags at 1 — they record that the
-    /// world once used experiments rather than mirroring the current state.
+    /// keys that a wholesale rewrite would disable. Turning it off leaves the
+    /// two companion flags at 1 — they record that the world once used
+    /// experiments, not the current state.
     pub fn set_beta_apis(&mut self, on: bool) {
         let nbtx::Value::Compound(root) = &mut self.root else {
             return;
@@ -154,9 +136,9 @@ impl LevelDat {
 
     /// The complete file: the 8-byte header, then the payload.
     ///
-    /// Refuses when [`Self::is_faithful`] is false — see §9/§10 for why a
-    /// length-preserving round-trip is the property that stands between this
-    /// tool and a corrupted save.
+    /// Refuses when [`Self::is_faithful`] is false. A length-preserving
+    /// round-trip is what stands between this tool and a corrupted save
+    /// (§9, §10).
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         if !self.faithful {
             return Err(CoreError::UnwritableLevelDat {
@@ -180,20 +162,16 @@ impl LevelDat {
     }
 }
 
-/// The three `Byte` entries that make up the Beta APIs state (§10).
 const GAMETEST: &str = "gametest";
 const EVER_USED: &str = "experiments_ever_used";
 const TOGGLED: &str = "saved_with_toggled_experiments";
 
 /// Writes a `level.dat` atomically: a temporary file beside it, then a rename.
 ///
-/// `to_bytes` (and therefore the fidelity gate) runs before anything on disk
-/// is touched, so a refusal here leaves `path` exactly as it was.
+/// `to_bytes`, and so the fidelity gate, runs before anything on disk is
+/// touched, so a refusal leaves `path` exactly as it was.
 pub fn write(dat: &LevelDat, path: &Path) -> Result<()> {
     let bytes = dat.to_bytes().map_err(|e| match e {
-        // `to_bytes` has no path to name; supply it here. `written` always
-        // came in `false` from `to_bytes` — nothing below this call has run
-        // yet — so it passes through unchanged.
         CoreError::UnwritableLevelDat {
             reason, written, ..
         } => CoreError::UnwritableLevelDat {
@@ -211,7 +189,6 @@ pub fn write(dat: &LevelDat, path: &Path) -> Result<()> {
             .unwrap_or("level.dat")
     ));
     std::fs::write(&tmp, &bytes)?;
-    // Same directory, so the rename is atomic on every platform we target.
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -225,9 +202,9 @@ pub struct BetaApisChange {
 
 /// Reads, flips, writes, then re-reads and verifies.
 ///
-/// §10: treat "write succeeded, value unchanged" as a failure. Backing the file
-/// up first is the caller's job — it needs configuration this module does not
-/// have.
+/// §10 treats "write succeeded, value unchanged" as a failure. Backing the
+/// file up first is the caller's job; it needs configuration this module does
+/// not have.
 pub fn apply_beta_apis(path: &Path, on: bool) -> Result<BetaApisChange> {
     let mut dat = read(path)?;
     let before = dat.beta_apis();
@@ -243,9 +220,6 @@ pub fn apply_beta_apis(path: &Path, on: bool) -> Result<BetaApisChange> {
 
     let verified = read(path)?;
     if verified.beta_apis() != Some(on) {
-        // `write` has already renamed a new file into place by this point:
-        // the world genuinely changed, just not into the state asked for.
-        // `written: true` tells the caller not to say "not modified."
         return Err(CoreError::UnwritableLevelDat {
             path: path.to_path_buf(),
             reason: format!(
@@ -269,7 +243,6 @@ mod tests {
     use std::collections::HashMap;
     use std::path::Path;
 
-    /// Build a level.dat: 8-byte header then a little-endian NBT compound.
     fn build(version: i32, root: nbtx::Value) -> Vec<u8> {
         let payload = nbtx::to_le_bytes(&root).unwrap();
         let mut out = Vec::new();
@@ -307,7 +280,6 @@ mod tests {
 
     #[test]
     fn reads_all_three_experiment_flags() {
-        // These are the exact keys and values measured in Amelix CMP/level.dat.
         let experiments = compound(vec![
             ("experiments_ever_used", nbtx::Value::Byte(1)),
             ("gametest", nbtx::Value::Byte(1)),
@@ -325,7 +297,6 @@ mod tests {
 
     #[test]
     fn preserves_unrelated_experiment_siblings() {
-        // Stage 2 rewrites this compound. Anything it cannot see, it will destroy.
         let experiments = compound(vec![
             ("gametest", nbtx::Value::Byte(1)),
             ("data_driven_biomes", nbtx::Value::Byte(1)),
@@ -360,14 +331,6 @@ mod tests {
     }
 
     #[test]
-    // Needs a real Minecraft world ("Amelix CMP") at a fixed path under the
-    // developer's home directory. Absent that world it `eprintln!`s and
-    // returns `Ok`, asserting nothing — passing on CI and every other
-    // machine regardless of whether the parser even works. `#[ignore]` makes
-    // that skip visible (`cargo test` reports it as ignored) instead of a
-    // silent, vacuous pass; run it explicitly with
-    // `cargo test -- --ignored parses_a_real_world_level_dat` on a machine
-    // that has the world.
     #[ignore = "needs a real Minecraft world at a fixed local path; see comment above"]
     fn parses_a_real_world_level_dat() {
         let path = dirs_next_to_home(
@@ -394,37 +357,33 @@ mod tests {
 
     #[test]
     fn rejects_garbage_payload_bytes() {
-        // Build a valid header but with random garbage as the NBT payload.
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(&10i32.to_le_bytes()); // version
-        bytes.extend_from_slice(&64i32.to_le_bytes()); // payload length
-        bytes.extend_from_slice(&[0xff; 64]); // garbage payload
+        bytes.extend_from_slice(&10i32.to_le_bytes());
+        bytes.extend_from_slice(&64i32.to_le_bytes());
+        bytes.extend_from_slice(&[0xff; 64]);
         let err = parse(&bytes, Path::new("x")).unwrap_err();
         assert!(matches!(err, CoreError::BadLevelDat { .. }));
     }
 
     #[test]
     fn rejects_truncated_tag_compound_in_mid_name() {
-        // Build a valid header with a TAG_Compound (0x0a) opener but truncate mid-name.
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(&10i32.to_le_bytes()); // version
-        bytes.extend_from_slice(&3i32.to_le_bytes()); // payload length = 3 bytes
-        bytes.push(0x0a); // TAG_Compound
-        bytes.push(0x00); // name length (high byte of u16)
-        bytes.push(0x05); // name length (low byte), so 5 bytes expected but not provided
-        // truncated here — only 3 bytes total
+        bytes.extend_from_slice(&10i32.to_le_bytes());
+        bytes.extend_from_slice(&3i32.to_le_bytes());
+        bytes.push(0x0a);
+        bytes.push(0x00);
+        bytes.push(0x05);
         let err = parse(&bytes, Path::new("x")).unwrap_err();
         assert!(matches!(err, CoreError::BadLevelDat { .. }));
     }
 
     #[test]
     fn rejects_invalid_tag_id() {
-        // Build a valid header with an invalid/unknown tag ID.
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(&10i32.to_le_bytes()); // version
-        bytes.extend_from_slice(&2i32.to_le_bytes()); // payload length
-        bytes.push(0xFF); // invalid tag ID
-        bytes.push(0x00); // 1 more byte to fill the declared length
+        bytes.extend_from_slice(&10i32.to_le_bytes());
+        bytes.extend_from_slice(&2i32.to_le_bytes());
+        bytes.push(0xFF);
+        bytes.push(0x00);
         let err = parse(&bytes, Path::new("x")).unwrap_err();
         assert!(matches!(err, CoreError::BadLevelDat { .. }));
     }
@@ -493,15 +452,12 @@ mod tests {
 
         let after = dat.experiments().unwrap();
         assert_eq!(after.get("gametest"), Some(&0));
-        // Historical records of the world having used experiments, not mirrors
-        // of the current state.
         assert_eq!(after.get("experiments_ever_used"), Some(&1));
         assert_eq!(after.get("saved_with_toggled_experiments"), Some(&1));
     }
 
     #[test]
     fn unrelated_experiments_survive_the_flip() {
-        // A wholesale rewrite of the compound would silently disable these.
         let bytes = build(
             10,
             experiments(&[
@@ -521,22 +477,9 @@ mod tests {
 
     #[test]
     fn a_file_that_cannot_round_trip_refuses_to_be_written() {
-        // nbtx parses TAG_Int_Array into Value::List, which re-serializes as a
-        // list — one byte longer, since a list carries an element-type byte an
-        // array does not. The length check catches it. (Before Task 1 this
-        // fixture used an empty list; that defect is fixed, so an array tag is
-        // now the reachable way to be unfaithful. No array tag appears in any
-        // real .mcstructure examined, but level.dat is a different file and
-        // this gate is what stands between a stray one and a corrupted save.)
-        //
-        // { "gaps": IntArray([7]) }
         let payload: Vec<u8> = vec![
-            0x0a, 0x00, 0x00, // TAG_Compound, root name ""
-            0x0b, // TAG_Int_Array
-            0x04, 0x00, b'g', b'a', b'p', b's', // name "gaps"
-            0x01, 0x00, 0x00, 0x00, // one element
-            0x07, 0x00, 0x00, 0x00, // the element: 7
-            0x00, // TAG_End of compound
+            0x0a, 0x00, 0x00, 0x0b, 0x04, 0x00, b'g', b'a', b'p', b's', 0x01, 0x00, 0x00, 0x00,
+            0x07, 0x00, 0x00, 0x00, 0x00,
         ];
         let mut bytes = 10i32.to_le_bytes().to_vec();
         bytes.extend_from_slice(&(payload.len() as i32).to_le_bytes());
@@ -550,9 +493,6 @@ mod tests {
             Err(CoreError::UnwritableLevelDat { .. })
         ));
 
-        // A gate that returns an error but writes anyway is as dangerous as no
-        // gate at all: the write must refuse, and the file on disk must be
-        // untouched, byte for byte.
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("level.dat");
         std::fs::write(&path, &bytes).unwrap();
@@ -564,10 +504,6 @@ mod tests {
 
     #[test]
     fn the_patched_nbtx_round_trips_an_empty_list() {
-        // Guards the [patch.crates-io] redirect in the root Cargo.toml. With
-        // stock nbtx 3.0.1 this fails, and with it failing the whole codec is
-        // unusable — so the failure should point straight at the dependency
-        // rather than at a hundred confusing codec errors.
         let mut map = HashMap::new();
         map.insert("empty".to_string(), nbtx::Value::List(vec![]));
         let value = nbtx::Value::Compound(map);
@@ -590,7 +526,6 @@ mod tests {
         assert!(change.after);
         assert!(change.changed);
 
-        // The written file is a real level.dat: it parses, and the value took.
         let reread = read(&path).unwrap();
         assert_eq!(reread.beta_apis(), Some(true));
         assert_eq!(reread.version, 10);
@@ -617,16 +552,6 @@ mod tests {
 
     #[test]
     fn a_write_that_silently_no_ops_is_caught_by_verification_and_flagged_written() {
-        // A deterministic way to reach the post-write verification failure,
-        // not a race: `set_beta_apis` early-returns without touching
-        // anything when `experiments` exists but is not a Compound (see its
-        // match-or-return chain). `write` then persists the file completely
-        // unchanged — faithfully, since an Int round-trips fine — so the
-        // verification re-read still finds `beta_apis() == None` and
-        // disagrees with the requested `true`. This is the only path found
-        // that provokes the mismatch without depending on timing; an
-        // external process racing the atomic rename would also trigger it,
-        // but a unit test cannot construct that reliably.
         let mut root = HashMap::new();
         root.insert("experiments".to_string(), nbtx::Value::Int(5));
         let bytes = build(10, nbtx::Value::Compound(root));
@@ -645,10 +570,6 @@ mod tests {
             other => panic!("expected UnwritableLevelDat, got {other:?}"),
         }
 
-        // The rename genuinely happened (this is not a case where `write`
-        // itself failed): the file still parses cleanly afterward, and its
-        // content matches what was persisted — unchanged, since the no-op
-        // left the in-memory value exactly as it was read.
         let after = read(&path).unwrap();
         assert_eq!(after.beta_apis(), None);
     }

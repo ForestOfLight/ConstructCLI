@@ -20,14 +20,12 @@ pub struct Candidate {
     pub per_account: bool,
 }
 
-/// One world root: a `minecraftWorlds` directory, optionally owned by an account.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorldRoot {
     pub account: Option<String>,
     pub path: PathBuf,
 }
 
-/// A resolved Minecraft installation that exists on disk.
 #[derive(Debug, Clone)]
 pub struct Installation {
     pub name: String,
@@ -35,10 +33,6 @@ pub struct Installation {
     pub world_roots: Vec<WorldRoot>,
 }
 
-/// Every location worth probing on this platform.
-///
-/// Base directories are parameters rather than environment reads so that tests
-/// can point the whole table at a temp directory.
 pub fn candidates(
     home: &Path,
     appdata: Option<&Path>,
@@ -46,7 +40,6 @@ pub fn candidates(
 ) -> Vec<Candidate> {
     let mut out = Vec::new();
 
-    // Windows GDK: release and preview.
     if let Some(appdata) = appdata {
         for (name, product) in [
             ("release", "Minecraft Bedrock"),
@@ -62,7 +55,6 @@ pub fn candidates(
         }
     }
 
-    // Windows legacy UWP.
     if let Some(local) = localappdata {
         let base =
             local.join("Packages/Microsoft.MinecraftUWP_8wekyb3d8bbwe/LocalState/games/com.mojang");
@@ -74,7 +66,6 @@ pub fn candidates(
         });
     }
 
-    // mcpelauncher: macOS, conventional Linux, then Flatpak Linux.
     for rel in [
         "Library/Application Support/mcpelauncher/games/com.mojang",
         ".local/share/mcpelauncher/games/com.mojang",
@@ -92,7 +83,6 @@ pub fn candidates(
     out
 }
 
-/// Under GDK each Xbox account gets its own directory beside `Shared`.
 fn account_dirs(users: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(users) else {
         return Vec::new();
@@ -122,9 +112,6 @@ pub fn resolve(candidates: Vec<Candidate>) -> Vec<Installation> {
             })
             .collect();
 
-        // An installation is real if either half of it exists: dev packs without
-        // worlds is a valid deployment target, and worlds without dev packs is
-        // exactly the legacy UWP case.
         if c.dev_pack_root.is_dir() || !world_roots.is_empty() {
             out.push(Installation {
                 name: c.name,
@@ -137,17 +124,6 @@ pub fn resolve(candidates: Vec<Candidate>) -> Vec<Installation> {
     dedupe_names(out)
 }
 
-/// Makes installation names unique by appending `-2`, `-3`, … to later
-/// occurrences of a name already seen, in candidate order. Deterministic and
-/// stable across repeated calls given the same input order.
-///
-/// Two candidates can legitimately resolve to the same name (e.g. the macOS
-/// and Linux mcpelauncher probes are both named `mcpelauncher`, and only one
-/// normally exists — but both can exist, e.g. under Wine or a shared home
-/// directory). Downstream, `discovery/reference.rs` matches installations by
-/// name, so duplicate names make qualified references ambiguous; this keeps
-/// both installations (neither is dropped or merged) while giving each a
-/// distinct, reproducible name.
 fn dedupe_names(installations: Vec<Installation>) -> Vec<Installation> {
     let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     installations
@@ -163,13 +139,11 @@ fn dedupe_names(installations: Vec<Installation>) -> Vec<Installation> {
         .collect()
 }
 
-/// The account directory name, e.g. `Shared` or `2533274801234567`, taken from
-/// `<account>/games/com.mojang/minecraftWorlds`.
 fn account_label(world_root: &Path) -> Option<String> {
     world_root
-        .parent()? // games/com.mojang
-        .parent()? // games
-        .parent()? // <account>
+        .parent()?
+        .parent()?
+        .parent()?
         .file_name()?
         .to_str()
         .map(str::to_string)
@@ -217,14 +191,11 @@ mod tests {
                 .ends_with("Users/Shared/games/com.mojang")
         );
         assert_eq!(release.world_roots.len(), 2, "one world root per account");
-        // With several roots the account segment must be present, or qualified
-        // references cannot address them.
         assert!(release.world_roots.iter().all(|r| r.account.is_some()));
     }
 
     #[test]
     fn a_single_world_root_carries_no_account_segment() {
-        // macOS and Linux must never display an account segment.
         let tmp = tempfile::tempdir().unwrap();
         let com_mojang = tmp
             .path()
@@ -270,7 +241,6 @@ mod tests {
 
     #[test]
     fn legacy_uwp_is_probed_for_worlds() {
-        // Pre-migration worlds are exactly the ones worth mining.
         let tmp = tempfile::tempdir().unwrap();
         let local = tmp.path().join("AppData/Local");
         let base =
@@ -284,7 +254,6 @@ mod tests {
 
     #[test]
     fn same_named_candidates_get_distinct_stable_names() {
-        // e.g. both the macOS and Linux mcpelauncher probes exist on one machine.
         let tmp = tempfile::tempdir().unwrap();
         let base_a = tmp.path().join("a/com.mojang");
         let base_b = tmp.path().join("b/com.mojang");
@@ -316,7 +285,6 @@ mod tests {
         assert_eq!(names(&first), vec!["mcpelauncher", "mcpelauncher-2"]);
         assert_eq!(first.len(), 2, "neither installation is dropped");
 
-        // Stable across repeated calls given the same input order.
         let second = resolve(make_candidates());
         assert_eq!(names(&second), names(&first));
     }

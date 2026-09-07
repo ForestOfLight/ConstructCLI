@@ -23,7 +23,6 @@ fn test_installation(com_mojang: &Path) -> Installation {
     }
 }
 
-/// Writes a minimal pack directory and returns its path.
 fn make_pack(
     root: &Path,
     folder: &str,
@@ -88,7 +87,6 @@ fn a_directory_without_a_manifest_is_skipped_not_an_error() {
 
 #[test]
 fn a_pack_with_a_broken_manifest_is_skipped_rather_than_failing_the_scan() {
-    // One corrupt pack must not hide every other pack on the machine.
     let root = tempfile::tempdir().unwrap();
     let broken = root.path().join("Broken");
     std::fs::create_dir_all(&broken).unwrap();
@@ -106,12 +104,6 @@ fn a_pack_with_a_broken_manifest_is_skipped_rather_than_failing_the_scan() {
 
 #[test]
 fn a_dotted_directory_is_never_seen_as_an_installed_pack() {
-    // `install::place` stages a pack under a dotted directory name while
-    // swapping it in, and that directory can carry a fully valid manifest
-    // -- with the same header UUID as the pack it is staging -- for as
-    // long as the swap is in flight or before the next run recovers or
-    // abandons it. Every caller of `packs_in`/`find_by_uuid`, not just
-    // `install`, must never mistake it for the installed copy.
     let root = tempfile::tempdir().unwrap();
     make_pack(
         root.path(),
@@ -145,8 +137,6 @@ fn the_pack_roots_are_the_documented_folder_names() {
 
 #[test]
 fn the_stray_roots_are_the_non_development_siblings() {
-    // Where a hand-installed Construct lands when it is dropped in the wrong
-    // folder — the pair `install::adopt` rescues it from.
     let base = Path::new("/com.mojang");
     assert_eq!(
         pack::stray_behavior_root(base),
@@ -158,10 +148,6 @@ fn the_stray_roots_are_the_non_development_siblings() {
     );
 }
 
-// --- where a world's structures live ---
-
-/// A world directory under `com_mojang/minecraftWorlds/`, so that
-/// `world_behavior_root` and the shared root are the real two places.
 fn world_in(com_mojang: &Path, folder: &str) -> World {
     let dir = com_mojang.join("minecraftWorlds").join(folder);
     std::fs::create_dir_all(&dir).unwrap();
@@ -170,8 +156,6 @@ fn world_in(com_mojang: &Path, folder: &str) -> World {
 
 #[test]
 fn a_world_with_no_pack_of_its_own_has_no_home_yet() {
-    // Not an error and not the shared copy: the shared copy serves every
-    // world, so it can never be where one world's structures are written.
     let root = tempfile::tempdir().unwrap();
     make_pack(
         &root.path().join("development_behavior_packs"),
@@ -201,8 +185,6 @@ fn the_structures_pack_is_the_home_when_there_is_one() {
 
 #[test]
 fn a_worlds_own_construct_outranks_a_structures_pack() {
-    // A world whose Construct is its own already keeps structures per-world;
-    // writing into a second pack beside it would split them in two.
     let root = tempfile::tempdir().unwrap();
     let world = world_in(root.path(), "Test");
     pack::shell::create(&world, None).unwrap();
@@ -246,9 +228,6 @@ fn a_world_on_the_shared_construct_is_served_by_it_and_by_its_own_pack() {
 
 #[test]
 fn a_worlds_own_construct_hides_the_shared_one_from_that_world() {
-    // Both copies carry Construct's header UUID, so the game loads the
-    // world's and never the shared one. Listing the shared copy's structures
-    // for this world would name structures it cannot see.
     let root = tempfile::tempdir().unwrap();
     make_pack(
         &root.path().join("development_behavior_packs"),
@@ -286,14 +265,10 @@ fn the_structures_pack_is_a_readable_behaviour_pack_with_a_structures_folder() {
     assert_eq!(created.manifest.uuid, pack::shell::UUID);
     assert_eq!(created.manifest.name, pack::shell::NAME);
     assert!(structures::dir(&created.dir).is_dir());
-    // The icon is copied from Construct so the two read as a pair in the
-    // game's pack list.
     assert_eq!(
         std::fs::read(created.dir.join("pack_icon.png")).unwrap(),
         b"PNG-BYTES"
     );
-    // And it is a *behaviour* pack: a resource pack here would be enabled in
-    // the wrong list and load nothing.
     assert_eq!(
         created.manifest.kind,
         construct_core::pack::manifest::PackKind::Behavior
@@ -302,8 +277,6 @@ fn the_structures_pack_is_a_readable_behaviour_pack_with_a_structures_folder() {
 
 #[test]
 fn creating_a_structures_pack_twice_keeps_what_is_in_it() {
-    // An interrupted run leaves a half-made pack; the next command repairs it
-    // rather than needing a reinstall, and must not drop structures doing so.
     let root = tempfile::tempdir().unwrap();
     let world = world_in(root.path(), "Test");
     let first = pack::shell::create(&world, None).unwrap();
@@ -343,11 +316,6 @@ fn a_file_directly_in_structures_is_mystructure_namespaced() {
 
 #[test]
 fn a_subdirectory_supplies_the_namespace_with_its_case_intact() {
-    // This folder name used to be lowercased on the way out, on the
-    // assumption that Minecraft namespaces are lowercase. Nothing measured
-    // supports that: the game stored `CanopyPlayers:players` in a local
-    // world's database unaltered. Reporting an id that differs from the one
-    // on disk would break `delete`, which addresses the file by that id.
     let root = tempfile::tempdir().unwrap();
     let pack = root.path().join("Understudy");
     touch(
@@ -357,20 +325,11 @@ fn a_subdirectory_supplies_the_namespace_with_its_case_intact() {
 
     let found = structures::list(&pack);
     assert_eq!(found[0].id, "Understudy:players");
-    // A non-default namespace stays visible in the display name.
     assert_eq!(found[0].name, "Understudy:players");
 }
 
 #[test]
 fn non_mcstructure_files_are_not_listed() {
-    // This test used to also assert that `structures/a/b/deep.mcstructure` was
-    // ignored as "too deep". Task 21's ruling: that half was retired, not edited
-    // around, because `docs/bedrock-mcstructure-files.md` -- a local, untracked copy
-    // of tryashtar's third-party `.mcstructure` documentation on GitHub -- documents
-    // that exact shape as `a:b/deep` -- listing it is the point of the task, not a
-    // regression to paper over. The flat and one-level rules this test also
-    // used to brush against are now covered by
-    // `depth_does_not_change_the_flat_or_one_level_rules`.
     let root = tempfile::tempdir().unwrap();
     let pack = root.path().join("P");
     touch(&pack.join("structures/readme.txt"), b"x");
@@ -435,7 +394,6 @@ fn write_refuses_an_existing_file_unless_forced() {
         err,
         construct_core::CoreError::TargetExists { .. }
     ));
-    // Untouched by the refusal.
     assert_eq!(
         std::fs::read(pack.join("structures/house.mcstructure")).unwrap(),
         b"first"
@@ -459,9 +417,6 @@ fn write_creates_the_structures_folder_and_any_namespace_directory() {
 
 #[test]
 fn a_name_with_capitals_is_accepted() {
-    // Capitals are ordinary in real structure names: `10HzCounter` and
-    // `CanopyPlayers:players` are both measured in local worlds. A pack write
-    // that refused them could not take a copy of either.
     let root = tempfile::tempdir().unwrap();
     let pack = root.path().join("P");
     let at = structures::write(&pack, "10HzCounter", b"x", false).unwrap();
@@ -471,9 +426,6 @@ fn a_name_with_capitals_is_accepted() {
 
 #[test]
 fn a_namespace_with_capitals_survives_the_round_trip() {
-    // The namespace is a directory name on the way in and is read back off
-    // the filesystem on the way out, so anything normalising one side and not
-    // the other shows up here as an id that does not match what was written.
     let root = tempfile::tempdir().unwrap();
     let pack = root.path().join("P");
     structures::write(&pack, "CanopyPlayers:players", b"x", false).unwrap();
@@ -495,8 +447,6 @@ fn derive_name_keeps_case_and_maps_spaces() {
 
 #[test]
 fn derive_name_rejects_rather_than_mangles() {
-    // A mangled name is one Construct will not list, so the user is told to
-    // pass --name instead of being handed something silently different.
     for bad in ["café", "a/b", "what?", "", "  ", "..", "."] {
         assert!(
             structures::derive_name(bad).is_err(),
@@ -635,7 +585,6 @@ fn a_structure_nested_below_the_namespace_folder_is_addressable() {
 
     let found = structures::list(&pack);
     assert_eq!(found.len(), 1);
-    // First subfolder is the namespace; everything after it is part of the name.
     assert_eq!(found[0].id, "stuff:towers/diamond");
     assert_eq!(found[0].name, "stuff:towers/diamond");
 }
@@ -659,8 +608,6 @@ fn depth_does_not_change_the_flat_or_one_level_rules() {
 
 #[test]
 fn every_segment_is_left_exactly_as_it_sits_on_disk() {
-    // Namespace, intermediate folders, and stem alike: the id is what the
-    // filesystem says, so what `structures` prints is what `delete` can address.
     let root = tempfile::tempdir().unwrap();
     let pack = root.path().join("P");
     touch(
@@ -672,20 +619,12 @@ fn every_segment_is_left_exactly_as_it_sits_on_disk() {
 
 #[test]
 fn a_derived_name_is_still_a_single_segment() {
-    // `path_for` now writes the depth `list` reads, but depth comes from real
-    // directories, never from a string someone typed: a file stem or a
-    // `--name` is one segment, so the separator that would make traversal
-    // possible cannot enter that way.
     assert!(structures::derive_name("towers/diamond").is_err());
     assert!(structures::derive_name("../x").is_err());
 }
 
 #[test]
 fn path_for_nests_a_name_that_carries_separators() {
-    // Symmetry with `list`: a pack holding `structures/Stuff/Towers/Diamond`
-    // reports `Stuff:Towers/Diamond`, so that id has to be one this tool can
-    // write back — otherwise `import` and `copy` cannot round-trip a tree
-    // `structures` just printed.
     assert_eq!(
         structures::path_for(Path::new("/p"), "stuff:towers/diamond").unwrap(),
         Path::new("/p/structures/stuff/towers/diamond.mcstructure")
@@ -698,8 +637,6 @@ fn path_for_nests_a_name_that_carries_separators() {
 
 #[test]
 fn path_for_validates_every_segment_of_a_nested_name() {
-    // Depth is not an escape hatch: each segment faces the same check the
-    // single-segment name always did, so traversal is refused at any depth.
     for evil in [
         "ns:a/../b",
         "ns:a/./b",
@@ -717,9 +654,6 @@ fn path_for_validates_every_segment_of_a_nested_name() {
 
 #[test]
 fn path_for_refuses_a_nested_name_in_the_default_namespace() {
-    // `mystructure` is the one namespace with no folder of its own, so
-    // `mystructure:a/b` would write `structures/a/b` — which `list` reads back
-    // as `a:b`. Refused rather than silently filed under another namespace.
     assert!(structures::path_for(Path::new("/p"), "mystructure:a/b").is_err());
     assert!(structures::path_for(Path::new("/p"), "a/b").is_err());
 }

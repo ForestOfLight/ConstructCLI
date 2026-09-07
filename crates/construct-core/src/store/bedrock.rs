@@ -14,12 +14,12 @@ impl BedrockStore {
     /// Opens a **copy** of a world's `db` directory.
     ///
     /// Every read goes through here. Opening a leveldb runs recovery and
-    /// rewrites the file set, so a read may only ever open a copy — the guard
-    /// below enforces that at the point of the open rather than in the caller,
-    /// so no future refactor can route a world's own path down this function.
+    /// rewrites the file set, so a read may only open a copy. The guard below
+    /// enforces that at the open rather than in the caller, so no refactor can
+    /// route a world's own path down this function.
     ///
-    /// Writes do not come this way. [`BedrockStore::open_live`] is the one
-    /// entry point that touches a real world.
+    /// Writes go through [`BedrockStore::open_live`], the one entry point that
+    /// touches a real world.
     pub fn open_copy(db_dir: &Path) -> Result<Self> {
         guard_copy_path(db_dir);
         Self::open_unguarded(db_dir)
@@ -27,17 +27,16 @@ impl BedrockStore {
 
     /// Opens a world's **own** database, for writing.
     ///
-    /// This is the only function in the tool that opens a database Minecraft
-    /// owns, and opening it is itself a write (spec §8). It takes a [`World`]
-    /// rather than a path so it cannot be reached by handing the wrong path to
-    /// a general-purpose opener; the sole caller is the `delete` write path,
-    /// which refuses first when the world looks in use.
+    /// The only function here that opens a database Minecraft owns, and
+    /// opening it is itself a write (§8). Takes a [`World`] rather than a path
+    /// so it cannot be reached by handing the wrong path to a general-purpose
+    /// opener. The sole caller is `delete`, which refuses first when the world
+    /// looks in use.
     pub fn open_live(world: &World) -> Result<Self> {
         Self::open_unguarded(&world.db_path())
     }
 
     fn open_unguarded(db_dir: &Path) -> Result<Self> {
-        // `Database::open` takes `AsRef<str>`, not a path.
         let path = db_dir.to_str().ok_or_else(|| {
             CoreError::Db(format!("non-UTF-8 database path: {}", db_dir.display()))
         })?;
@@ -47,14 +46,11 @@ impl BedrockStore {
 
     /// Removes one structure key, reporting whether it was there to remove.
     ///
-    /// leveldb's `Delete` reports success for a key that was never present, so
-    /// the `get` beforehand is what makes "deleted" mean something. The `get`
-    /// afterwards is the §15 verification: the removal is confirmed against the
+    /// leveldb's `Delete` succeeds for a key that was never present, so the
+    /// `get` beforehand is what makes "deleted" mean something. The `get`
+    /// afterwards is the §15 verification, confirming the removal against the
     /// same handle before the caller is told it happened.
     pub fn remove(&self, id: &str) -> Result<bool> {
-        // Deliberately a loop rather than `find(|k| matches!(get(k), Ok(Some(_))))`:
-        // that spelling reads a database error as "not present" and would
-        // report nothing to delete when the truth is that the lookup failed.
         let mut found = None;
         for k in key::candidates(id) {
             if self
@@ -90,8 +86,6 @@ impl BedrockStore {
 impl StructureStore for BedrockStore {
     fn ids(&self) -> Result<Vec<String>> {
         let mut out = Vec::new();
-        // `Iterator` is implemented for `&mut Keys`, not `Keys`, so the binding
-        // must be mutable and iterated by reference.
         let mut keys = self.db.keys();
         for kv in &mut keys {
             if let Some(id) = key::decode(&kv.key()) {
@@ -111,9 +105,6 @@ impl StructureStore for BedrockStore {
     }
 
     fn sizes(&self) -> Result<Vec<(String, u64)>> {
-        // One pass over the iterator, which yields key and value together.
-        // Stage 1 read every structure twice on a `structures` — 63.5 MB on a real
-        // 910-structure world.
         let mut out = Vec::new();
         let mut keys = self.db.keys();
         for kv in &mut keys {
@@ -127,18 +118,16 @@ impl StructureStore for BedrockStore {
 
 /// Refuses any database path that is not under a temp directory.
 ///
-/// This enforces the copy-before-open invariant spec §8 rests on: a read only
-/// ever opens a snapshot copy of `db/`, never a world's own database. It lives
-/// inside [`BedrockStore::open_copy`] rather than in the caller, so a refactor
-/// that routes a world's own path down the read path aborts loudly instead of
-/// silently rewriting somebody's save. Tests open real leveldb databases too,
-/// and their fixtures unpack into a temp directory for the same reason.
+/// Enforces the copy-before-open invariant of §8 at the open rather than in
+/// the caller, so a refactor routing a world's own path down the read path
+/// aborts loudly instead of rewriting somebody's save.
 ///
-/// The write path deliberately does not come through here: `delete` opens a
-/// world's own database on purpose, via [`BedrockStore::open_live`], which
-/// takes a `&World` so it cannot be reached by accident. Either way the cost of
-/// the wrong path is a corrupted save, so this is a hard panic rather than a
-/// warning.
+/// # Panics
+///
+/// On any path outside the temp directory. The cost of the wrong path is a
+/// corrupted save, so this panics rather than warns. The write path does not
+/// come through here — [`BedrockStore::open_live`] opens a world's own
+/// database on purpose.
 pub fn guard_copy_path(path: &Path) {
     let canonical = resolve_existing(path);
     let tmp = resolve_existing(&std::env::temp_dir());
@@ -149,26 +138,12 @@ pub fn guard_copy_path(path: &Path) {
     );
 }
 
-/// Resolves `path` as far as it exists on disk.
-///
-/// [`Path::canonicalize`] fails outright on a path that is not there yet, and
-/// the read path asks about such paths routinely — a database that turns out to
-/// be missing, a snapshot named before it is created. Resolving only the side
-/// that happens to exist compares an unresolved path against a resolved temp
-/// directory, which disagree wherever the temp directory is reached through a
-/// symlink: on macOS `$TMPDIR` lives under `/var`, a link to `/private/var`, so
-/// a path genuinely inside the temp directory was refused. Resolving the
-/// deepest ancestor that does exist and re-attaching the rest keeps both sides
-/// of that comparison in the same form.
 fn resolve_existing(path: &Path) -> PathBuf {
     let mut tail = Vec::new();
     let mut cursor = path;
     let resolved = loop {
         match cursor.canonicalize() {
             Ok(resolved) => break resolved,
-            // `file_name` is `None` at a root, and for a path ending in `..`,
-            // which cannot be re-attached to a resolved prefix by name. Neither
-            // can be resolved any further, so leave the path as it came.
             Err(_) => match (cursor.parent(), cursor.file_name()) {
                 (Some(parent), Some(name)) => {
                     tail.push(name);
@@ -187,11 +162,6 @@ fn resolve_existing(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
-    /// The macOS CI failure. `$TMPDIR` there sits under `/var`, a symlink to
-    /// `/private/var`, and this guard is asked about a database that is missing
-    /// — the case [`BedrockStore::open_copy`] is supposed to return an error
-    /// for. Both sides of the comparison have to resolve the same way, or the
-    /// guard panics on a path that really is under the temp directory.
     #[cfg(unix)]
     #[test]
     fn resolves_a_missing_path_reached_through_a_symlink() {
@@ -216,8 +186,6 @@ mod tests {
         );
     }
 
-    /// Nothing to resolve against, so the path comes back untouched and the
-    /// guard judges it as written — which refuses it, since it is not in temp.
     #[test]
     fn leaves_a_path_with_no_existing_ancestor_alone() {
         let path = Path::new("construct-no-such-ancestor/db");

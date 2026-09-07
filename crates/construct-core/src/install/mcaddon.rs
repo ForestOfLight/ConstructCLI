@@ -12,11 +12,6 @@ pub struct Extracted {
     pub resource: PathBuf,
 }
 
-/// Rejects any archive entry that would write outside the extraction directory.
-///
-/// Zip slip: an entry named `../../.bashrc` escapes wherever you unpack it. One
-/// bad entry refuses the whole archive rather than being skipped, because a
-/// partial extraction of a hostile archive is not something to carry on with.
 fn safe_entry(name: &str) -> Result<PathBuf> {
     let bad = |reason: &str| CoreError::BadPack {
         path: PathBuf::from(name),
@@ -58,17 +53,10 @@ pub fn extract(archive: &Path) -> Result<Extracted> {
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        // Entries carrying a symlink's unix mode are never turned into real
-        // symlinks here — they fall through to this same `File::create` and
-        // are written as an ordinary file holding the link-target text as its
-        // content. That sidesteps the classic zip-slip-via-symlink chain
-        // (link a name outside the tree, then a later entry writes "through"
-        // it) without needing to special-case it.
         let mut writer = std::fs::File::create(&out)?;
         std::io::copy(&mut entry, &mut writer)?;
     }
 
-    // Which is which comes from the manifests, never from the folder names.
     let mut behavior = None;
     let mut resource = None;
     for e in std::fs::read_dir(dir.path())?.flatten() {

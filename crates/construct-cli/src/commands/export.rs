@@ -1,11 +1,10 @@
-//! Writing structures out as `.mcstructure` files.
-//!
-//! A structure's leveldb value is byte-identical to a `.mcstructure` file, so
-//! this command copies bytes and parses nothing.
-
-use crate::commands::catalog as loader;
-use crate::commands::worlds::human_size;
+use crate::cli::ExportArgs;
+use crate::context::Context;
+use crate::failure::{self, Failure};
 use crate::output::Out;
+use crate::support::catalog as loader;
+use crate::support::format::human_size;
+use crate::support::usage::check_source_against_world;
 use construct_core::Result;
 use construct_core::catalog::{self, Entry, Source};
 use construct_core::discovery::{Installation, World};
@@ -20,10 +19,6 @@ use std::path::{Component, Path, PathBuf};
 
 #[derive(Serialize)]
 struct Payload {
-    /// The world read from, or `None` for the shared copy of Construct. Which
-    /// places were reachable follows from it: `null` is the shared copy and
-    /// nothing else, a world is that world's database and its own pack and
-    /// never the shared copy.
     world: Option<String>,
     written: Vec<Written>,
 }
@@ -35,11 +30,6 @@ struct Written {
     bytes: u64,
 }
 
-/// A derived filename must be a single path component: no `/` or `\`
-/// anywhere in it, and no `..`/root/prefix component. This is a security
-/// boundary (structure names come from a world file the user may not have
-/// authored), so a violation is refused, never guessed around. An explicit
-/// `-n` path is the user's own choice and is never subject to this check.
 fn refuse_traversal(name: &str) -> Result<()> {
     let has_separator = name.contains('/') || name.contains('\\');
     let has_dangerous_component = Path::new(name).components().any(|c| {
@@ -61,11 +51,6 @@ fn refuse_traversal(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// A structure name that decodes to the empty string (e.g. from a key like
-/// `structuretemplate_mystructure:`) would derive the filename
-/// `.mcstructure` — a hidden file with no name. Refused, in the same style
-/// as a traversal attempt; an explicit `-n` path chooses the destination
-/// directly and is not subject to this check.
 fn refuse_empty_derived_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(CoreError::Io(io::Error::new(
@@ -78,23 +63,11 @@ fn refuse_empty_derived_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Windows reserved device names: writing to one of these addresses a
-/// device, not a file, regardless of extension (`CON.mcstructure` is just as
-/// reserved as `CON`). Matched on the portion of the sanitized name before
-/// the first `.`, case-insensitively.
 const RESERVED_DEVICE_NAMES: [&str; 22] = [
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
-/// Replaces characters that are illegal in a filename on Windows with `_`,
-/// and prefixes a Windows reserved device name (`CON`, `PRN`, `COM1`, …) with
-/// `_` so it addresses a file rather than a device. This is sanitization,
-/// not refusal: unlike a traversal attempt, a name like `understudy:players`
-/// or `CON` is not trying to escape the output directory, it just can't be
-/// written verbatim (or at all, for a device name) on every platform this
-/// project targets. The caller always prints the resulting path, so the
-/// substitution is visible to the user.
 fn sanitize_for_filename(name: &str) -> String {
     let sanitized: String = name
         .chars()
@@ -116,36 +89,90 @@ fn sanitize_for_filename(name: &str) -> String {
     }
 }
 
-/// One invocation's catalog, and the world it belongs to.
-///
-/// The two entry points differ only in how they build this: [`shared`] reads
-/// one pack and opens no database at all, [`for_world`] reads a world and the
-/// pack it owns. Everything after — resolve, plan, write, merge — is the same
-/// work on the same rows, so it is written once below.
+fn mcstructure_path(path: &Path) -> std::result::Result<PathBuf, String> {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(e) if e.eq_ignore_ascii_case(pack::structures::EXTENSION) => Ok(path.to_path_buf()),
+        Some(other) => Err(format!(".{other}")),
+        None => Ok(path.with_extension(pack::structures::EXTENSION)),
+    }
+}
+
+fn output_path(args: &ExportArgs) -> failure::Result<Option<PathBuf>> {
+    let Some(given) = args.name.as_deref() else {
+        return Ok(None);
+    };
+    mcstructure_path(given).map(Some).map_err(|found| {
+        let stem = given
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "out".to_string());
+        Failure::usage(
+            format!("-n writes a .mcstructure file, but {found} was given"),
+            format!("construct export <structure> -n {stem}.mcstructure"),
+        )
+    })
+}
+
+pub fn dispatch(args: &ExportArgs, ctx: &Context, out: &mut Out) -> failure::Result {
+    if args.merge && args.name.is_none() {
+        return Err(Failure::usage(
+            "--merge writes a single file and needs -n to name it",
+            "construct export <s1> <s2>... --merge -n merged.mcstructure",
+        ));
+    }
+    check_source_against_world(
+        "export <structure>",
+        "read from",
+        args.world.as_ref(),
+        args.source,
+        true,
+    )?;
+    let output = output_path(args)?;
+    if !args.merge && args.structures.len() > 1 && output.is_some() {
+        return Err(Failure::usage(
+            format!(
+                "-n takes a single output file, but {} structures were given",
+                args.structures.len()
+            ),
+            "Drop -n to write one file per structure, or add --merge to combine them \
+             into one.",
+        ));
+    }
+
+    let opts = Options {
+        structures: &args.structures,
+        output: output.as_deref(),
+        source: args.source.map(Into::into),
+        force: args.force,
+        merge: args.merge,
+        on_overlap: args.on_overlap.into(),
+    };
+
+    match &args.world {
+        Some(reference) => {
+            let world = ctx.world(reference)?;
+            Ok(for_world(&world, &ctx.installations, &opts, out)?)
+        }
+        None => Ok(shared(ctx.installation()?, &opts, out)?),
+    }
+}
+
+pub struct Options<'a> {
+    pub structures: &'a [String],
+    pub output: Option<&'a Path>,
+    pub source: Option<Source>,
+    pub force: bool,
+    pub merge: bool,
+    pub on_overlap: OnOverlap,
+}
+
 struct View<'a> {
-    /// The world read from, or `None` for the shared copy of Construct.
     world: Option<&'a World>,
     entries: Vec<Entry>,
-    /// Held open for world-database rows. `None` when the view has none.
     store: Option<OpenedStore>,
 }
 
-/// `export <names…>` — the shared copy of Construct, and nothing else.
-///
-/// No world is resolved and no database is opened. A structure here serves
-/// every world using the shared copy, so it is the one answer that does not
-/// depend on which world is asking.
-#[allow(clippy::too_many_arguments)]
-pub fn shared(
-    installation: &Installation,
-    structures: &[String],
-    output: Option<&Path>,
-    source: Option<Source>,
-    force: bool,
-    merge: bool,
-    on_overlap: OnOverlap,
-    out: &mut Out,
-) -> Result<()> {
+fn shared(installation: &Installation, opts: &Options, out: &mut Out) -> Result<()> {
     let home = pack::for_installation(installation)?.pack;
     let entries = catalog::from_pack(&home.dir, Source::SharedPack);
     let view = View {
@@ -153,63 +180,33 @@ pub fn shared(
         entries,
         store: None,
     };
-    run(
-        &view, structures, output, source, force, merge, on_overlap, out,
-    )
+    run(&view, opts, out)
 }
 
-/// `export <names…> --world W` — that world's database and its own pack.
-///
-/// The shared copy is out of reach by construction: `--world` and `--source
-/// shared-pack` contradict each other and `main.rs` refuses the pair, so the
-/// only pack left in view is the world's own. `loader::world_scoped` does the
-/// dropping, because `pack::serving` reports the shared copy for a world that
-/// has no copy of its own.
-#[allow(clippy::too_many_arguments)]
-pub fn for_world(
+fn for_world(
     world: &World,
     installations: &[Installation],
-    structures: &[String],
-    output: Option<&Path>,
-    source: Option<Source>,
-    force: bool,
-    merge: bool,
-    on_overlap: OnOverlap,
+    opts: &Options,
     out: &mut Out,
 ) -> Result<()> {
-    let loaded = loader::for_world(world, installations, source, out)?;
+    let loaded = loader::for_world(world, installations, opts.source, out)?;
     let view = View {
         world: Some(world),
         entries: loader::world_scoped(loaded.entries),
         store: loaded.store,
     };
-    run(
-        &view, structures, output, source, force, merge, on_overlap, out,
-    )
+    run(&view, opts, out)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run(
-    view: &View,
-    structures: &[String],
-    output: Option<&Path>,
-    source: Option<Source>,
-    force: bool,
-    merge: bool,
-    on_overlap: OnOverlap,
-    out: &mut Out,
-) -> Result<()> {
-    if merge {
-        return run_merge(view, structures, output, source, force, on_overlap, out);
+fn run(view: &View, opts: &Options, out: &mut Out) -> Result<()> {
+    if opts.merge {
+        return run_merge(view, opts, out);
     }
 
-    // Resolve every name and target path before writing anything, so a
-    // collision — or a refused name — stops the whole command rather than
-    // leaving half a job done.
     let mut plan: Vec<(catalog::Entry, PathBuf)> = Vec::new();
-    for name in structures {
-        let entry = resolve(name, view, source)?;
-        let target = match output {
+    for name in opts.structures {
+        let entry = resolve(name, view, opts.source)?;
+        let target = match opts.output {
             Some(path) => path.to_path_buf(),
             None => {
                 refuse_empty_derived_name(&entry.name)?;
@@ -224,7 +221,7 @@ fn run(
     }
 
     for (_, target) in &plan {
-        if target.exists() && !force {
+        if target.exists() && !opts.force {
             return Err(CoreError::TargetExists {
                 path: target.clone(),
             });
@@ -258,14 +255,12 @@ fn run(
     Ok(())
 }
 
-/// `catalog::resolve` with the world named on a miss.
 fn resolve(name: &str, view: &View, source: Option<Source>) -> Result<catalog::Entry> {
     catalog::resolve(name, &view.entries, source).map_err(|e| loader::explain_miss(e, view.world))
 }
 
 #[derive(Serialize)]
 struct MergedPayload {
-    /// The world read from, or `None` for the shared copy of Construct.
     world: Option<String>,
     merged: Merged,
 }
@@ -286,22 +281,9 @@ struct OverlapRow {
     pieces: Vec<String>,
 }
 
-/// `--merge`: decode every named structure, combine them, and write one file.
-///
-/// Unlike the plain path this one must decode — merge is the only command that
-/// looks inside a `.mcstructure` at all. Everything else copies bytes.
-#[allow(clippy::too_many_arguments)]
-fn run_merge(
-    view: &View,
-    structures: &[String],
-    output: Option<&Path>,
-    source: Option<Source>,
-    force: bool,
-    on_overlap: OnOverlap,
-    out: &mut Out,
-) -> Result<()> {
-    let target = output.expect("main.rs refuses --merge without -n");
-    if target.exists() && !force {
+fn run_merge(view: &View, opts: &Options, out: &mut Out) -> Result<()> {
+    let target = opts.output.expect("dispatch refuses --merge without -n");
+    if target.exists() && !opts.force {
         return Err(CoreError::TargetExists {
             path: target.to_path_buf(),
         });
@@ -309,15 +291,15 @@ fn run_merge(
 
     let store = view.store.as_ref().map(|s| s as &dyn StructureStore);
     let mut pieces = Vec::new();
-    for name in structures {
-        let entry = resolve(name, view, source)?;
+    for name in opts.structures {
+        let entry = resolve(name, view, opts.source)?;
         let bytes = catalog::read_entry(&entry, store)?;
         let decoded = mcstructure::decode(&bytes, &entry.name)?;
         pieces.push((entry.name.clone(), decoded));
     }
 
     let options = MergeOptions {
-        on_overlap,
+        on_overlap: opts.on_overlap,
         ..MergeOptions::default()
     };
     let report = merge::merge(&pieces, &options)?;
@@ -368,4 +350,49 @@ fn run_merge(
         },
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_extension_is_completed() {
+        assert_eq!(
+            mcstructure_path(Path::new("castle")).unwrap(),
+            PathBuf::from("castle.mcstructure")
+        );
+    }
+
+    #[test]
+    fn the_right_extension_passes_through_untouched() {
+        assert_eq!(
+            mcstructure_path(Path::new("out/castle.mcstructure")).unwrap(),
+            PathBuf::from("out/castle.mcstructure")
+        );
+    }
+
+    #[test]
+    fn an_uppercase_extension_is_accepted_as_given() {
+        assert_eq!(
+            mcstructure_path(Path::new("CASTLE.MCSTRUCTURE")).unwrap(),
+            PathBuf::from("CASTLE.MCSTRUCTURE")
+        );
+    }
+
+    #[test]
+    fn another_extension_reports_the_one_that_was_given() {
+        assert_eq!(
+            mcstructure_path(Path::new("castle.nbt")).unwrap_err(),
+            ".nbt"
+        );
+    }
+
+    #[test]
+    fn a_path_with_no_file_name_is_left_alone() {
+        assert_eq!(
+            mcstructure_path(Path::new(".")).unwrap(),
+            PathBuf::from(".")
+        );
+    }
 }

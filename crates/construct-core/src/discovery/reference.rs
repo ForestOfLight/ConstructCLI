@@ -2,11 +2,12 @@
 //!
 //! A reference is a display name, a folder name, a qualified
 //! `<installation>/<account>/<world>` with each segment optional from the left,
-//! or a filesystem path. The filesystem is checked first so resolution is
-//! deterministic. Because a name may contain slashes itself, the whole input is
-//! tried as a name as well as split into segments; a qualified reading wins only
-//! where it is the one that matches. Ambiguity is always an error, never a
-//! silent pick.
+//! or a filesystem path. The filesystem is checked first, so resolution is
+//! deterministic.
+//!
+//! A name may itself contain slashes, so the whole input is tried as a name as
+//! well as split into segments; a qualified reading wins only where it is the
+//! one that matches. Ambiguity is always an error, never a silent pick.
 
 use crate::discovery::worlds::{LastPlayedSource, World};
 use crate::error::{CoreError, Result};
@@ -21,17 +22,6 @@ pub struct WorldRef {
     pub extra_segments: bool,
 }
 
-/// Whether an input reads as a filesystem path rather than a world reference.
-///
-/// No reference form is rooted: a name is a name, and a qualified reference is
-/// `<installation>/<account>/<world>`. So a rooted input is a path the user
-/// expected to exist, and saying that beats offering near-matching world names.
-///
-/// Every spelling is recognised on every platform, so the two do not disagree
-/// about what a reference means. Deliberately *not* a bare `contains(':')`:
-/// Minecraft's default level name embeds a time, as in
-/// "Advanced Automation 10/13/21 23:33:18", and that is a name, not a path.
-/// A drive letter only counts when the colon follows a single letter.
 fn looks_like_path(input: &str) -> bool {
     let drive_letter = match input.as_bytes() {
         [d, b':', rest @ ..] => {
@@ -82,21 +72,14 @@ pub fn parse(input: &str) -> WorldRef {
 
 /// Resolves a reference to exactly one world.
 pub fn resolve(input: &str, worlds: &[World]) -> Result<World> {
-    // Filesystem first. This is why there is no --path flag: a single global
-    // flag could only ever describe one world, and `copy` takes two.
     match as_path(input) {
         Ok(world) => return Ok(world),
         Err(err @ CoreError::UnreadableWorld { .. }) => return Err(err),
-        Err(_) => {} // Not a path, continue to name matching
+        Err(_) => {}
     }
 
     let r = parse(input);
 
-    // A name may contain slashes of its own: Minecraft's default level name
-    // embeds a date, as in "Advanced Automation 10/13/21 23:33:18". So the whole
-    // input is always tried as a name, alongside the segmented reading. A world
-    // matched either way is still matched only once, so this cannot manufacture
-    // ambiguity with itself.
     let matches_segments = |w: &World| {
         !r.extra_segments
             && r.installation.as_ref().is_none_or(|i| &w.installation == i)
@@ -111,7 +94,6 @@ pub fn resolve(input: &str, worlds: &[World]) -> Result<World> {
             .collect()
     };
 
-    // Folder names are matched before display names.
     let by_folder = tier(|w| &w.folder);
     let candidates = if by_folder.is_empty() {
         tier(|w| &w.display_name)
@@ -119,25 +101,16 @@ pub fn resolve(input: &str, worlds: &[World]) -> Result<World> {
         by_folder
     };
 
-    // A path is only ever a path once it has failed to name a world, for the
-    // same reason an over-long reference is only wrong once nothing matched.
     let path_shaped = looks_like_path(input);
 
     match candidates.as_slice() {
         [one] => Ok((*one).clone()),
-        // Only once nothing matched by name is an over-long reference wrong:
-        // until then it may have been a name that simply contains slashes.
-        // A rooted input is reported the same way whatever its segment count:
-        // a Windows path has no `/` to count, so segments alone would let it
-        // fall through to near-matching world names.
         [] if r.extra_segments || path_shaped => Err(CoreError::MalformedReference {
             reference: input.to_string(),
             looks_like_path: path_shaped,
         }),
         [] => Err(CoreError::WorldNotFound {
             reference: input.to_string(),
-            // The whole input is the better needle when it finds anything —
-            // a half-typed slashed name only ever matches as a whole.
             near: match near_matches(input, worlds) {
                 n if n.is_empty() => near_matches(&r.world, worlds),
                 n => n,
@@ -150,15 +123,12 @@ pub fn resolve(input: &str, worlds: &[World]) -> Result<World> {
     }
 }
 
-/// A directory containing `level.dat` is a world, wherever it sits.
 fn as_path(input: &str) -> Result<World> {
     let path = Path::new(input);
 
-    // Check if the directory exists.
     let metadata = match std::fs::metadata(path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // Path does not exist; not a world, fall through to name matching.
             return Err(CoreError::WorldNotFound {
                 reference: input.to_string(),
                 near: vec![],
@@ -170,35 +140,29 @@ fn as_path(input: &str) -> Result<World> {
     };
 
     if !metadata.is_dir() {
-        // Not a directory; not a world.
         return Err(CoreError::WorldNotFound {
             reference: input.to_string(),
             near: vec![],
         });
     }
 
-    // Check if level.dat exists and is readable.
     let level_dat_path = path.join("level.dat");
 
-    // Try to open the file to check if it exists and is readable
     match std::fs::File::open(&level_dat_path) {
-        Ok(_) => {} // File exists and is readable
+        Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // level.dat does not exist; not a world.
             return Err(CoreError::WorldNotFound {
                 reference: input.to_string(),
                 near: vec![],
             });
         }
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            // Permission denied; this is a world directory but we can't read it
             return Err(CoreError::UnreadableWorld {
                 path: path.to_path_buf(),
                 reason: e.to_string(),
             });
         }
         Err(e) => {
-            // Other IO error
             return Err(CoreError::UnreadableWorld {
                 path: path.to_path_buf(),
                 reason: e.to_string(),
@@ -224,8 +188,6 @@ fn as_path(input: &str) -> Result<World> {
     };
 
     Ok(World {
-        // A path-referenced world belongs to no installation. The label keeps
-        // `qualified()` total rather than introducing an Option.
         installation: "path".to_string(),
         account: None,
         folder,
@@ -237,8 +199,6 @@ fn as_path(input: &str) -> Result<World> {
     })
 }
 
-/// Case-insensitive substring matches, for "did you mean".
-/// Sorted by: prefix match first, then shorter names, then alphabetical.
 fn near_matches(needle: &str, worlds: &[World]) -> Vec<String> {
     let needle = needle.to_lowercase();
     let mut matches: Vec<_> = worlds
@@ -249,7 +209,6 @@ fn near_matches(needle: &str, worlds: &[World]) -> Vec<String> {
         })
         .collect();
 
-    // Sort by: prefix match, then shorter name, then alphabetical
     matches.sort_by(|a, b| {
         let a_name = a.display_name.to_lowercase();
         let b_name = b.display_name.to_lowercase();
@@ -262,13 +221,10 @@ fn near_matches(needle: &str, worlds: &[World]) -> Vec<String> {
         match (b_prefix, a_prefix) {
             (true, false) => std::cmp::Ordering::Greater,
             (false, true) => std::cmp::Ordering::Less,
-            _ => {
-                // Same prefix status, sort by length then alphabetical
-                match a_name.len().cmp(&b_name.len()) {
-                    std::cmp::Ordering::Equal => a_name.cmp(&b_name),
-                    ord => ord,
-                }
-            }
+            _ => match a_name.len().cmp(&b_name.len()) {
+                std::cmp::Ordering::Equal => a_name.cmp(&b_name),
+                ord => ord,
+            },
         }
     });
 
@@ -354,8 +310,6 @@ mod tests {
 
     #[test]
     fn a_display_name_containing_slashes_resolves() {
-        // Minecraft's default level names embed a date: "10/13/21". The slashes
-        // are part of the name, not reference segments.
         let worlds = vec![w(
             "release",
             Some("Shared"),
@@ -372,8 +326,6 @@ mod tests {
 
     #[test]
     fn a_display_name_with_four_or_more_segments_resolves() {
-        // More slashes than the grammar's three segments must not be rejected
-        // as malformed before the name itself is tried.
         let worlds = vec![w("release", Some("Shared"), "abc=", "a/b/c/d/e")];
         assert_eq!(resolve("a/b/c/d/e", &worlds).unwrap().folder, "abc=");
     }
@@ -424,7 +376,6 @@ mod tests {
 
     #[test]
     fn a_filesystem_path_wins_over_a_name() {
-        // Filesystem check first, so resolution is deterministic.
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("Amelix CMP");
         std::fs::create_dir_all(dir.join("db")).unwrap();
@@ -440,8 +391,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("empty");
         std::fs::create_dir_all(&dir).unwrap();
-        // An absolute path without level.dat is treated as a malformed reference,
-        // not a path to a world
         assert!(matches!(
             resolve(dir.to_str().unwrap(), &fixture()),
             Err(CoreError::MalformedReference {
@@ -463,13 +412,9 @@ mod tests {
             std::fs::write(dir.join("level.dat"), b"x").unwrap();
             let level_dat = dir.join("level.dat");
 
-            // Make level.dat unreadable
             std::fs::set_permissions(&level_dat, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-            // Verify the test setup: level.dat should not be readable.
-            // Skip test if permissions cannot be enforced (running as root).
             if std::fs::read(&level_dat).is_ok() {
-                // Restore permissions before returning
                 std::fs::set_permissions(&level_dat, std::fs::Permissions::from_mode(0o644)).ok();
                 return;
             }
@@ -480,13 +425,10 @@ mod tests {
                 "expected UnreadableWorld, got {result:?}"
             );
 
-            // Restore permissions before tempdir drops
             std::fs::set_permissions(&level_dat, std::fs::Permissions::from_mode(0o644)).ok();
         }
         #[cfg(not(unix))]
-        {
-            // Skip test on non-Unix platforms
-        }
+        {}
     }
 
     #[test]
@@ -515,9 +457,6 @@ mod tests {
 
     #[test]
     fn a_windows_path_that_does_not_exist_reports_path_not_found() {
-        // The Windows spelling has no `/` to segment, so before `looks_like_path`
-        // this fell through to near-matching world names. Checked on every
-        // platform: it is string shape, not filesystem behaviour.
         for input in [
             r"C:\nonexistent\world\path",
             r"C:/nonexistent/world/path",
@@ -538,8 +477,6 @@ mod tests {
 
     #[test]
     fn a_name_carrying_a_colon_is_a_name_not_a_path() {
-        // Minecraft's default level name embeds a time. A bare `contains(':')`
-        // would call this a filesystem path and drop the near-matches.
         for input in [
             "Advanced Automation 10/13/21 23:33:18",
             "23:33:18",
@@ -566,11 +503,7 @@ mod tests {
             w("a", None, "test_f", "attest"),
         ];
         let near = near_matches("test", &worlds);
-        // Should prefer prefix matches, then shorter names
-        // Prefix matches: "testing", "test alpha", "test beta"
-        // Non-prefix: "attest", "ten", "te"
         assert_eq!(near.len(), 5);
-        // First three should be prefix matches
         assert!(near[0].contains("test"));
         assert!(near[1].contains("test"));
         assert!(near[2].contains("test"));
@@ -582,7 +515,6 @@ mod tests {
         let CoreError::WorldNotFound { near, .. } = err else {
             panic!("expected WorldNotFound, got {err:?}");
         };
-        // All entries should be real world names, not guidance text
         for entry in &near {
             assert!(
                 !entry.contains("Expected"),
@@ -592,7 +524,6 @@ mod tests {
                 !entry.contains("Path not found"),
                 "near should not contain guidance text: {entry}"
             );
-            // Each entry should contain a world name and qualified form
             assert!(
                 entry.contains("(") && entry.contains(")"),
                 "near entry should have format 'name (qualified)': {entry}"

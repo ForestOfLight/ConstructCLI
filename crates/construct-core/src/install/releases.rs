@@ -5,8 +5,8 @@ use serde::Deserialize;
 use std::path::Path;
 
 pub const REPO: &str = "ForestOfLight/Construct";
-/// The only release source. Fixed rather than configurable: see
-/// `main.rs::github_client` for why nothing at runtime may redirect it.
+/// The only release source. Fixed rather than configurable: see the CLI's
+/// `support::github::client` for why nothing at runtime may redirect it.
 pub const API_BASE: &str = "https://api.github.com";
 /// GitHub's unauthenticated limit, named in the error §11 asks for.
 pub const UNAUTHENTICATED_LIMIT: u32 = 60;
@@ -101,7 +101,8 @@ impl GitHub {
     /// without reaching the network.
     ///
     /// Debug builds only. A release build has no way to reach a base other
-    /// than [`API_BASE`], which is the point — see `main.rs::github_client`.
+    /// than [`API_BASE`], which is the point — see the CLI's
+    /// `support::github::client`.
     #[cfg(debug_assertions)]
     pub fn with_base(base: impl Into<String>, token: Option<String>) -> Self {
         Self {
@@ -121,9 +122,6 @@ impl Releases for GitHub {
         if let Some(token) = &self.token {
             req = req.header("Authorization", &format!("Bearer {token}"));
         }
-        // ureq 3.x defaults to treating any >=400 status as a transport `Err`,
-        // which would make the status checks below unreachable. Ask it to hand
-        // back the response instead so `RateLimited` and `AssetNotFound` fire.
         let mut response = req
             .config()
             .http_status_as_error(false)
@@ -131,8 +129,6 @@ impl Releases for GitHub {
             .call()
             .map_err(map_transport)?;
         let status = response.status().as_u16();
-        // 403 and 429 both carry the rate limit; the header is what separates
-        // "you are out of requests" from "you may not have this".
         if matches!(status, 403 | 429)
             && response
                 .headers()
@@ -168,9 +164,6 @@ impl Releases for GitHub {
         let mut reader = response.body_mut().as_reader();
         let mut file = std::fs::File::create(to)?;
         let written = std::io::copy(&mut reader, &mut file)?;
-        // Without this, a connection that drops mid-download surfaces much
-        // later as a confusing zip error rather than naming the actual
-        // problem here, where both numbers are in hand.
         if written != asset.size {
             return Err(CoreError::Network {
                 reason: format!(
@@ -193,7 +186,6 @@ fn map_transport(e: impl std::fmt::Display) -> CoreError {
 mod tests {
     use super::*;
 
-    /// Trimmed from the real /releases/latest response.
     const LATEST: &str = r#"{
         "tag_name": "v1.2.0",
         "name": "v1.2.0 for MC 26.40",

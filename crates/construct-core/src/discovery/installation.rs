@@ -1,14 +1,11 @@
 //! Which Minecraft, when no world names one.
 //!
-//! §10's rule, and the same never-guess rule §6 applies to world references:
-//! the configured default, failing that the sole installation, failing that an
-//! error listing the candidates.
+//! The configured default, failing that the sole installation, failing that an
+//! error listing the candidates — never a guess (§6, §10).
 //!
-//! There is one name to consider because `default_installation` is the only
-//! thing that can name an installation. It is deliberately neither a flag nor
-//! an environment variable: `install` writes into the installation's pack root
-//! and `enable-beta-apis` edits its worlds, so the target is not something a
-//! value left lying around in a shell should be able to redirect.
+//! `default_installation` is the only thing that can name one: deliberately
+//! not a flag or an environment variable, since `install` and
+//! `enable-beta-apis` write into whatever it selects.
 
 use crate::discovery::{Installation, World};
 use crate::error::{CoreError, Result};
@@ -27,8 +24,6 @@ pub fn choose<'a>(
             .collect::<Vec<_>>()
     };
 
-    // A name that was asked for and does not exist is an error even when there
-    // is only one installation: silently using it would ignore the request.
     if let Some(name) = default {
         return installations
             .iter()
@@ -112,8 +107,6 @@ mod tests {
 
     #[test]
     fn a_stale_default_pointing_at_nothing_is_an_error_not_a_silent_fallback() {
-        // Falling back to the sole installation would quietly ignore what the
-        // user configured, which is exactly the "never guess" case.
         let all = vec![inst("release")];
         assert!(matches!(
             choose(&all, Some("preview")),

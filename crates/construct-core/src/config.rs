@@ -42,14 +42,8 @@ impl Default for Backups {
     }
 }
 
-/// Retention default: the last ten snapshots per world.
 pub const DEFAULT_KEEP: usize = 10;
 
-/// Reserved installation/root names that cannot be used for extra roots.
-/// These come from:
-/// - `release`, `preview`, `legacy`, `mcpelauncher`: built-in installations (discovery layer, Task 6)
-/// - `path`: reserved for filesystem-path references (Task 6), and worn by
-///   worlds named via `--path` — see `discovery::PATH_INSTALLATION`
 const RESERVED_NAMES: &[&str] = &[
     "release",
     "preview",
@@ -65,8 +59,6 @@ pub struct Loaded {
     pub source: Option<PathBuf>,
 }
 
-// The wire form. Separate from `Config` so unknown keys can be collected as
-// warnings instead of aborting the load.
 #[derive(Deserialize)]
 struct WireConfig {
     default_installation: Option<String>,
@@ -99,23 +91,13 @@ pub fn default_path() -> Option<PathBuf> {
 
 /// The platform data directory, or `CONSTRUCT_DATA_DIR`.
 ///
-/// Everything this tool keeps outside a world hangs off here in a
-/// subdirectory of its own — `backups/` for [`crate::backup`], `writemarks/`
-/// for [`crate::writemark`]. They share a root but never a directory: a mark
-/// is disposable bookkeeping and a backup is not, so nothing here lets one be
-/// mistaken for the other.
+/// Everything kept outside a world hangs off here in its own subdirectory:
+/// `backups/` and `writemarks/`, never the same directory, so a disposable
+/// mark is never mistaken for a backup.
 ///
-/// The override stands in for the platform lookup so that tests never write
-/// into the real user's data directory. It is not a documented user knob —
-/// the documented one is `[backups] dir`, which names the backup directory
-/// outright and wins over this.
-///
-/// Tests need it because a harness that points `HOME`/`USERPROFILE` at a
-/// scratch directory has no platform data directory at all on Windows, where
-/// the lookup resolves the *real* known folder and fails when it is missing —
-/// unlike Unix, where it is built from the environment and always yields a
-/// path. Without the override the failure surfaces as a spurious "could not
-/// turn Beta APIs on" and a partial-success exit.
+/// `CONSTRUCT_DATA_DIR` stands in for the platform lookup so tests never write
+/// into the real user's data directory. It is not a user knob — `[backups] dir`
+/// is, and it wins over this.
 pub fn data_dir(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
     if let Some(dir) = env("CONSTRUCT_DATA_DIR") {
         return Some(PathBuf::from(dir));
@@ -142,14 +124,12 @@ pub fn parse(text: &str, path: &Path) -> Result<(Config, Vec<String>)> {
             bad("every [[roots]] entry needs a `name`; an unnamed root cannot be addressed in a qualified reference".to_string())
         })?;
 
-        // Check if name is reserved
         if RESERVED_NAMES.contains(&name.as_str()) {
             return Err(bad(format!(
                 "root name `{name}` is reserved and cannot be used in a config file"
             )));
         }
 
-        // Check for duplicate names
         if roots.iter().any(|r: &ExtraRoot| r.name == name) {
             return Err(bad(format!(
                 "duplicate root name `{name}`; each root must have a unique name"
@@ -176,14 +156,12 @@ pub fn parse(text: &str, path: &Path) -> Result<(Config, Vec<String>)> {
     ))
 }
 
-/// The effective config location before any config contents are read.
 pub fn path(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
     env("CONSTRUCT_CONFIG")
         .map(PathBuf::from)
         .or_else(default_path)
 }
 
-/// Loads only the config file, without applying environment overrides.
 pub fn load_file(path: &Path) -> Result<(Config, Vec<String>)> {
     if !path.is_file() {
         return Ok((Config::default(), Vec::new()));
@@ -191,7 +169,6 @@ pub fn load_file(path: &Path) -> Result<(Config, Vec<String>)> {
     parse(&std::fs::read_to_string(path)?, path)
 }
 
-/// Saves a config, creating its parent directory when necessary.
 pub fn save(path: &Path, config: &Config) -> Result<()> {
     let text = toml::to_string_pretty(config).map_err(|e| CoreError::BadConfig {
         path: path.to_path_buf(),
@@ -210,7 +187,6 @@ pub enum AddedPath {
     OtherWorld,
 }
 
-/// Adds a directory to the appropriate persistent path list.
 pub fn add_path(config: &mut Config, path: &Path) -> Result<(AddedPath, bool)> {
     if !path.is_dir() {
         return Err(CoreError::InvalidPath {
@@ -265,7 +241,6 @@ pub fn load(explicit: Option<&Path>, env: &dyn Fn(&str) -> Option<String>) -> Re
             let (c, w) = load_file(p)?;
             (c, w, Some(p.clone()))
         }
-        // An absent file is not an error.
         _ => (Config::default(), Vec::new(), None),
     };
 
@@ -287,7 +262,6 @@ mod tests {
 
     #[test]
     fn an_absent_file_yields_defaults_with_no_error() {
-        // There is no init step; absent config must simply mean all defaults.
         let loaded = load(Some(Path::new("/nonexistent/config.toml")), &no_env).unwrap();
         assert_eq!(loaded.config.default_installation, None);
         assert!(loaded.config.roots.is_empty());
@@ -359,7 +333,6 @@ keep = 3
 
     #[test]
     fn an_extra_root_must_be_named() {
-        // An unnamed root cannot appear in the installation/account/world grammar.
         assert!(matches!(
             parse("[[roots]]\npath = \"/tmp/x\"\n", Path::new("c.toml")),
             Err(CoreError::BadConfig { .. })
@@ -368,9 +341,6 @@ keep = 3
 
     #[test]
     fn no_environment_variable_can_redirect_the_installation() {
-        // The file in force is the whole story. `CONSTRUCT_INSTALLATION` used
-        // to override this, which meant a stale value in a shell profile could
-        // silently send `install` at another installation's pack root.
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "default_installation = \"release\"\n").unwrap();

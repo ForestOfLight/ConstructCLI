@@ -1,10 +1,14 @@
-//! Generate shell tab-completion scripts with dynamic world and structure completion.
-
-use crate::cli::ShellArg;
+use crate::cli::{CompletionsArgs, ShellArg};
+use crate::context::Context;
+use crate::failure;
 use clap_complete::env::EnvCompleter;
 use std::io::Write;
 
-pub fn run(shell: ShellArg) -> construct_core::Result<()> {
+pub fn dispatch(args: &CompletionsArgs, _ctx: &Context) -> failure::Result {
+    Ok(run(args.shell)?)
+}
+
+fn run(shell: ShellArg) -> construct_core::Result<()> {
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
 

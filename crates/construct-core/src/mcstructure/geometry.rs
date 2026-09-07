@@ -5,7 +5,6 @@
 //! structure that loads without error and is transposed, so it is isolated
 //! here and tested exhaustively rather than open-coded at each use.
 
-/// A block coordinate, also used for world origins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Coord {
     pub x: i32,
@@ -13,7 +12,6 @@ pub struct Coord {
     pub z: i32,
 }
 
-/// A structure's dimensions in blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Size {
     pub x: i32,
@@ -119,8 +117,6 @@ mod tests {
 
     #[test]
     fn the_index_order_is_zyx() {
-        // From docs/bedrock-mcstructure-files.md: index = SZ*SY*X + SZ*Y + Z.
-        // A 2x3x4 structure: z varies fastest, then y, then x.
         let s = Size { x: 2, y: 3, z: 4 };
         assert_eq!(s.index_of(Coord { x: 0, y: 0, z: 0 }), Some(0));
         assert_eq!(s.index_of(Coord { x: 0, y: 0, z: 1 }), Some(1));
@@ -171,8 +167,6 @@ mod tests {
 
     #[test]
     fn a_volume_that_overflows_i32_is_still_computed_in_i64() {
-        // 2000^3 is 8e9, far past i32. Sizes come from a file we did not write,
-        // so the arithmetic must not wrap silently.
         let s = Size {
             x: 2000,
             y: 2000,
@@ -183,25 +177,18 @@ mod tests {
 
     #[test]
     fn a_size_with_max_dimensions_saturates_volume_and_index_doesnt_panic() {
-        // i32::MAX^3 = 9.9×10²⁷ far exceeds i64::MAX = 9.2×10¹⁸.
-        // volume() must saturate to i64::MAX, and index_of() must not panic.
         let s = Size {
             x: i32::MAX,
             y: i32::MAX,
             z: i32::MAX,
         };
         assert_eq!(s.volume(), i64::MAX);
-        // index_of() on (0,0,0): sz * sy * cx = MAX * MAX * 0 = 0, no overflow.
         assert_eq!(s.index_of(Coord { x: 0, y: 0, z: 0 }), Some(0));
-        // index_of() on (3,0,0): sz * sy * cx = MAX * MAX * 3 overflows i64.
-        // With checked arithmetic, this returns None. Without it, it panics.
         assert_eq!(s.index_of(Coord { x: 3, y: 0, z: 0 }), None);
     }
 
     #[test]
     fn a_bounding_box_spanning_extreme_coordinates_saturates_size_and_doesnt_panic() {
-        // i32::MAX - i32::MIN = 4294967295, which overflows i32::MAX.
-        // size() must use saturating_sub to avoid panic.
         let b = BoundingBox {
             min: Coord {
                 x: i32::MIN,
@@ -215,7 +202,6 @@ mod tests {
             },
         };
         let size = b.size();
-        // With saturating_sub, each dimension saturates to i32::MAX.
         assert_eq!(size.x, i32::MAX);
         assert_eq!(size.y, i32::MAX);
         assert_eq!(size.z, i32::MAX);
@@ -223,9 +209,6 @@ mod tests {
 
     #[test]
     fn a_size_with_negative_dimensions_has_zero_volume_and_rejects_all_coordinates() {
-        // Negative dimensions are invalid but must not panic.
-        // volume() treats them as 0 (via .max(0)).
-        // index_of() rejects all coordinates via the boundary guard.
         let s = Size { x: -5, y: 3, z: 2 };
         assert_eq!(s.volume(), 0);
         assert_eq!(s.index_of(Coord { x: 0, y: 0, z: 0 }), None);
