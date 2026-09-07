@@ -13,6 +13,13 @@ on:
 permissions:
   contents: read
 
+# Two tags pushed in quick succession would otherwise race at `gh release
+# create`. Serialise per ref instead of cancelling: a half-published release
+# is worse than a slow one, so an in-flight run always finishes.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # The cheap gate. Runs before three platform builds are spent on a bad tag.
   # On workflow_dispatch there is no tag to check, so the steps no-op and the
@@ -21,6 +28,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # check-release-preconditions.sh reads Cargo.toml with tomllib, which
+      # needs Python 3.11+. The runner images ship a Python, but which version
+      # is not a guarantee, so pin one rather than depend on the default.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - name: Fetch patched dependencies
         if: github.event_name == 'push'
         shell: bash
@@ -55,6 +68,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # package-release.sh reads the workspace version with tomllib (3.11+).
+      # windows-latest in particular makes no promise about which Python is on
+      # PATH, and the script fails closed — but only after the whole C++ build
+      # leg has already been spent. Pin the interpreter up front instead.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
