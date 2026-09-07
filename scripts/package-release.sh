@@ -18,6 +18,19 @@ if [ $# -ne 1 ]; then
 fi
 target="$1"
 
+# Allow-list rather than validate: $target reaches `rm -rf` and the archive
+# name, and there are exactly three triples the release matrix ever builds.
+# Anything else is a typo or a mistake, and guessing at it is worse than
+# stopping. Exit 2 matches the usage-error convention above.
+case "$target" in
+  x86_64-unknown-linux-gnu | aarch64-apple-darwin | x86_64-pc-windows-msvc) ;;
+  *)
+    echo "error: unsupported target '$target'" >&2
+    echo "expected one of: x86_64-unknown-linux-gnu, aarch64-apple-darwin, x86_64-pc-windows-msvc" >&2
+    exit 2
+    ;;
+esac
+
 # Resolve a Python 3.11+ interpreter. git-bash on the Windows runner may expose
 # it as `python` rather than `python3`, and tomllib arrived in 3.11 — so probe
 # for a name that both exists and can import it, rather than assuming either.
@@ -44,8 +57,8 @@ name="construct-${version}-${target}"
 staging="dist/${name}"
 
 case "$target" in
-  *windows*) bin="target/release/construct.exe" ;;
-  *)         bin="target/release/construct" ;;
+  x86_64-pc-windows-msvc) bin="target/release/construct.exe" ;;
+  *)                      bin="target/release/construct" ;;
 esac
 
 if [ ! -f "$bin" ]; then
@@ -65,14 +78,20 @@ cp LICENSE README.md THIRD-PARTY-NOTICES.md "$staging/"
 
 cd dist
 case "$target" in
-  *windows*)
+  x86_64-pc-windows-msvc)
     # 7z rather than `zip`, which is not present in git-bash on the Windows
     # runners. 7z is preinstalled on all GitHub-hosted images.
+    #
+    # `7z a` adds to an existing archive where `tar czf` truncates, so a stale
+    # or half-written local zip would otherwise leak into the release.
+    rm -f "${name}.zip"
     7z a -tzip "${name}.zip" "$name" > /dev/null
     echo "created dist/${name}.zip"
     ;;
   *)
-    tar czf "${name}.tar.gz" "$name"
+    # COPYFILE_DISABLE stops Apple's bsdtar storing copyfile metadata as stray
+    # ._construct members. GNU tar on Linux ignores the variable entirely.
+    COPYFILE_DISABLE=1 tar czf "${name}.tar.gz" "$name"
     echo "created dist/${name}.tar.gz"
     ;;
 esac
