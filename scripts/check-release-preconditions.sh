@@ -27,7 +27,23 @@ fi
 tag="$1"
 tag_version="${tag#v}"
 
-manifest_version="$(python3 -c "
+# Resolve a Python 3.11+ interpreter. git-bash on the Windows runner may expose
+# it as `python` rather than `python3`, and tomllib arrived in 3.11 — so probe
+# for a name that both exists and can import it, rather than assuming either.
+python_bin=""
+for candidate in python3 python; do
+  if command -v "$candidate" > /dev/null 2>&1 \
+    && "$candidate" -c 'import tomllib' > /dev/null 2>&1; then
+    python_bin="$candidate"
+    break
+  fi
+done
+if [ -z "$python_bin" ]; then
+  echo "error: no Python 3.11+ with tomllib on PATH (tried: python3, python)" >&2
+  exit 1
+fi
+
+manifest_version="$("$python_bin" -c "
 import tomllib
 with open('$ROOT/Cargo.toml', 'rb') as f:
     print(tomllib.load(f)['workspace']['package']['version'])
@@ -57,7 +73,7 @@ fi
 
 if compgen -G "$sys_root/LICENSE*" > /dev/null \
   || compgen -G "$sys_root/COPYING*" > /dev/null \
-  || grep -q '^license' "$sys_root/Cargo.toml"; then
+  || grep -sq '^license' "$sys_root/Cargo.toml"; then
   echo "ok: leveldb-sys carries a licence"
 else
   cat >&2 <<'GATE'
