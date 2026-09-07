@@ -1,0 +1,18 @@
+# Third-party notices
+
+ConstructCLI links the following third-party components. Each licence below is
+reproduced in full, followed by the components distributed under it.
+
+{{#each licenses}}
+## {{name}}
+
+Used by:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}{{#if crate.repository}} — {{crate.repository}}{{/if}}
+{{/each}}
+
+```
+{{{text}}}
+```
+
+{{/each}}

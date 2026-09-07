@@ -1,0 +1,54 @@
+# Licences we are willing to ship. cargo-about fails on anything outside this
+# list, which is the point: a new dependency under unexpected terms should stop
+# a release rather than slip into the notices file unnoticed.
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "0BSD",
+    "CDLA-Permissive-2.0",
+]
+
+# The bedrock-rs workspace licenses its crates at the repository root rather
+# than per-crate, so none of its members declare a license field. See
+# third_party/checkouts/bedrock-rs/LICENSE.
+[bedrock_level.clarify]
+license = "Apache-2.0"
+[[bedrock_level.clarify.files]]
+path = "../../LICENSE"
+checksum = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+
+[bedrock_shared.clarify]
+license = "Apache-2.0"
+[[bedrock_shared.clarify.files]]
+path = "../../LICENSE"
+checksum = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+
+[bedrock_macros.clarify]
+license = "Apache-2.0"
+[[bedrock_macros.clarify.files]]
+path = "../../LICENSE"
+checksum = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+
+[bedrock_protocol_core.clarify]
+license = "Apache-2.0"
+[[bedrock_protocol_core.clarify.files]]
+path = "../../LICENSE"
+checksum = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+
+# leveldb-sys declares no licence of its own. This entry attributes the
+# vendored C++ it actually ships — Google's leveldb, BSD-3-Clause — which is
+# what dominates the compiled artifact. It deliberately does NOT settle the
+# terms of leveldb-sys's own Rust wrapper in build.rs and src/; that question
+# is enforced separately by scripts/check-release-preconditions.sh, which
+# blocks any release tag until it is answered.
+[leveldb-sys.clarify]
+license = "BSD-3-Clause"
+[[leveldb-sys.clarify.files]]
+path = "ffi/leveldb/LICENSE"
+checksum = "ccc19f1da0798ed666609b65a5b44dd8b3abe6fc08b9c0592eb76e82e174db19"

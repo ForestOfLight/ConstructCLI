@@ -4,3 +4,6 @@
 
 # Recreated by scripts/setup-deps.sh
 /third_party/checkouts/
+
+# Generated at release time by `cargo about generate` (see about.toml)
+/THIRD-PARTY-NOTICES.md
