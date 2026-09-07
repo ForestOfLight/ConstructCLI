@@ -3,12 +3,11 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # A manual run IS the dry run: it builds all three platforms and uploads the
+  # archives as workflow artifacts, but never publishes, because `publish` below
+  # is gated on the push trigger. There is deliberately no input to override
+  # that — a control that cannot publish should not offer the choice.
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: "Build and upload artifacts without creating a release"
-        type: boolean
-        default: true
 
 # Only the publish job needs write access; everything else stays read-only.
 permissions:
@@ -24,10 +23,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Fetch patched dependencies
         if: github.event_name == 'push'
+        shell: bash
         run: ./scripts/setup-deps.sh
+      # TAG goes through env, not `${{ }}` inside the script body: expression
+      # interpolation happens before bash parses the line, so a tag containing
+      # a backtick or $( ) would execute. git allows both in a ref name.
       - name: Check release preconditions
         if: github.event_name == 'push'
-        run: ./scripts/check-release-preconditions.sh "${{ github.ref_name }}"
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: ./scripts/check-release-preconditions.sh "$TAG"
 
   build:
     needs: verify
@@ -37,7 +43,9 @@ jobs:
         include:
           # ubuntu-22.04 is deliberate: it sets the glibc floor at 2.35, which
           # covers Ubuntu 22.04+ and Debian 12. Binaries built on newer images
-          # fail on those systems with an unhelpful symbol error.
+          # fail on those systems with an unhelpful symbol error. When GitHub
+          # retires this image the job fails at queue time on a tag push; the
+          # successor is `ubuntu-latest` with `container: ubuntu:22.04`.
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
           - os: macos-14
@@ -69,8 +77,10 @@ jobs:
       # clock, so a separate debug pass would roughly double it.
       - run: cargo test --workspace --release
       - run: cargo build --release -p construct-cli
-      # Generated per-runner so each archive's notices describe the binary it
-      # actually ships with, including platform-specific dependencies.
+      # about.toml declares no `targets`, so cargo-about resolves the whole crate
+      # graph rather than the host's slice, and all three runners emit the same
+      # file. That is the property worth having: a licence that passes locally
+      # cannot fail on one runner and strand the matrix mid-release.
       - name: Generate third-party notices
         run: cargo about generate about.hbs -o THIRD-PARTY-NOTICES.md
         shell: bash
@@ -102,18 +112,33 @@ jobs:
           # Globbing by extension rather than `*`, so the redirect target
           # cannot end up checksumming itself.
           sha256sum *.tar.gz *.zip > SHA256SUMS
+          # The matrix produces exactly three archives. Publishing two of them
+          # is worse than publishing none, so refuse rather than ship a
+          # release that silently omits a platform.
+          found=$(grep -c . SHA256SUMS)
+          if [ "$found" -ne 3 ]; then
+            echo "error: expected 3 archives, found $found" >&2
+            cat SHA256SUMS >&2
+            exit 1
+          fi
           cat SHA256SUMS
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
+          # Same reasoning as the verify job: never interpolate a ref name
+          # directly into a script body.
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
           prerelease=""
-          case "${{ github.ref_name }}" in
+          case "$TAG" in
             *-*) prerelease="--prerelease" ;;
           esac
-          gh release create "${{ github.ref_name }}" \
-            --repo "${{ github.repository }}" \
-            --title "${{ github.ref_name }}" \
+          # $prerelease is deliberately unquoted: empty must expand to no
+          # argument at all, not to an empty one.
+          gh release create "$TAG" \
+            --repo "$REPO" \
+            --title "$TAG" \
             --generate-notes \
             $prerelease \
             artifacts/*
