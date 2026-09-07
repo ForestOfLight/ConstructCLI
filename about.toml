@@ -1,0 +1,80 @@
+# dev- and build-only dependencies never end up in a shipped binary, so their
+# licences don't need attribution here. Excluding them also keeps a future
+# test-only dependency under a rejected licence from blocking a release for
+# code that was never linked.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# Licences we are willing to ship. cargo-about fails on anything outside this
+# list, which is the point: a new dependency under unexpected terms should stop
+# a release rather than slip into the notices file unnoticed.
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "0BSD",
+    "CDLA-Permissive-2.0",
+]
+
+# The bedrock-rs workspace licenses its crates at the repository root rather
+# than per-crate, so none of its members declare a license field. See
+# third_party/checkouts/bedrock-rs/LICENSE.
+[bedrock_level.clarify]
+license = "Apache-2.0"
+[[bedrock_level.clarify.files]]
+path = "../../LICENSE"
+checksum = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+
+[bedrock_shared.clarify]
+license = "Apache-2.0"
+[[bedrock_shared.clarify.files]]
+path = "../../LICENSE"
+checksum = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+
+[bedrock_macros.clarify]
+license = "Apache-2.0"
+[[bedrock_macros.clarify.files]]
+path = "../../LICENSE"
+checksum = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+
+[bedrock_protocol_core.clarify]
+license = "Apache-2.0"
+[[bedrock_protocol_core.clarify.files]]
+path = "../../LICENSE"
+checksum = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+
+# leveldb-sys declares no licence of its own. This entry attributes the two
+# vendored C/C++ bodies of code it actually compiles into the shipped binary:
+# Google's leveldb (BSD-3-Clause) and the copy of zlib that
+# ffi/leveldb/CMakeLists.txt builds into the same target (Zlib licence,
+# Jean-loup Gailly and Mark Adler). Both sit below Cargo's visibility, so
+# nothing else in the dependency graph would attribute them — and the only
+# other "Zlib License" section in the generated notices belongs to the
+# unrelated Rust crate zlib-rs.
+#
+# It deliberately does NOT settle the terms of leveldb-sys's own Rust wrapper
+# in build.rs and src/; that question is enforced separately by
+# scripts/check-release-preconditions.sh, which blocks any release tag until it
+# is answered.
+[leveldb-sys.clarify]
+license = "BSD-3-Clause AND Zlib"
+[[leveldb-sys.clarify.files]]
+path = "ffi/leveldb/LICENSE"
+license = "BSD-3-Clause"
+checksum = "ccc19f1da0798ed666609b65a5b44dd8b3abe6fc08b9c0592eb76e82e174db19"
+# zlib ships no separate LICENSE file; its copyright notice and licence text
+# live in the middle of the README, so start/end narrow the extract to just
+# that block rather than reproducing 200 lines of build instructions. The
+# checksum is over the extracted span, not the whole file — that is what
+# cargo-about compares against.
+[[leveldb-sys.clarify.files]]
+path = "ffi/leveldb/lib/zlib/README"
+license = "Zlib"
+start = "Copyright notice:"
+end = "  jloup@gzip.org          madler@alumni.caltech.edu"
+checksum = "e6627a48eb017ea808ca78360582a0a84b564d5a13070af0640b026bb43adadc"

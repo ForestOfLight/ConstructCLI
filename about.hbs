@@ -1,0 +1,22 @@
+# Third-party notices
+
+This file is generated — regenerate it with
+`cargo about generate about.hbs -o THIRD-PARTY-NOTICES.md`, do not edit by hand.
+It lists every third-party component ConstructCLI links and reproduces the
+licence text that applies to each. The same licence may appear more than once:
+cargo-about groups by the exact text of each crate's own copy, and copies from
+different crates commonly differ in wording or copyright line.
+
+{{#each licenses}}
+## {{{name}}}
+
+Used by:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}{{#if crate.repository}} — {{crate.repository}}{{/if}}
+{{/each}}
+
+```
+{{{text}}}
+```
+
+{{/each}}
