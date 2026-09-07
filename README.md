@@ -49,7 +49,7 @@ with `tar` in Terminal, as above, avoids that. If macOS still refuses to open
 the binary, clear the flag:
 
 ```
-xattr -d com.apple.quarantine construct
+sudo xattr -d com.apple.quarantine /usr/local/bin/construct
 ```
 
 On Windows, extract the zip and move `construct.exe` into a directory that is

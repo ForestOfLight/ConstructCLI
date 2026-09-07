@@ -13,9 +13,11 @@ on:
 permissions:
   contents: read
 
-# Two tags pushed in quick succession would otherwise race at `gh release
-# create`. Serialise per ref instead of cancelling: a half-published release
-# is worse than a slow one, so an in-flight run always finishes.
+# Two runs on the SAME ref — a force-moved tag, or a re-run overlapping the
+# original — would otherwise race at `gh release create`. Distinct tags are
+# distinct groups and still run in parallel, which is fine: they create
+# different releases. Serialise rather than cancel, because a half-published
+# release is worse than a slow one, so an in-flight run always finishes.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false

@@ -61,10 +61,11 @@ fi
 echo "ok: tag $tag matches workspace.package.version $manifest_version"
 
 # leveldb-sys declares no licence of its own: no LICENSE file at its root, no
-# license field in its Cargo.toml. The only licence text in its checkout is
-# Google's BSD-3-Clause for the vendored C++ under ffi/leveldb/, which says
-# nothing about the Rust wrapper in build.rs and src/. Release archives link
-# that wrapper.
+# license field in its Cargo.toml. What licence text the checkout does carry
+# belongs to the vendored C/C++ it bundles — Google's BSD-3-Clause under
+# ffi/leveldb/, and zlib's own notice inside ffi/leveldb/lib/zlib/README (both
+# attributed in about.toml). Neither says anything about the Rust wrapper in
+# build.rs and src/, and release archives link that wrapper.
 sys_root="$ROOT/third_party/checkouts/leveldb-sys"
 if [ ! -d "$sys_root" ]; then
   echo "error: $sys_root is missing — run ./scripts/setup-deps.sh first" >&2
