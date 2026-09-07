@@ -31,6 +31,14 @@ flate2 = "1.0"
 ureq = "3.4"
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
+[profile.release]
+# Strip symbols in Cargo rather than with a `strip` step in the release
+# workflow. `strip` is absent from the Windows MSVC toolchain and behaves
+# differently between GNU and Apple binutils; doing it here gives one
+# behaviour on all three runners, and makes a local `cargo build --release`
+# produce the same binary that ships.
+strip = true
+
 # bedrock_level depends on leveldb-sys from the same unpatched upstream; redirect
 # it to the patched local checkout too.
 [patch."https://github.com/bedrock-crustaceans/leveldb-sys"]
