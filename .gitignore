@@ -7,3 +7,6 @@
 
 # Generated at release time by `cargo about generate` (see about.toml)
 /THIRD-PARTY-NOTICES.md
+
+# Release archives built by scripts/package-release.sh
+/dist
