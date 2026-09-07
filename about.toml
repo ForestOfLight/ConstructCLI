@@ -1,3 +1,10 @@
+# dev- and build-only dependencies never end up in a shipped binary, so their
+# licences don't need attribution here. Excluding them also keeps a future
+# test-only dependency under a rejected licence from blocking a release for
+# code that was never linked.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
 # Licences we are willing to ship. cargo-about fails on anything outside this
 # list, which is the point: a new dependency under unexpected terms should stop
 # a release rather than slip into the notices file unnoticed.
