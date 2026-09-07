@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and upload artifacts without creating a release"
+        type: boolean
+        default: true
+
+# Only the publish job needs write access; everything else stays read-only.
+permissions:
+  contents: read
+
+jobs:
+  # The cheap gate. Runs before three platform builds are spent on a bad tag.
+  # On workflow_dispatch there is no tag to check, so the steps no-op and the
+  # job still succeeds, which keeps `needs: verify` working for both triggers.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch patched dependencies
+        if: github.event_name == 'push'
+        run: ./scripts/setup-deps.sh
+      - name: Check release preconditions
+        if: github.event_name == 'push'
+        run: ./scripts/check-release-preconditions.sh "${{ github.ref_name }}"
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ubuntu-22.04 is deliberate: it sets the glibc floor at 2.35, which
+          # covers Ubuntu 22.04+ and Debian 12. Binaries built on newer images
+          # fail on those systems with an unhelpful symbol error.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      # CMake and a C++ compiler are preinstalled on all three runner images;
+      # leveldb-sys vendors the leveldb source, so no submodule checkout is
+      # needed. Same setup as ci.yml.
+      - run: ./scripts/setup-deps.sh
+        shell: bash
+      # Pinned: cargo-about's output format and its strictness about missing
+      # licence fields both move between versions, and an unpinned tool would
+      # let a routine re-run of an old tag produce different notices. Bump this
+      # deliberately, then re-run a dry run to see what changed.
+      - name: Install cargo-about
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.8.1
+      # Release rather than debug: one compilation serves both the test run and
+      # the shipped binary. The C++ leveldb build already dominates the wall
+      # clock, so a separate debug pass would roughly double it.
+      - run: cargo test --workspace --release
+      - run: cargo build --release -p construct-cli
+      # Generated per-runner so each archive's notices describe the binary it
+      # actually ships with, including platform-specific dependencies.
+      - name: Generate third-party notices
+        run: cargo about generate about.hbs -o THIRD-PARTY-NOTICES.md
+        shell: bash
+      - name: Package
+        run: ./scripts/package-release.sh ${{ matrix.target }}
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: construct-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    # Never publish from a manual dispatch. A dry run stops after `build`, so
+    # the whole pipeline can be exercised without anything reaching the public.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: artifacts
+        run: |
+          # Globbing by extension rather than `*`, so the redirect target
+          # cannot end up checksumming itself.
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "${{ github.ref_name }}" in
+            *-*) prerelease="--prerelease" ;;
+          esac
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            $prerelease \
+            artifacts/*
