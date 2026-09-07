@@ -249,10 +249,11 @@ any of items 1 through 4 are attempted.
 Release workflows resist local testing: `act` cannot help, because the matrix
 needs real macOS and Windows runners.
 
-The workflow therefore carries a `workflow_dispatch` trigger with a `dry_run`
-input alongside the tag trigger. A dry run builds all three platforms and
-uploads the archives as workflow artifacts, but skips the `publish` job
-entirely. Nothing reaches the public, which matters: publishing a throwaway
+The workflow therefore carries a `workflow_dispatch` trigger alongside the tag
+trigger. A manual run builds all three platforms and uploads the archives as
+workflow artifacts, but skips the `publish` job entirely, because `publish` is
+gated on the push event. There is deliberately no input to override this: a
+control that cannot publish should not offer the choice. Nothing reaches the public, which matters: publishing a throwaway
 `v0.0.1-test` release would raise exactly the same redistribution question as a
 real one, and would need an exception carved into the licence gate to get past
 it. A dry run needs no exception.
