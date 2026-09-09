@@ -11,9 +11,13 @@ Add the LICENSE file that did not survive the repository move, and declare it in
 the manifest.
 
 **1. `LICENSE`** — a copy of `bedrock-rs`'s own
-[`LICENSE`](https://github.com/bedrock-crustaceans/bedrock-rs/blob/master/LICENSE),
+[`LICENSE`](https://github.com/bedrock-crustaceans/bedrock-rs/blob/main/LICENSE),
 the Apache License 2.0, byte for byte (sha256
-`c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4`).
+`c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4`; confirmed
+against bedrock-rs `main` on 2026-09-08).
+
+The commit is already prepared in a clone at `../leveldb-sys`, on branch
+`add-license`.
 
 **2. `Cargo.toml`** — one line, so the licence is visible to tooling and not
 just to a human reading the repository root:
