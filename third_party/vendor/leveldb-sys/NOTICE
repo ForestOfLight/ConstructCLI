@@ -26,6 +26,8 @@ authors:
                  not shipped libstdc++ for years
                - pass -Wno-error=implicit-function-declaration to non-MSVC
                  compilers, which current clang needs to build the vendored zlib
+               - require C++14 for the CMake build, which ffi.cpp needs on
+                 Apple clang
 
 Files written by the ConstructCLI authors: Cargo.toml, README.md, NOTICE.
 
