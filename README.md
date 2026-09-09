@@ -26,8 +26,69 @@ construct import house.mcstructure --world "My Survival"
 
 ## Install
 
-No binaries are published yet; building from source is currently the only
-way to get the tool.
+Download the archive for your platform from the [latest
+release](https://github.com/ForestOfLight/ConstructCLI/releases/latest),
+extract it, and put the `construct` binary somewhere on your `PATH`.
+
+| Platform | Architecture | Archive |
+| --- | --- | --- |
+| Windows | x86_64 | `construct-<version>-x86_64-pc-windows-msvc.zip` |
+| macOS | Apple Silicon | `construct-<version>-aarch64-apple-darwin.tar.gz` |
+| Linux | x86_64, glibc 2.35+ | `construct-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+
+On macOS and Linux:
+
+```
+tar xzf construct-<version>-<target>.tar.gz
+sudo install construct-<version>-<target>/construct /usr/local/bin/
+construct --version
+```
+
+macOS marks anything downloaded through a browser as quarantined. Extracting
+with `tar` in Terminal, as above, avoids that. If macOS still refuses to open
+the binary, clear the flag:
+
+```
+sudo xattr -d com.apple.quarantine /usr/local/bin/construct
+```
+
+On Windows, extract the zip and move `construct.exe` into a directory that is
+already on your `PATH`. If you don't have one, create
+`%LOCALAPPDATA%\Programs\bin`, put `construct.exe` there, and add that folder
+to your `PATH` from Settings → "Edit environment variables for your account".
+
+Intel Macs, 32-bit systems, and Linux distributions older than Debian 12 or
+Ubuntu 22.04 have no published binary — build from source instead.
+
+### Verifying a download
+
+Every release includes a `SHA256SUMS` file. Download it alongside the archive
+and check them against each other:
+
+On Linux:
+
+```
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+On macOS, which ships `shasum` rather than `sha256sum`:
+
+```
+shasum -a 256 --check --ignore-missing SHA256SUMS
+```
+
+On Windows PowerShell:
+
+```
+(Get-FileHash construct-<version>-x86_64-pc-windows-msvc.zip).Hash.ToLower()
+```
+
+Compare the result against the matching line in `SHA256SUMS`.
+
+### Building from source
+
+Contributors, and anyone on a platform with no published binary, build it
+themselves.
 
 You need Rust, CMake, and a C++ compiler, because the leveldb
 backend is Mojang's own C++ implementation rather than a reimplementation.

@@ -1,0 +1,166 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # A manual run IS the dry run: it builds all three platforms and uploads the
+  # archives as workflow artifacts, but never publishes, because `publish` below
+  # is gated on the push trigger. There is deliberately no input to override
+  # that — a control that cannot publish should not offer the choice.
+  workflow_dispatch:
+
+# Only the publish job needs write access; everything else stays read-only.
+permissions:
+  contents: read
+
+# Two runs on the SAME ref — a force-moved tag, or a re-run overlapping the
+# original — would otherwise race at `gh release create`. Distinct tags are
+# distinct groups and still run in parallel, which is fine: they create
+# different releases. Serialise rather than cancel, because a half-published
+# release is worse than a slow one, so an in-flight run always finishes.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The cheap gate. Runs before three platform builds are spent on a bad tag.
+  # On workflow_dispatch there is no tag to check, so the steps no-op and the
+  # job still succeeds, which keeps `needs: verify` working for both triggers.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # check-release-preconditions.sh reads Cargo.toml with tomllib, which
+      # needs Python 3.11+. The runner images ship a Python, but which version
+      # is not a guarantee, so pin one rather than depend on the default.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Fetch patched dependencies
+        if: github.event_name == 'push'
+        shell: bash
+        run: ./scripts/setup-deps.sh
+      # TAG goes through env, not `${{ }}` inside the script body: expression
+      # interpolation happens before bash parses the line, so a tag containing
+      # a backtick or $( ) would execute. git allows both in a ref name.
+      - name: Check release preconditions
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: ./scripts/check-release-preconditions.sh "$TAG"
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ubuntu-22.04 is deliberate: it sets the glibc floor at 2.35, which
+          # covers Ubuntu 22.04+ and Debian 12. Binaries built on newer images
+          # fail on those systems with an unhelpful symbol error. When GitHub
+          # retires this image the job fails at queue time on a tag push; the
+          # successor is `ubuntu-latest` with `container: ubuntu:22.04`.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # package-release.sh reads the workspace version with tomllib (3.11+).
+      # windows-latest in particular makes no promise about which Python is on
+      # PATH, and the script fails closed — but only after the whole C++ build
+      # leg has already been spent. Pin the interpreter up front instead.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      # CMake and a C++ compiler are preinstalled on all three runner images;
+      # leveldb-sys vendors the leveldb source, so no submodule checkout is
+      # needed. Same setup as ci.yml.
+      - run: ./scripts/setup-deps.sh
+        shell: bash
+      # Pinned: cargo-about's output format and its strictness about missing
+      # licence fields both move between versions, and an unpinned tool would
+      # let a routine re-run of an old tag produce different notices. Bump this
+      # deliberately, then re-run a dry run to see what changed.
+      - name: Install cargo-about
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.8.1
+      # Release rather than debug: one compilation serves both the test run and
+      # the shipped binary. The C++ leveldb build already dominates the wall
+      # clock, so a separate debug pass would roughly double it.
+      - run: cargo test --workspace --release
+      - run: cargo build --release -p construct-cli
+      # about.toml declares no `targets`, so cargo-about resolves the whole crate
+      # graph rather than the host's slice, and all three runners emit the same
+      # file. That is the property worth having: a licence that passes locally
+      # cannot fail on one runner and strand the matrix mid-release.
+      - name: Generate third-party notices
+        run: cargo about generate about.hbs -o THIRD-PARTY-NOTICES.md
+        shell: bash
+      - name: Package
+        run: ./scripts/package-release.sh ${{ matrix.target }}
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: construct-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    # Never publish from a manual dispatch. A dry run stops after `build`, so
+    # the whole pipeline can be exercised without anything reaching the public.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: artifacts
+        run: |
+          # Globbing by extension rather than `*`, so the redirect target
+          # cannot end up checksumming itself.
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+          # The matrix produces exactly three archives. Publishing two of them
+          # is worse than publishing none, so refuse rather than ship a
+          # release that silently omits a platform.
+          found=$(grep -c . SHA256SUMS)
+          if [ "$found" -ne 3 ]; then
+            echo "error: expected 3 archives, found $found" >&2
+            cat SHA256SUMS >&2
+            exit 1
+          fi
+          cat SHA256SUMS
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Same reasoning as the verify job: never interpolate a ref name
+          # directly into a script body.
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          prerelease=""
+          case "$TAG" in
+            *-*) prerelease="--prerelease" ;;
+          esac
+          # $prerelease is deliberately unquoted: empty must expand to no
+          # argument at all, not to an empty one.
+          gh release create "$TAG" \
+            --repo "$REPO" \
+            --title "$TAG" \
+            --generate-notes \
+            $prerelease \
+            artifacts/*

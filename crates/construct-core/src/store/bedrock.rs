@@ -40,7 +40,9 @@ impl BedrockStore {
         let path = db_dir.to_str().ok_or_else(|| {
             CoreError::Db(format!("non-UTF-8 database path: {}", db_dir.display()))
         })?;
-        let db = Database::open(path).map_err(|e| CoreError::Db(e.to_string()))?;
+        let db = retry_past_transient_locks(|| {
+            Database::open(path).map_err(|e| CoreError::Db(e.to_string()))
+        })?;
         Ok(Self { db })
     }
 
@@ -116,6 +118,61 @@ impl StructureStore for BedrockStore {
     }
 }
 
+/// Retries `open` past a transient Windows sharing violation.
+///
+/// Opening a leveldb runs recovery, and recovery finishes by writing
+/// `<db>/NNNNNN.dbtmp` and renaming it over `CURRENT`. Every open this tool
+/// performs is of a directory whose files were written moments earlier — the
+/// read path copies `CURRENT`, the log and the MANIFEST into a temp directory
+/// and opens the copy immediately (see [`crate::store::snapshot`]). On Windows
+/// a file just written is still open by whatever scanned it on close, so that
+/// rename can lose a race and fail with `ERROR_SHARING_VIOLATION`, which the
+/// leveldb fork surfaces as "The process cannot access the file because it is
+/// being used by another process". Nothing about the database is wrong; the
+/// next attempt milliseconds later succeeds. Unix has no such window, so this
+/// never retries there — the messages simply do not match.
+///
+/// Only that violation and the access-denied a delete-pending `CURRENT`
+/// reports are retried. Every other failure — a missing database, a corrupt
+/// one, leveldb's own "already in use" when another handle holds `LOCK` —
+/// returns on the first attempt, because waiting would not change it.
+pub fn retry_past_transient_locks<T, E: std::fmt::Display>(
+    open: impl FnMut() -> std::result::Result<T, E>,
+) -> std::result::Result<T, E> {
+    retry_with(open, &mut |ms| {
+        std::thread::sleep(std::time::Duration::from_millis(ms))
+    })
+}
+
+/// Milliseconds to wait before each retry: six attempts over ~310 ms.
+///
+/// Long enough for a scanner to let go of a file it has just read, short
+/// enough that a genuine access-denied still fails promptly.
+const RETRY_DELAYS_MS: [u64; 5] = [10, 20, 40, 80, 160];
+
+/// [`retry_past_transient_locks`] with the waiting injected, so the tests below
+/// can assert the schedule without spending it.
+fn retry_with<T, E: std::fmt::Display>(
+    mut open: impl FnMut() -> std::result::Result<T, E>,
+    sleep: &mut dyn FnMut(u64),
+) -> std::result::Result<T, E> {
+    for delay in RETRY_DELAYS_MS {
+        match open() {
+            Err(e) if is_transient_lock(&e.to_string()) => sleep(delay),
+            outcome => return outcome,
+        }
+    }
+    open()
+}
+
+/// Whether a leveldb error message is one of the transient Windows locks.
+fn is_transient_lock(message: &str) -> bool {
+    // Matched on the message because the FFI reduces every leveldb status to
+    // one, with no error code left to test. "already in use" is leveldb's own
+    // `LOCK` refusal and deliberately does not match.
+    message.contains("being used by another process") || message.contains("Access is denied")
+}
+
 /// Refuses any database path that is not under a temp directory.
 ///
 /// Enforces the copy-before-open invariant of §8 at the open rather than in
@@ -161,6 +218,65 @@ fn resolve_existing(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The message the Windows runner produced, verbatim: trailing CRLF and
+    /// all, since that is what leveldb's `Status::ToString` hands back.
+    const SHARING_VIOLATION: &str = "IO error: C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\.tmpdyGXl4\\test_level\\db/000007.dbtmp: The process cannot access the file because it is being used by another process.\r\n";
+
+    /// Runs `retry_with` over a canned sequence of outcomes, reporting how many
+    /// attempts it made and how long it asked to wait between them.
+    fn run(outcomes: &[&'static str]) -> (std::result::Result<(), String>, usize, Vec<u64>) {
+        let mut attempts = 0;
+        let mut waits = Vec::new();
+        let outcome = retry_with(
+            || {
+                let message = outcomes.get(attempts).copied();
+                attempts += 1;
+                match message {
+                    Some("") | None => Ok(()),
+                    Some(m) => Err(m.to_string()),
+                }
+            },
+            &mut |ms| waits.push(ms),
+        );
+        (outcome, attempts, waits)
+    }
+
+    #[test]
+    fn a_sharing_violation_is_retried_until_the_open_succeeds() {
+        let (outcome, attempts, waits) = run(&[SHARING_VIOLATION, SHARING_VIOLATION, ""]);
+        assert!(outcome.is_ok(), "{outcome:?}");
+        assert_eq!(attempts, 3);
+        assert_eq!(waits, vec![10, 20]);
+    }
+
+    #[test]
+    fn a_sharing_violation_that_never_clears_gives_up_and_reports_it() {
+        let (outcome, attempts, waits) = run(&[SHARING_VIOLATION; 20]);
+        assert_eq!(outcome.unwrap_err(), SHARING_VIOLATION);
+        // One attempt per delay, plus the final one after the last wait.
+        assert_eq!(attempts, RETRY_DELAYS_MS.len() + 1);
+        assert_eq!(waits, RETRY_DELAYS_MS.to_vec());
+    }
+
+    /// Waiting cannot make a missing database appear, and the caller is left
+    /// holding the original error either way.
+    #[test]
+    fn an_ordinary_failure_is_not_retried() {
+        let (outcome, attempts, waits) = run(&["IO error: db/CURRENT: No such file or directory"]);
+        assert!(outcome.is_err());
+        assert_eq!(attempts, 1);
+        assert!(waits.is_empty());
+    }
+
+    /// leveldb's `LOCK` refusal reads as "in use" but is not this race: another
+    /// handle holds the database open, and it will still hold it in 300 ms.
+    #[test]
+    fn the_lock_refusal_is_not_retried() {
+        let (outcome, attempts, _) = run(&["IO error: This LevelDB database is already in use"]);
+        assert!(outcome.is_err());
+        assert_eq!(attempts, 1);
+    }
 
     #[cfg(unix)]
     #[test]
