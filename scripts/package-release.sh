@@ -4,7 +4,7 @@
 # Usage: scripts/package-release.sh <target-triple>
 #
 # Expects `cargo build --release -p construct-cli` and `cargo about generate`
-# to have run already. Produces dist/construct-<version>-<target>.<ext>
+# to have run already. Produces dist/construct-<version>-<platform>.<ext>
 # containing a single top-level directory of the same name, so that extracting
 # it never scatters files into the user's current directory.
 set -euo pipefail
@@ -53,7 +53,12 @@ with open('Cargo.toml', 'rb') as f:
     print(tomllib.load(f)['workspace']['package']['version'])
 ")"
 
-name="construct-${version}-${target}"
+case "$target" in
+  x86_64-unknown-linux-gnu) platform="x86_64-linux-gnu" ;;
+  *)                        platform="$target" ;;
+esac
+
+name="construct-${version}-${platform}"
 staging="dist/${name}"
 
 case "$target" in

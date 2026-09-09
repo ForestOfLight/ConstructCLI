@@ -128,22 +128,19 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
-      - name: Generate checksums
+      - name: Check archives
         working-directory: artifacts
         run: |
-          # Globbing by extension rather than `*`, so the redirect target
-          # cannot end up checksumming itself.
-          sha256sum *.tar.gz *.zip > SHA256SUMS
           # The matrix produces exactly three archives. Publishing two of them
           # is worse than publishing none, so refuse rather than ship a
-          # release that silently omits a platform.
-          found=$(grep -c . SHA256SUMS)
+          # release that silently omits a platform. Globbing by extension
+          # rather than `*`, so nothing else in the directory is counted.
+          ls -1 *.tar.gz *.zip
+          found=$(ls -1 *.tar.gz *.zip | grep -c .)
           if [ "$found" -ne 3 ]; then
             echo "error: expected 3 archives, found $found" >&2
-            cat SHA256SUMS >&2
             exit 1
           fi
-          cat SHA256SUMS
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
