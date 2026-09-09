@@ -883,7 +883,10 @@ fn fixture_world_with_extra_structures(
     let (tmp, world) = fixture_world();
     {
         let db_dir = world.join("db");
-        let db = bedrock_level::db::Database::open(db_dir.to_str().unwrap()).unwrap();
+        let db = construct_core::store::bedrock::retry_past_transient_locks(|| {
+            bedrock_level::db::Database::open(db_dir.to_str().unwrap())
+        })
+        .unwrap();
         for (name, bytes) in extra {
             let key = construct_core::store::key::encode(name);
             db.insert(&key, *bytes).unwrap();
@@ -1320,7 +1323,10 @@ fn fixture_world_with_construct(
 
     {
         let db_dir = world.join("db");
-        let db = bedrock_level::db::Database::open(db_dir.to_str().unwrap()).unwrap();
+        let db = construct_core::store::bedrock::retry_past_transient_locks(|| {
+            bedrock_level::db::Database::open(db_dir.to_str().unwrap())
+        })
+        .unwrap();
         for (name, bytes) in extra_world_structures {
             let key = construct_core::store::key::encode(name);
             db.insert(&key, *bytes).unwrap();
