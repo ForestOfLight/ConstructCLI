@@ -62,7 +62,7 @@ pub fn dir_size(dir: &Path) -> u64 {
         .flatten()
         .map(|e| match e.file_type() {
             Ok(t) if t.is_dir() => dir_size(&e.path()),
-            _ => e.metadata().map(|m| m.len()).unwrap_or(0),
+            _ => std::fs::metadata(e.path()).map(|m| m.len()).unwrap_or(0),
         })
         .sum()
 }

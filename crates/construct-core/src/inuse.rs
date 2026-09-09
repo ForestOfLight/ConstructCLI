@@ -46,7 +46,7 @@ pub fn newest_write(db: &Path) -> Option<SystemTime> {
     std::fs::read_dir(db)
         .ok()?
         .flatten()
-        .filter_map(|e| e.metadata().ok()?.modified().ok())
+        .filter_map(|e| std::fs::metadata(e.path()).ok()?.modified().ok())
         .max()
 }
 

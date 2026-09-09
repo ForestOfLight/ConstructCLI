@@ -71,7 +71,7 @@ fn collect(root: &Path, dir: &Path, out: &mut Vec<PackStructure>) {
             }
             _ => key::qualify(stem),
         };
-        let size_bytes = e.metadata().map(|m| m.len()).unwrap_or(0);
+        let size_bytes = std::fs::metadata(e.path()).map(|m| m.len()).unwrap_or(0);
         out.push(PackStructure {
             name: key::display_name(&id).to_string(),
             id,

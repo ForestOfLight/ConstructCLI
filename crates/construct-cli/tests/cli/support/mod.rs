@@ -236,7 +236,7 @@ pub fn db_fingerprint(world: &std::path::Path) -> Vec<(String, u64)> {
         .map(|e| {
             (
                 e.file_name().to_string_lossy().into_owned(),
-                e.metadata().map(|m| m.len()).unwrap_or(0),
+                std::fs::metadata(e.path()).map(|m| m.len()).unwrap_or(0),
             )
         })
         .collect();
