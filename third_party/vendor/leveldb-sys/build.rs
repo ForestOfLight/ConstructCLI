@@ -4,6 +4,13 @@ fn main() {
     println!("cargo:rerun-if-changed=ffi");
 
     let mut config = cmake::Config::new("ffi");
+    // ffi.cpp uses C++14 features such as `std::make_unique`. GCC and MSVC happen
+    // to accept it with their current defaults, but Apple clang on macOS 14 still
+    // defaults low enough that the build falls back to pre-C++11 parsing unless the
+    // standard is pinned explicitly.
+    config
+        .define("CMAKE_CXX_STANDARD", "14")
+        .define("CMAKE_CXX_STANDARD_REQUIRED", "ON");
     // The vendored zlib calls lseek/read/write/close without including <unistd.h>.
     // Implicit function declarations are a hard error from C99 onward, and current
     // clang enforces it, so the vendored sources no longer compile without this.
