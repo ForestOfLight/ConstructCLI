@@ -4,6 +4,9 @@ Move structures between Minecraft Bedrock worlds from the command line.
 
 This tool is designed to compliment the host of solutions for moving structures between Minecraft Bedrock worlds. It does not assume sole ownership over your structures. Instead, it expects to find them in a variety of places and handle changes gracefully.
 
+> [!NOTE]
+> Development of this repo has involved significant AI usage.
+
 ### Upgrading the Old Construct Workfow
 
 [Construct](https://github.com/ForestOfLight/Construct)'s documented workflow
