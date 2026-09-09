@@ -234,9 +234,22 @@ pub fn db_fingerprint(world: &std::path::Path) -> Vec<(String, u64)> {
         .unwrap()
         .flatten()
         .map(|e| {
+            let len = (0..20)
+                .find_map(|attempt| match e.metadata() {
+                    Ok(meta) => Some(meta.len()),
+                    Err(_) if attempt < 19 => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        None
+                    }
+                    Err(err) => panic!(
+                        "could not read metadata for {} after retries: {err}",
+                        e.path().display()
+                    ),
+                })
+                .unwrap();
             (
                 e.file_name().to_string_lossy().into_owned(),
-                e.metadata().map(|m| m.len()).unwrap_or(0),
+                len,
             )
         })
         .collect();
