@@ -5,8 +5,9 @@ use serde::Deserialize;
 use std::path::Path;
 
 pub const REPO: &str = "ForestOfLight/Construct";
-/// The only release source. Fixed rather than configurable: see the CLI's
-/// `support::github::client` for why nothing at runtime may redirect it.
+/// The only release source a shipped build can reach. Fixed rather than
+/// configurable: see [`base`] for the one exception and why it cannot survive
+/// into a released binary.
 pub const API_BASE: &str = "https://api.github.com";
 /// GitHub's unauthenticated limit, named in the error §11 asks for.
 pub const UNAUTHENTICATED_LIMIT: u32 = 60;
@@ -89,24 +90,31 @@ pub struct GitHub {
     token: Option<String>,
 }
 
+/// [`API_BASE`], unless a test has pointed the client somewhere else.
+///
+/// `CONSTRUCT_GITHUB_API` lets the CLI's integration tests serve canned
+/// responses without reaching the network — several of them assert on
+/// conditions the real endpoint cannot produce, such as an asset whose
+/// declared size disagrees with the bytes served.
+///
+/// The override is compiled out unless the crate is built with `test-hooks`,
+/// which only construct-cli's `[dev-dependencies]` turns on. A shipped binary
+/// comes from `cargo build --release`, which pulls no dev-dependencies, so
+/// nothing at runtime can redirect it away from [`API_BASE`] — which is the
+/// point. Gating on the feature rather than on `debug_assertions` keeps that
+/// true while letting the same tests run under `cargo test --release`.
+fn base() -> String {
+    #[cfg(feature = "test-hooks")]
+    if let Ok(base) = std::env::var("CONSTRUCT_GITHUB_API") {
+        return base;
+    }
+    API_BASE.to_string()
+}
+
 impl GitHub {
     pub fn new(token: Option<String>) -> Self {
         Self {
-            base: API_BASE.to_string(),
-            token,
-        }
-    }
-
-    /// Points the client somewhere else, so a test can serve canned responses
-    /// without reaching the network.
-    ///
-    /// Debug builds only. A release build has no way to reach a base other
-    /// than [`API_BASE`], which is the point — see the CLI's
-    /// `support::github::client`.
-    #[cfg(debug_assertions)]
-    pub fn with_base(base: impl Into<String>, token: Option<String>) -> Self {
-        Self {
-            base: base.into(),
+            base: base(),
             token,
         }
     }
@@ -254,5 +262,52 @@ mod tests {
             parse_release("{ nope"),
             Err(CoreError::Network { .. })
         ));
+    }
+
+    /// Everything above this line runs against canned bytes, and so proves the
+    /// client handles the shape we *believe* GitHub returns. This one asks the
+    /// real endpoint whether that belief still holds — the stubs in
+    /// construct-cli's tests are modelled on it, and would keep passing in
+    /// perfect ignorance if GitHub changed the payload under them.
+    ///
+    /// `#[ignore]`d because it needs the network and spends one of the 60
+    /// unauthenticated requests an IP gets per hour. It asserts only on what
+    /// the client actually depends on, so a new release does not break it:
+    ///
+    /// ```
+    /// cargo test -p construct-core --lib live_github -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "reaches the real api.github.com"]
+    fn live_github_still_returns_the_shape_the_stubs_assume() {
+        let release = GitHub::new(
+            std::env::var("CONSTRUCT_GITHUB_TOKEN")
+                .or_else(|_| std::env::var("GITHUB_TOKEN"))
+                .ok(),
+        )
+        .release(None)
+        .expect("the latest Construct release must resolve");
+
+        assert!(
+            release.tag.starts_with('v'),
+            "install compares against a v-prefixed tag; got {:?}",
+            release.tag
+        );
+
+        let asset = asset_for(&release).expect("the release must carry an .mcaddon");
+        assert!(
+            asset.size > 0,
+            "install checks the download against this size; a 0 would wave anything through"
+        );
+        assert!(
+            asset.url.starts_with("https://"),
+            "the download url must be https; got {:?}",
+            asset.url
+        );
+
+        println!(
+            "live: {} -> {} ({} bytes)",
+            release.tag, asset.name, asset.size
+        );
     }
 }

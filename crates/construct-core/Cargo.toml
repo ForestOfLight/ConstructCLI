@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Lets `CONSTRUCT_GITHUB_API` redirect the releases client, so the CLI's
+# integration tests can serve canned responses. Enabled only through
+# construct-cli's [dev-dependencies]; see `install::releases::base`.
+test-hooks = []
+
 [dependencies]
 thiserror.workspace = true
 serde = { workspace = true }

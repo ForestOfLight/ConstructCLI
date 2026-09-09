@@ -247,11 +247,40 @@ mod tests {
         );
     }
 
+    /// The database named by `var`, or `None` after saying why it is skipping.
+    ///
+    /// The three tests below are `#[ignore]`d because they need a real world in
+    /// a known state — one open in Minecraft, one closed for hours:
+    ///
+    /// ```
+    /// CONSTRUCT_LIVE_WORLD_DB=<com.mojang>/minecraftWorlds/<world>/db \
+    /// CONSTRUCT_IDLE_WORLD_DB=<com.mojang>/minecraftWorlds/<other>/db \
+    /// cargo test -p construct-core --lib inuse -- --ignored --nocapture
+    /// ```
+    ///
+    /// Running the ignored set without them is the normal case for anyone who
+    /// reaches for `cargo test -- --ignored`, so it skips with the variable's
+    /// name rather than panicking on an `unwrap`.
+    fn world_db_from_env(var: &str) -> Option<std::path::PathBuf> {
+        let Ok(value) = std::env::var(var) else {
+            eprintln!("skipping: {var} is not set");
+            return None;
+        };
+        let db = std::path::PathBuf::from(value);
+        assert!(
+            db.is_dir(),
+            "{var} is set but is no directory: {}",
+            db.display()
+        );
+        Some(db)
+    }
+
     #[test]
     #[ignore = "needs a world open in Minecraft"]
     fn a_real_live_world_is_detected() {
-        let db = std::path::PathBuf::from(std::env::var("CONSTRUCT_LIVE_WORLD_DB").unwrap());
-        assert!(db.is_dir(), "no such db: {}", db.display());
+        let Some(db) = world_db_from_env("CONSTRUCT_LIVE_WORLD_DB") else {
+            return;
+        };
         let t0 = std::time::Instant::now();
         assert!(looks_in_use(&db), "phase one must suspect a live world");
         assert!(confirm_in_use(&db), "phase two must confirm a live world");
@@ -264,7 +293,9 @@ mod tests {
     #[test]
     #[ignore = "needs a world open in Minecraft"]
     fn a_mark_cannot_mask_a_real_live_world() {
-        let db = std::path::PathBuf::from(std::env::var("CONSTRUCT_LIVE_WORLD_DB").unwrap());
+        let Some(db) = world_db_from_env("CONSTRUCT_LIVE_WORLD_DB") else {
+            return;
+        };
         let marks = tempfile::tempdir().unwrap();
         let world = World {
             installation: "test".into(),
@@ -294,8 +325,9 @@ mod tests {
     #[test]
     #[ignore = "needs a closed world"]
     fn a_real_closed_world_is_not_detected() {
-        let db = std::path::PathBuf::from(std::env::var("CONSTRUCT_IDLE_WORLD_DB").unwrap());
-        assert!(db.is_dir(), "no such db: {}", db.display());
+        let Some(db) = world_db_from_env("CONSTRUCT_IDLE_WORLD_DB") else {
+            return;
+        };
         assert!(!looks_in_use(&db), "a world closed for hours is not in use");
     }
 

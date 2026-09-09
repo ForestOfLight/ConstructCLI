@@ -18,6 +18,11 @@ serde_json.workspace = true
 tempfile.workspace = true
 
 [dev-dependencies]
+# Turns on the releases client's `CONSTRUCT_GITHUB_API` override for the test
+# build of the `construct` binary the integration tests spawn. Cargo unifies
+# features across a package's normal and dev dependencies, so the binary built
+# by `cargo test` gets it and the one built by `cargo build --release` does not.
+construct-core = { path = "../construct-core", features = ["test-hooks"] }
 tar.workspace = true
 flate2.workspace = true
 serde_json.workspace = true
