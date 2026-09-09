@@ -48,21 +48,25 @@ license = "Apache-2.0"
 path = "../../LICENSE"
 checksum = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
 
-# leveldb-sys declares no licence of its own. This entry attributes the two
-# vendored C/C++ bodies of code it actually compiles into the shipped binary:
-# Google's leveldb (BSD-3-Clause) and the copy of zlib that
-# ffi/leveldb/CMakeLists.txt builds into the same target (Zlib licence,
-# Jean-loup Gailly and Mark Adler). Both sit below Cargo's visibility, so
-# nothing else in the dependency graph would attribute them — and the only
-# other "Zlib License" section in the generated notices belongs to the
-# unrelated Rust crate zlib-rs.
+# leveldb-sys compiles three separately licensed bodies of code into the shipped
+# binary, and this entry attributes all three.
 #
-# It deliberately does NOT settle the terms of leveldb-sys's own Rust wrapper
-# in build.rs and src/; that question is enforced separately by
-# scripts/check-release-preconditions.sh, which blocks any release tag until it
-# is answered.
+# The Rust wrapper and C++ shim are ours to ship under Apache-2.0: upstream
+# declares no licence, but scripts/setup-deps.sh replaces those files with the
+# Apache-2.0 copies in third_party/vendor/leveldb-sys (see the NOTICE there).
+# The other two — Google's leveldb and the copy of zlib that
+# ffi/leveldb/CMakeLists.txt builds into the same target (Jean-loup Gailly and
+# Mark Adler) — sit below Cargo's visibility, so nothing else in the dependency
+# graph would attribute them. Note that the other "Zlib License" section in the
+# generated notices belongs to the unrelated Rust crate zlib-rs.
 [leveldb-sys.clarify]
-license = "BSD-3-Clause AND Zlib"
+license = "Apache-2.0 AND BSD-3-Clause AND Zlib"
+# The overlaid wrapper's own licence, copied in from bedrock-rs — the same
+# Apache-2.0 text as the four bedrock_* crates above, hence the same checksum.
+[[leveldb-sys.clarify.files]]
+path = "LICENSE"
+license = "Apache-2.0"
+checksum = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
 [[leveldb-sys.clarify.files]]
 path = "ffi/leveldb/LICENSE"
 license = "BSD-3-Clause"

@@ -108,10 +108,11 @@ out an `flock` probe, which is moot here regardless: a sweep of 10 real worlds f
 
 **A power loss immediately after a delete loses the removal.** The FFI shim builds its
 `leveldb::WriteOptions` with defaults, so `sync = false`, and neither `bedrock_level` nor the
-shim exposes a knob (`third_party/checkouts/leveldb-sys/ffi/ffi.cpp`, `struct Database`). The
+shim exposes a knob (`third_party/vendor/leveldb-sys/ffi/ffi.cpp`, `struct Database`). The
 deletion reaches the WAL through a buffered write and is durable once the OS flushes it, so a
 crashed *process* is fine and a lost-power *machine* may not be. Fixing it properly means
-patching the shim to take a sync flag. Not judged worth it: the failure re-runs the command.
+editing the vendored shim to take a sync flag. Not judged worth it: the failure re-runs the
+command.
 
 **A world whose `db/` cannot be opened refuses a bare `delete` entirely**, even when the name
 only ever existed in a pack. This is deliberate — degrading to packs-only would report a

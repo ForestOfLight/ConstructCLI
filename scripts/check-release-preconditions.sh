@@ -60,37 +60,52 @@ if [ "$tag_version" != "$manifest_version" ]; then
 fi
 echo "ok: tag $tag matches workspace.package.version $manifest_version"
 
-# leveldb-sys declares no licence of its own: no LICENSE file at its root, no
-# license field in its Cargo.toml. What licence text the checkout does carry
-# belongs to the vendored C/C++ it bundles — Google's BSD-3-Clause under
-# ffi/leveldb/, and zlib's own notice inside ffi/leveldb/lib/zlib/README (both
-# attributed in about.toml). Neither says anything about the Rust wrapper in
-# build.rs and src/, and release archives link that wrapper.
+# leveldb-sys upstream declares no licence of its own. Its Rust wrapper and C++
+# shim were moved out of bedrock-rs (Apache-2.0) without that repository's
+# LICENSE following them, so scripts/setup-deps.sh overlays our own Apache-2.0
+# copies from third_party/vendor/leveldb-sys onto the clone.
+#
+# Release archives statically link that wrapper, so what this gate has to prove
+# is that the overlay actually happened. A checkout made before the wrapper was
+# vendored is still on disk, still builds, and still passes every test while
+# linking the unlicensed upstream files — nothing but this check would notice.
+vendor_root="$ROOT/third_party/vendor/leveldb-sys"
 sys_root="$ROOT/third_party/checkouts/leveldb-sys"
+
 if [ ! -d "$sys_root" ]; then
   echo "error: $sys_root is missing — run ./scripts/setup-deps.sh first" >&2
   exit 1
 fi
 
-if compgen -G "$sys_root/LICENSE*" > /dev/null \
-  || compgen -G "$sys_root/COPYING*" > /dev/null \
-  || grep -sq '^license' "$sys_root/Cargo.toml"; then
-  echo "ok: leveldb-sys carries a licence"
-else
-  cat >&2 <<'GATE'
-error: leveldb-sys still declares no licence of its own.
+for required in LICENSE NOTICE; do
+  if [ ! -f "$vendor_root/$required" ]; then
+    echo "error: third_party/vendor/leveldb-sys/$required is missing." >&2
+    echo "It is what grants us the terms to ship the wrapper; do not delete it." >&2
+    exit 1
+  fi
+done
 
-Release archives statically link its Rust wrapper (build.rs and src/), and
-redistributing that needs terms. Google's BSD-3-Clause under ffi/leveldb/
-covers the vendored C++ only.
+stale=""
+while IFS= read -r vendored; do
+  relative="${vendored#"$vendor_root/"}"
+  if ! cmp -s "$vendored" "$sys_root/$relative"; then
+    stale="$stale  $relative"$'\n'
+  fi
+done < <(find "$vendor_root" -type f)
 
-Resolve one of these before tagging a release:
-  1. Ask bedrock-crustaceans/leveldb-sys to add a licence file, then bump the
-     pinned commit in scripts/setup-deps.sh.
-  2. Write our own bindings over the vendored BSD-3-Clause C++.
-  3. Move to the rusty-leveldb backend.
-
-See docs/superpowers/specs/2026-09-06-release-pipeline-design.md.
-GATE
+if [ -n "$stale" ]; then
+  {
+    echo "error: the leveldb-sys checkout does not carry our licensed wrapper."
+    echo
+    echo "These files differ from third_party/vendor/leveldb-sys, or are absent:"
+    printf '%s' "$stale"
+    echo
+    echo "Upstream ships them without any licence, and a release archive links"
+    echo "them. Run ./scripts/setup-deps.sh to overlay our Apache-2.0 copies."
+    echo
+    echo "See third_party/vendor/leveldb-sys/README.md."
+  } >&2
   exit 1
 fi
+
+echo "ok: leveldb-sys carries our Apache-2.0 wrapper"

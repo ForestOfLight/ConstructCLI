@@ -1,0 +1,34 @@
+This crate contains code from the bedrock-rs project
+(https://github.com/bedrock-crustaceans/bedrock-rs), which is licensed under the
+Apache License, Version 2.0. A copy of that licence is in LICENSE.
+
+Files taken verbatim from bedrock-rs at commit d4946739^ (the commit before the
+FFI sources were moved out of that repository):
+
+  ffi/ffi.cpp         from crates/level/ffi/ffi.cpp
+  ffi/ffi.h           from crates/level/ffi/ffi.h
+  ffi/CMakeLists.txt  from crates/level/ffi/CMakeLists.txt
+
+Files derived from bedrock-rs at the same commit, with changes by the ConstructCLI
+authors:
+
+  src/lib.rs   from crates/level/src/mojang/ffi.rs
+               - renamed FfiStatus/FfiData/FfiResult to Status/Data/Result
+               - dropped the bedrockrs_ prefix from the Rust function names,
+                 keeping the C symbol names via #[link_name]
+               - corrected an intra-doc link that named a function (`level_iter`)
+                 that does not exist
+
+  build.rs     from crates/level/build.rs
+               - removed the `mojang-leveldb` feature gate and the git-submodule
+                 fetch: in this crate the C++ sources are present unconditionally
+               - link libc++ rather than libstdc++ on macOS, whose toolchain has
+                 not shipped libstdc++ for years
+               - pass -Wno-error=implicit-function-declaration to non-MSVC
+                 compilers, which current clang needs to build the vendored zlib
+
+Files written by the ConstructCLI authors: Cargo.toml, README.md, NOTICE.
+
+ffi/leveldb/ is not part of this directory. It is fetched by
+scripts/setup-deps.sh and carries its own licences: Google's BSD-3-Clause for
+LevelDB, and the Zlib licence for the copy of zlib built into the same target.

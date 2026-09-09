@@ -5,6 +5,9 @@
 # than vendor ~5 MB of C++ into this repo, we clone upstream at a pinned commit and
 # apply the patches in third_party/patches/. Run this once after cloning.
 #
+# leveldb-sys additionally gets its Rust wrapper replaced wholesale — see
+# overlay_vendored_wrapper below.
+#
 # When the patched branches are published as forks, this script goes away and the
 # workspace's Cargo.toml points at the fork URLs instead.
 set -euo pipefail
@@ -47,5 +50,30 @@ clone_and_patch nbtx \
   bd28e77 \
   0003-nbtx-empty-list-serialization.patch \
   0004-nbtx-recursion-depth-limit.patch
+
+# The upstream leveldb-sys repository declares no licence of its own. That is an
+# accident: bedrock-rs commit d4946739 moved the Rust wrapper and C++ shim out of
+# a repository licensed Apache-2.0 without carrying the LICENSE file across.
+# third_party/vendor/leveldb-sys/ holds our own Apache-2.0 copies of those files,
+# taken from bedrock-rs at the commit before the move; copying them over the
+# clone means nothing we compile and ship traces to an unlicensed file. Only
+# ffi/leveldb/ is used as cloned, and that carries Google's BSD-3-Clause plus
+# zlib's own notice.
+#
+# This runs unconditionally rather than inside clone_and_patch: a checkout made
+# before the wrapper was vendored is already on disk, and clone_and_patch would
+# skip it and leave the unlicensed files in place.
+overlay_vendored_wrapper() {
+  local vendor="$ROOT/third_party/vendor/leveldb-sys"
+  local dest="$OUT/leveldb-sys"
+  if [ ! -d "$vendor" ]; then
+    echo "error: $vendor is missing" >&2
+    exit 1
+  fi
+  cp -R "$vendor/." "$dest/"
+  echo "leveldb-sys: overlaid the Apache-2.0 wrapper from third_party/vendor/leveldb-sys"
+}
+
+overlay_vendored_wrapper
 
 echo "done — dependencies ready in third_party/checkouts/"

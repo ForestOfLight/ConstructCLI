@@ -35,7 +35,7 @@ later is an addition rather than a rewrite.
   Apple Silicon binaries cannot run on Intel Macs — Rosetta translates x86 to
   ARM, not the reverse — so Intel Mac users build from source.
 
-## Precondition: the leveldb-sys licence question
+## Precondition: the leveldb-sys licence question — resolved 2026-09-08
 
 `third_party/README.md` already records that bedrock-crustaceans' `leveldb-sys`
 declares no licence of its own: no top-level `LICENSE` file, no `license` field
@@ -48,13 +48,49 @@ unanswered. The vendored C++ under `ffi/leveldb/` is Google's BSD-3-Clause and
 is not the problem; the gap is bedrock-crustaceans' own Rust wrapper —
 `build.rs` and `src/`.
 
-**This gates the first tag, not the pipeline.** Build and test the workflow
-freely. Before pushing a real `v0.1.0`, resolve the question by one of:
+**This gated the first tag, not the pipeline.** It is now answered, by a route
+this spec did not anticipate.
 
-1. Open an issue on bedrock-crustaceans/leveldb-sys asking for a licence file.
-   Cheapest, and likely a one-line fix upstream.
-2. Write our own bindings over the vendored BSD-3-Clause C++.
-3. Move to the `rusty-leveldb` backend (see crates.io readiness below).
+### What the history shows
+
+The wrapper is not unlicensed code. It is Apache-2.0 code that lost its licence
+file in a repository move:
+
+| | |
+|---|---|
+| bedrock-rs has carried Apache-2.0 at its root since | 2024-07-24 |
+| leveldb-sys `0601d7e`, *"copied over source files from bedrock-rs"*, adds `build.rs`, `src/lib.rs`, `ffi/ffi.cpp`, `ffi/ffi.h`, `ffi/CMakeLists.txt` | 2026-03-24 16:40 UTC |
+| bedrock-rs `d4946739`, *"Move LevelDB FFI to .../leveldb-sys (#206)"*, deletes the same five files there, 33 minutes later | 2026-03-24 17:13 UTC |
+| Neither commit carries the LICENSE file across | — |
+
+The two trees are the same code: taking `src/mojang/ffi.rs` from bedrock-rs and
+applying the type and function renames upstream later made reproduces
+`leveldb-sys/src/lib.rs` byte for byte, apart from one line inside a
+commented-out block; `ffi.cpp` and `ffi.h` differ only in trailing whitespace.
+
+The MIT file that briefly appears in the leveldb-sys repository's 2022 history
+is not relevant. It predates the wrapper by four years, was added to what was
+then a fork of the C++ leveldb, and was replaced seven minutes later with
+Google's BSD-3-Clause text — a mislabelled licence for C++, corrected.
+
+### What was done
+
+Option 2, in the cheap form the option list missed: not writing new bindings,
+but taking the existing ones from where they were published under terms we
+already accept.
+
+`third_party/vendor/leveldb-sys/` holds our own copies of the five wrapper
+files, taken from bedrock-rs at `d4946739^`, with `NOTICE` recording every
+change. `scripts/setup-deps.sh` copies that directory over the clone, so the
+wrapper that gets compiled and linked is the Apache-2.0 one and only
+`ffi/leveldb/` is used as cloned. `about.toml` attributes all three licences
+(`Apache-2.0 AND BSD-3-Clause AND Zlib`).
+
+Options 1 and 3 remain available and are not foreclosed. Upstream master has not
+moved since 2026-03-24, so option 1 could not unblock a release on its own, but
+the request is still worth making — `docs/upstream-leveldb-sys-license-pr.md`
+holds the change to ask for. If it lands, the vendor directory can be deleted
+and the clone used unmodified.
 
 ## Design
 
@@ -82,9 +118,12 @@ before three platform builds are spent on a bad tag.
   manifest keeps this gate genuinely cheap.
 - Assert it equals `github.ref_name` with a leading `v` stripped. Fail with a
   message naming both values.
-- Assert every patched dependency carries a licence, per the precondition
-  above. This gate fails today, by design, and clears on its own once the
-  question is answered.
+- Assert that the leveldb-sys checkout carries our licensed wrapper, per the
+  precondition above — that is, that `setup-deps.sh` overlaid
+  `third_party/vendor/leveldb-sys` rather than leaving a checkout made before
+  the wrapper was vendored in place. Such a checkout builds and passes every
+  test while linking the unlicensed upstream files, so nothing else would
+  notice.
 
 An earlier draft of this spec also ran `cargo package --workspace --no-verify`
 here, on the assumption it would pass today. It does not — both workspace
@@ -171,9 +210,10 @@ graph, so it cannot drift from what is actually linked. Configuration lives in
 
 Two consequences are expected and wanted:
 
-- `cargo-about` will flag `leveldb-sys` as having no licence. This is the
-  precondition above surfacing automatically, and the workflow should not
-  suppress it. Once upstream resolves the licence, the flag clears on its own.
+- `leveldb-sys` needs a `clarify` entry naming all three of the licences it
+  compiles in: `Apache-2.0` for the wrapper we vendor, and the two below.
+  Without one, cargo-about flags the crate as having no licence — which is what
+  it did before the precondition above was resolved.
 - The vendored C++ leveldb and zlib sit below Cargo's visibility and need
   hand-authored clarification entries in `about.toml`.
 

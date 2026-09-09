@@ -1,0 +1,10 @@
+[package]
+name = "leveldb-sys"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+license = "Apache-2.0"
+description = "FFI bindings to the Mojang variant of LevelDB, vendored from bedrock-rs."
+
+[build-dependencies]
+cmake = "0.1.57"
