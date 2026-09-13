@@ -1,13 +1,6 @@
-# dev- and build-only dependencies never end up in a shipped binary, so their
-# licences don't need attribution here. Excluding them also keeps a future
-# test-only dependency under a rejected licence from blocking a release for
-# code that was never linked.
 ignore-build-dependencies = true
 ignore-dev-dependencies = true
 
-# Licences we are willing to ship. cargo-about fails on anything outside this
-# list, which is the point: a new dependency under unexpected terms should stop
-# a release rather than slip into the notices file unnoticed.
 accepted = [
     "Apache-2.0",
     "MIT",
@@ -21,9 +14,6 @@ accepted = [
     "CDLA-Permissive-2.0",
 ]
 
-# The bedrock-rs workspace licenses its crates at the repository root rather
-# than per-crate, so none of its members declare a license field. See
-# third_party/checkouts/bedrock-rs/LICENSE.
 [bedrock_level.clarify]
 license = "Apache-2.0"
 [[bedrock_level.clarify.files]]
@@ -48,21 +38,8 @@ license = "Apache-2.0"
 path = "../../LICENSE"
 checksum = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
 
-# leveldb-sys compiles three separately licensed bodies of code into the shipped
-# binary, and this entry attributes all three.
-#
-# The Rust wrapper and C++ shim are ours to ship under Apache-2.0: upstream
-# declares no licence, but scripts/setup-deps.sh replaces those files with the
-# Apache-2.0 copies in third_party/vendor/leveldb-sys (see the NOTICE there).
-# The other two — Google's leveldb and the copy of zlib that
-# ffi/leveldb/CMakeLists.txt builds into the same target (Jean-loup Gailly and
-# Mark Adler) — sit below Cargo's visibility, so nothing else in the dependency
-# graph would attribute them. Note that the other "Zlib License" section in the
-# generated notices belongs to the unrelated Rust crate zlib-rs.
 [leveldb-sys.clarify]
 license = "Apache-2.0 AND BSD-3-Clause AND Zlib"
-# The overlaid wrapper's own licence, copied in from bedrock-rs — the same
-# Apache-2.0 text as the four bedrock_* crates above, hence the same checksum.
 [[leveldb-sys.clarify.files]]
 path = "LICENSE"
 license = "Apache-2.0"
@@ -71,11 +48,6 @@ checksum = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
 path = "ffi/leveldb/LICENSE"
 license = "BSD-3-Clause"
 checksum = "ccc19f1da0798ed666609b65a5b44dd8b3abe6fc08b9c0592eb76e82e174db19"
-# zlib ships no separate LICENSE file; its copyright notice and licence text
-# live in the middle of the README, so start/end narrow the extract to just
-# that block rather than reproducing 200 lines of build instructions. The
-# checksum is over the extracted span, not the whole file — that is what
-# cargo-about compares against.
 [[leveldb-sys.clarify.files]]
 path = "ffi/leveldb/lib/zlib/README"
 license = "Zlib"

@@ -1,17 +1,17 @@
 # Patched dependencies
 
-Three upstreams are patched and vendored here: `bedrock_level` (from `bedrock-rs`) and its
-`leveldb-sys` backend, the database dependencies, plus `nbtx`, which is not a database
-dependency at all — it is the NBT codec `.mcstructure` and `level.dat` are read and written
-through.
+Three upstreams are patched here: `bedrock_level` (from `bedrock-rs`) and its `leveldb-sys`
+backend, the database dependencies, plus `nbtx`, which is not a database dependency at all —
+it is the NBT codec `.mcstructure` and `level.dat` are read and written through.
 
 ## `bedrock_level` and `leveldb-sys`
 
 These do not compile as published:
 
 - `leveldb-sys/build.rs` links `stdc++` unconditionally on unix. Apple ships `libc++`,
-  so every macOS target fails at the link step. (This one is fixed in the replacement
-  `build.rs` under `vendor/leveldb-sys/` rather than by a patch — see below.)
+  so every macOS target fails at the link step. It also leaves the C++ standard and
+  clang's implicit-declaration errors to the compiler's defaults, which Apple clang does
+  not satisfy for either.
 - `bedrock-rs/crates/level/src/greedy.rs` uses `is_x86_feature_detected!`,
   `#[target_feature(enable = "avx2")]`, and `std::arch::x86_64` with no architecture
   gate. This is a *compile* failure on any non-x86_64 target, not a runtime one.
@@ -35,26 +35,8 @@ sequence opens and writes `TAG_End` with length 0 from `end()` if no element eve
 `patches/` holds the fixes. `scripts/setup-deps.sh` clones each upstream repo at its pinned
 commit and applies them into `checkouts/`, which is git-ignored.
 
-`bedrock-rs` and `nbtx` are Apache-2.0, which permits this. The fixes are intended to go
+All three upstreams are Apache-2.0, which permits this. The fixes are intended to go
 upstream; when they land, or when the patched branches are published as forks, this directory
 is deleted and the workspace depends on a URL again.
-
-## `leveldb-sys` and its missing licence
-
-`leveldb-sys` declares no licence of its own — no top-level `LICENSE` file, no `license` field
-in its `Cargo.toml`. The only licence text in its checkout is Google's BSD-3-Clause for the
-vendored C++ under `ffi/leveldb/`, which says nothing about the Rust wrapper.
-
-That is an accident rather than a decision. The wrapper was written inside `bedrock-rs`, which
-has been Apache-2.0 since 2024-07-24, and bedrock-rs commit `d4946739` moved it out to the new
-repository on 2026-03-24 without carrying the LICENSE file across. `vendor/leveldb-sys/` holds
-our own Apache-2.0 copies of those files, taken from bedrock-rs at the commit before the move;
-`setup-deps.sh` copies them over the clone, so nothing that gets compiled and shipped traces to
-an unlicensed file. Only `ffi/leveldb/` is used as cloned, and it carries its own terms.
-
-`vendor/leveldb-sys/NOTICE` records every change we made to that code, and
-`vendor/leveldb-sys/README.md` records the provenance in full. Edit the wrapper there, not in
-the checkout — `scripts/check-release-preconditions.sh` refuses to release if the two disagree.
-The vendoring goes away if upstream adds a licence file.
 
 Run `scripts/setup-deps.sh` once after cloning.

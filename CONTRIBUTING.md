@@ -38,14 +38,7 @@ rm -rf third_party/checkouts/nbtx
 ./scripts/setup-deps.sh
 ```
 
-`leveldb-sys` is the exception. Its Rust wrapper and C++ shim are not patched but
-replaced: `third_party/vendor/leveldb-sys/` holds our own Apache-2.0 copies, which the
-script overlays onto the checkout, because upstream ships that code with no licence at
-all. Edit those files in `vendor/`, not in the checkout and not through a patch — a
-release is refused if the two disagree.
-
-See `third_party/README.md` for what each patch fixes, and why `leveldb-sys` is
-vendored.
+See `third_party/README.md` for what each patch fixes.
 
 ## Checks Before a PR
 

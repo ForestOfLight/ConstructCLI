@@ -35,7 +35,7 @@ later is an addition rather than a rewrite.
   Apple Silicon binaries cannot run on Intel Macs — Rosetta translates x86 to
   ARM, not the reverse — so Intel Mac users build from source.
 
-## Precondition: the leveldb-sys licence question — resolved 2026-09-08
+## Precondition: the leveldb-sys licence question — resolved 2026-09-08, closed upstream 2026-09-13
 
 `third_party/README.md` already records that bedrock-crustaceans' `leveldb-sys`
 declares no licence of its own: no top-level `LICENSE` file, no `license` field
@@ -86,11 +86,26 @@ wrapper that gets compiled and linked is the Apache-2.0 one and only
 `ffi/leveldb/` is used as cloned. `about.toml` attributes all three licences
 (`Apache-2.0 AND BSD-3-Clause AND Zlib`).
 
-Options 1 and 3 remain available and are not foreclosed. Upstream master has not
-moved since 2026-03-24, so option 1 could not unblock a release on its own, but
-the request is still worth making — `docs/upstream-leveldb-sys-license-pr.md`
-holds the change to ask for. If it lands, the vendor directory can be deleted
-and the clone used unmodified.
+### What closed it
+
+Option 1 landed after all. The upstream PR was accepted on 2026-09-13:
+leveldb-sys `7a1b258` adds bedrock-rs's Apache-2.0 `LICENSE` at its root and
+`license = "Apache-2.0"` to its `Cargo.toml`, and `7ff692a` merges it. The
+`LICENSE` is byte-identical to the copy the vendor directory carried (sha256
+`c71d239d…`), so the crate now declares, for itself, exactly the terms the
+vendoring had been asserting on its behalf.
+
+With that, the vendoring had nothing left to do and was removed:
+`third_party/vendor/` is deleted, `scripts/setup-deps.sh` pins the merge commit
+and no longer overlays anything, and the wrapper's three build fixes — macOS
+libc++, the non-MSVC `-Wno-error=implicit-function-declaration` flag, and
+`CMAKE_CXX_STANDARD 14` — moved back into
+`third_party/patches/0001-leveldb-sys-macos-and-arm-portability.patch`, where
+they sit alongside the C/C++ fixes as ordinary patch hunks. `about.toml` keeps
+its three-licence `clarify` entry unchanged: the `Apache-2.0` file it names is
+now upstream's own.
+
+Option 3 remains available and is not foreclosed.
 
 ## Design
 
@@ -118,12 +133,6 @@ before three platform builds are spent on a bad tag.
   manifest keeps this gate genuinely cheap.
 - Assert it equals `github.ref_name` with a leading `v` stripped. Fail with a
   message naming both values.
-- Assert that the leveldb-sys checkout carries our licensed wrapper, per the
-  precondition above — that is, that `setup-deps.sh` overlaid
-  `third_party/vendor/leveldb-sys` rather than leaving a checkout made before
-  the wrapper was vendored in place. Such a checkout builds and passes every
-  test while linking the unlicensed upstream files, so nothing else would
-  notice.
 
 An earlier draft of this spec also ran `cargo package --workspace --no-verify`
 here, on the assumption it would pass today. It does not — both workspace
@@ -211,9 +220,8 @@ graph, so it cannot drift from what is actually linked. Configuration lives in
 Two consequences are expected and wanted:
 
 - `leveldb-sys` needs a `clarify` entry naming all three of the licences it
-  compiles in: `Apache-2.0` for the wrapper we vendor, and the two below.
-  Without one, cargo-about flags the crate as having no licence — which is what
-  it did before the precondition above was resolved.
+  compiles in: `Apache-2.0` for its own wrapper, and the two below. Its manifest
+  declares only the first, so without the entry the other two go unattributed.
 - The vendored C++ leveldb and zlib sit below Cargo's visibility and need
   hand-authored clarification entries in `about.toml`.
 
@@ -265,9 +273,9 @@ rather than rediscovered:
    URL, which crates.io rejects outright, so upstream would need to switch to a
    registry dependency as well.
 
-4. **`leveldb-sys` is both occupied and unlicensed.** The `leveldb-sys` on
-   crates.io is skade's unrelated crate (v2.0.9, 2021); bedrock-crustaceans' is
-   a different codebase needing a different name. And it carries no licence, per
+4. **The `leveldb-sys` name is occupied.** The `leveldb-sys` on crates.io is
+   skade's unrelated crate (v2.0.9, 2021); bedrock-crustaceans' is a different
+   codebase needing a different name. Its licence is no longer a blocker — see
    the precondition above.
 
 5. **`nbtx` is the clean one.** Published, Apache-2.0. It needs only the two
@@ -277,10 +285,10 @@ rather than rediscovered:
 **The `rusty-leveldb` escape hatch.** `bedrock_level` carries a commented-out
 `rusty-leveldb` feature, and `rusty-leveldb` is a live, actively maintained
 crates.io crate. A pure-Rust backend would eliminate `leveldb-sys`, the CMake
-and C++ toolchain requirement, the licensing blocker, and most cross-compilation
-difficulty at once. It is commented out upstream, so it presumably does not work
-as written, and replacing the storage engine beneath a tool that writes to real
-Minecraft worlds is not a small change. It is nonetheless the only path that
+and C++ toolchain requirement, and most cross-compilation difficulty at once. It
+is commented out upstream, so it presumably does not work as written, and
+replacing the storage engine beneath a tool that writes to real Minecraft worlds
+is not a small change. It is nonetheless the only path that
 makes crates.io simple rather than merely possible, and is worth a spike before
 any of items 1 through 4 are attempted.
 
@@ -293,22 +301,19 @@ The workflow therefore carries a `workflow_dispatch` trigger alongside the tag
 trigger. A manual run builds all three platforms and uploads the archives as
 workflow artifacts, but skips the `publish` job entirely, because `publish` is
 gated on the push event. There is deliberately no input to override this: a
-control that cannot publish should not offer the choice. Nothing reaches the public, which matters: publishing a throwaway
-`v0.0.1-test` release would raise exactly the same redistribution question as a
-real one, and would need an exception carved into the licence gate to get past
-it. A dry run needs no exception.
+control that cannot publish should not offer the choice.
 
 What a dry run leaves untested is the final `gh release create` call itself.
 That is one well-documented command, and the first real tag exercises it.
 
 The precondition gate is exercised separately and locally, by running
-`scripts/check-release-preconditions.sh` with a mismatched tag, with a matching
-tag, and with the licence present and absent.
+`scripts/check-release-preconditions.sh` with a matching tag and a mismatched
+one.
 
 ## Files touched
 
 - `.github/workflows/release.yml` — new
-- `scripts/check-release-preconditions.sh` — new, the `verify` job's two gates
+- `scripts/check-release-preconditions.sh` — new, the `verify` job's tag gate
 - `scripts/package-release.sh` — new, assembles one platform's archive
 - `about.toml` — new, `cargo-about` configuration and clarification entries
 - `about.hbs` — new, the notices template

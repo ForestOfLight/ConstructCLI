@@ -1,16 +1,9 @@
 #!/usr/bin/env bash
 # Decide whether a release tag is safe to publish.
 #
-# Two gates:
-#
-#   1. The tag agrees with workspace.package.version. Cargo has no release
-#      command and nothing otherwise checks this, so a mistyped tag would
-#      produce archives whose filenames disagree with the release they hang
-#      under.
-#   2. Every patched dependency carries a licence. The release archives
-#      statically link this code, and redistributing it needs terms. See the
-#      precondition section of
-#      docs/superpowers/specs/2026-09-06-release-pipeline-design.md.
+# One gate: the tag agrees with workspace.package.version. Cargo has no release
+# command and nothing otherwise checks this, so a mistyped tag would produce
+# archives whose filenames disagree with the release they hang under.
 #
 # The version is read straight from Cargo.toml rather than through
 # `cargo metadata`, which would first need scripts/setup-deps.sh to clone three
@@ -59,53 +52,3 @@ if [ "$tag_version" != "$manifest_version" ]; then
   exit 1
 fi
 echo "ok: tag $tag matches workspace.package.version $manifest_version"
-
-# leveldb-sys upstream declares no licence of its own. Its Rust wrapper and C++
-# shim were moved out of bedrock-rs (Apache-2.0) without that repository's
-# LICENSE following them, so scripts/setup-deps.sh overlays our own Apache-2.0
-# copies from third_party/vendor/leveldb-sys onto the clone.
-#
-# Release archives statically link that wrapper, so what this gate has to prove
-# is that the overlay actually happened. A checkout made before the wrapper was
-# vendored is still on disk, still builds, and still passes every test while
-# linking the unlicensed upstream files — nothing but this check would notice.
-vendor_root="$ROOT/third_party/vendor/leveldb-sys"
-sys_root="$ROOT/third_party/checkouts/leveldb-sys"
-
-if [ ! -d "$sys_root" ]; then
-  echo "error: $sys_root is missing — run ./scripts/setup-deps.sh first" >&2
-  exit 1
-fi
-
-for required in LICENSE NOTICE; do
-  if [ ! -f "$vendor_root/$required" ]; then
-    echo "error: third_party/vendor/leveldb-sys/$required is missing." >&2
-    echo "It is what grants us the terms to ship the wrapper; do not delete it." >&2
-    exit 1
-  fi
-done
-
-stale=""
-while IFS= read -r vendored; do
-  relative="${vendored#"$vendor_root/"}"
-  if ! cmp -s "$vendored" "$sys_root/$relative"; then
-    stale="$stale  $relative"$'\n'
-  fi
-done < <(find "$vendor_root" -type f)
-
-if [ -n "$stale" ]; then
-  {
-    echo "error: the leveldb-sys checkout does not carry our licensed wrapper."
-    echo
-    echo "These files differ from third_party/vendor/leveldb-sys, or are absent:"
-    printf '%s' "$stale"
-    echo
-    echo "Upstream ships them without any licence, and a release archive links"
-    echo "them. Run ./scripts/setup-deps.sh to overlay our Apache-2.0 copies."
-    echo
-    echo "See third_party/vendor/leveldb-sys/README.md."
-  } >&2
-  exit 1
-fi
-
-echo "ok: leveldb-sys carries our Apache-2.0 wrapper"
