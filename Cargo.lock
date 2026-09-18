@@ -279,7 +279,7 @@ checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
 name = "construct-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bedrock_level",
@@ -298,7 +298,7 @@ dependencies = [
 
 [[package]]
 name = "construct-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bedrock_level",
  "directories",
