@@ -30,6 +30,9 @@ pub struct Build {
     pub block_position_data: Vec<(String, nbtx::Value)>,
     pub entities: Vec<nbtx::Value>,
     pub format_version: i32,
+    /// Write a single `block_indices` layer, as format 2 does when nothing is
+    /// waterlogged. `layer1` is ignored when this is set.
+    pub omit_empty_layer1: bool,
 }
 
 impl Build {
@@ -44,6 +47,7 @@ impl Build {
             block_position_data: vec![],
             entities: vec![],
             format_version: 1,
+            omit_empty_layer1: false,
         }
     }
 
@@ -60,11 +64,13 @@ impl Build {
                 ),
             ),
         ]);
+        let indices = if self.omit_empty_layer1 {
+            vec![int_list(&self.layer0)]
+        } else {
+            vec![int_list(&self.layer0), int_list(&self.layer1)]
+        };
         let structure = compound(vec![
-            (
-                "block_indices",
-                nbtx::Value::List(vec![int_list(&self.layer0), int_list(&self.layer1)]),
-            ),
+            ("block_indices", nbtx::Value::List(indices)),
             ("entities", nbtx::Value::List(self.entities.clone())),
             ("palette", compound(vec![("default", palette_default)])),
         ]);

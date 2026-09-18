@@ -600,3 +600,72 @@ fn a_merged_structure_encodes_and_decodes_back_equal() {
     assert_eq!(again.block_position_data, merged.block_position_data);
     assert_eq!(again.entities, merged.entities);
 }
+
+fn fixture(name: &str) -> (String, Structure) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
+    let bytes = std::fs::read(&path).unwrap();
+    (name.to_string(), mcstructure::decode(&bytes, name).unwrap())
+}
+
+#[test]
+fn a_format_2_piece_merges_with_a_format_1_piece() {
+    // The two layouts the game writes differ only in spelling, so a merge must
+    // not care which one a piece arrived in.
+    let fences = fixture("format2-fences.mcstructure");
+    let old = Build::solid([1, 1, 1], [-49, 71, 83], "minecraft:stone");
+    let out = merge::merge(
+        &[fences.clone(), named("old", &old)],
+        &MergeOptions::default(),
+    )
+    .unwrap()
+    .structure;
+
+    assert_eq!(
+        block_at(
+            &out,
+            0,
+            Coord {
+                x: -49,
+                y: 70,
+                z: 83
+            }
+        ),
+        Some("minecraft:spruce_fence"),
+        "the format 2 piece kept its blocks"
+    );
+    assert_eq!(
+        block_at(
+            &out,
+            0,
+            Coord {
+                x: -49,
+                y: 71,
+                z: 83
+            }
+        ),
+        Some("minecraft:stone"),
+        "the format 1 piece kept its blocks"
+    );
+    assert_eq!(out.size, Size { x: 3, y: 2, z: 3 });
+}
+
+#[test]
+fn two_format_2_pieces_merge_and_re_encode() {
+    let fences = fixture("format2-fences.mcstructure");
+    let entity = fixture("format2-entity.mcstructure");
+    let report = merge::merge(&[fences, entity], &MergeOptions::default()).unwrap();
+    let out = &report.structure;
+
+    assert_eq!(out.entities.len(), 1, "the entity is carried across");
+    assert_eq!(out.block_position_data.len(), 1);
+    assert_eq!(out.format_version, mcstructure::OUTPUT_FORMAT_VERSION);
+
+    let bytes = mcstructure::encode(out, "merged").unwrap();
+    let again = mcstructure::decode(&bytes, "merged").unwrap();
+    assert_eq!(again.size, out.size);
+    assert_eq!(again.layers, out.layers);
+    assert_eq!(again.entities, out.entities);
+    assert_eq!(again.block_position_data, out.block_position_data);
+}

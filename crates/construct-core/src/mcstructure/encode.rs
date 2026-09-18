@@ -7,11 +7,22 @@
 //! Output is not byte-stable — `nbtx` stores compounds in a `HashMap`, so key
 //! order varies. Compounds are unordered, so round-trip tests compare decoded
 //! values rather than bytes (§12).
+//!
+//! Files are always written in the **format 1 layout**, whatever layout they
+//! were read from: two `block_indices` layers, each a list of ints. Format 2
+//! (`docs/mcstructure-format-2.md`) differs only in how those layers are
+//! spelled, so nothing is lost, and format 1 is the layout every version of the
+//! game loads — which matters for a merged structure that ships in a behaviour
+//! pack other people place.
 
 use super::decode::{Structure, VOID};
 use super::nbt::bad;
 use crate::error::Result;
 use std::collections::HashMap;
+
+/// The `format_version` written, and the layout that goes with it — see the
+/// module docs for why output does not follow its input.
+pub const OUTPUT_FORMAT_VERSION: i32 = 1;
 
 fn int_list(v: &[i32]) -> nbtx::Value {
     nbtx::Value::List(v.iter().copied().map(nbtx::Value::Int).collect())
@@ -110,7 +121,7 @@ pub fn encode(s: &Structure, what: &str) -> Result<Vec<u8>> {
     let root = nbtx::Value::Compound(HashMap::from([
         (
             "format_version".to_string(),
-            nbtx::Value::Int(s.format_version),
+            nbtx::Value::Int(OUTPUT_FORMAT_VERSION),
         ),
         (
             "size".to_string(),

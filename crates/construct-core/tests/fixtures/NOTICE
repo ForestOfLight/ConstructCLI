@@ -7,6 +7,12 @@ is otherwise unmodified.
 
 construct.mcstructure ships inside Construct's own behaviour pack
 (Construct[BP]/structures/), from https://github.com/ForestOfLight/Construct.
-It is committed here as the one real-world codec fixture: a builder can prove
+It is committed here as the format 1 real-world codec fixture: a builder can prove
 the codec self-consistent, but only a file the game wrote can prove it agrees
 with the game.
+
+format2-fences.mcstructure and format2-entity.mcstructure were exported from a
+structure block by the game on 2026-09-17, and are the codec's fixtures for
+format 2 — the layout described in docs/mcstructure-format-2.md. They are the
+only files here the game wrote in that format, so they are what proves the
+decoder agrees with it.

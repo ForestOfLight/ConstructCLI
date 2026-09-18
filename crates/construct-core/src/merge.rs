@@ -12,7 +12,9 @@
 //! saying "leave this alone" — and survives the fill.
 
 use crate::error::{CoreError, Result};
-use crate::mcstructure::{BlockState, BoundingBox, Coord, Size, Structure, VOID};
+use crate::mcstructure::{
+    BlockState, BoundingBox, Coord, OUTPUT_FORMAT_VERSION, Size, Structure, VOID,
+};
 use std::collections::BTreeMap;
 
 /// How to resolve two pieces both contributing a block at one position.
@@ -293,7 +295,10 @@ pub fn merge(pieces: &[(String, Structure)], options: &MergeOptions) -> Result<M
 
     Ok(MergeReport {
         structure: Structure {
-            format_version: pieces[0].1.format_version,
+            // Pieces may arrive in either on-disk layout, and the merged
+            // structure is written in the one `encode` writes — say so here so
+            // the value in memory is the value in the file.
+            format_version: OUTPUT_FORMAT_VERSION,
             size,
             origin: union.min,
             layers,

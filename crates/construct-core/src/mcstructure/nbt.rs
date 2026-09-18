@@ -66,9 +66,31 @@ pub(crate) fn as_triple(v: &nbtx::Value, name: &str, what: &str) -> Result<[i32;
     ])
 }
 
+/// Reads a run of ints written either as a list or as a `TAG_Int_Array`.
+///
+/// Format 2 writes the block index layers as int arrays where format 1 wrote
+/// lists (`docs/mcstructure-format-2.md`). `nbtx` currently widens an int array
+/// into a list on the way in, so the array arm is what keeps this honest if it
+/// ever stops doing that.
 pub(crate) fn as_int_vec(v: &nbtx::Value, name: &str, what: &str) -> Result<Vec<i32>> {
+    if let nbtx::Value::IntArray(a) = v {
+        return Ok(a.clone());
+    }
     as_list(v, name, what)?
         .iter()
         .map(|e| as_int(e, name, what))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_run_of_ints_reads_the_same_as_a_list_or_an_int_array() {
+        let list = nbtx::Value::List(vec![nbtx::Value::Int(1), nbtx::Value::Int(-1)]);
+        let array = nbtx::Value::IntArray(vec![1, -1]);
+        assert_eq!(as_int_vec(&list, "layer", "test").unwrap(), vec![1, -1]);
+        assert_eq!(as_int_vec(&array, "layer", "test").unwrap(), vec![1, -1]);
+    }
 }

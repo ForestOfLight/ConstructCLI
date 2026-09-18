@@ -200,3 +200,54 @@ fn merging_one_structure_is_allowed() {
     );
     assert!(target.is_file());
 }
+
+#[test]
+fn merge_accepts_a_structure_saved_in_the_newer_file_format() {
+    // format2-fences.mcstructure is a file the game exported in the format 2
+    // layout (docs/mcstructure-format-2.md): int array layers, and no second
+    // layer at all. It has to merge with a format 1 file like any other.
+    let new_format = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../construct-core/tests/fixtures/format2-fences.mcstructure"
+    ))
+    .unwrap();
+    let old_format = merge_fixture([1, 1, 1], [-49, 72, 83], "minecraft:stone");
+    let root = world_with_construct(&[("fences", &new_format), ("block", &old_format)]);
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("merged.mcstructure");
+
+    let out = bin()
+        .args([
+            "export",
+            "fences",
+            "block",
+            "--merge",
+            "-n",
+            target.to_str().unwrap(),
+            "--json",
+            "--source",
+            "shared-pack",
+            "--path",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["merged"]["size"], serde_json::json!([3, 3, 3]));
+    assert_eq!(v["merged"]["origin"], serde_json::json!([-49, 70, 83]));
+
+    let bytes = std::fs::read(&target).unwrap();
+    let s = construct_core::mcstructure::decode(&bytes, "merged").unwrap();
+    assert!(
+        s.palette.iter().any(|b| b.name == "minecraft:spruce_fence"),
+        "the fences from the format 2 file must survive the merge"
+    );
+    assert!(s.palette.iter().any(|b| b.name == "minecraft:stone"));
+}

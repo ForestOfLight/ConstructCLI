@@ -3,6 +3,14 @@ mod support;
 use construct_core::mcstructure::{self, VOID};
 use support::{Build, block, compound, int_list};
 
+fn fixture(name: &str) -> construct_core::mcstructure::Structure {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
+    let bytes = std::fs::read(&path).unwrap();
+    mcstructure::decode(&bytes, name).unwrap()
+}
+
 #[test]
 fn a_single_block_structure_decodes() {
     let b = Build::solid([1, 1, 1], [10, 64, -3], "minecraft:stone");
@@ -111,6 +119,33 @@ fn entities_decode_untouched() {
 }
 
 #[test]
+fn a_single_block_indices_layer_decodes_as_an_empty_second_layer() {
+    let mut b = Build::solid([2, 1, 1], [0, 0, 0], "minecraft:stone");
+    b.omit_empty_layer1 = true;
+    let s = mcstructure::decode(&b.bytes(), "test").unwrap();
+
+    assert_eq!(s.layers[0], vec![0, 0]);
+    assert_eq!(s.layers[1], vec![VOID, VOID]);
+}
+
+#[test]
+fn an_empty_block_indices_is_still_refused() {
+    let b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
+    let nbtx::Value::Compound(mut root) = b.nbt() else {
+        unreachable!()
+    };
+    let nbtx::Value::Compound(mut structure) = root["structure"].clone() else {
+        unreachable!()
+    };
+    structure.insert("block_indices".to_string(), nbtx::Value::List(vec![]));
+    root.insert("structure".to_string(), nbtx::Value::Compound(structure));
+    let bytes = nbtx::to_le_bytes(&nbtx::Value::Compound(root)).unwrap();
+
+    let err = mcstructure::decode(&bytes, "test").unwrap_err();
+    assert!(format!("{err}").contains("block_indices"), "{err}");
+}
+
+#[test]
 fn the_real_construct_fixture_decodes() {
     let bytes = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -141,7 +176,7 @@ fn a_missing_required_field_is_refused() {
 }
 
 #[test]
-fn block_indices_with_other_than_two_layers_is_refused() {
+fn block_indices_with_more_than_two_layers_is_refused() {
     let b = Build::solid([1, 1, 1], [0, 0, 0], "minecraft:stone");
     let nbtx::Value::Compound(mut root) = b.nbt() else {
         unreachable!()
@@ -151,15 +186,15 @@ fn block_indices_with_other_than_two_layers_is_refused() {
     };
     structure.insert(
         "block_indices".into(),
-        nbtx::Value::List(vec![int_list(&[0])]),
+        nbtx::Value::List(vec![int_list(&[0]), int_list(&[-1]), int_list(&[-1])]),
     );
     root.insert("structure".into(), nbtx::Value::Compound(structure));
     let bytes = nbtx::to_le_bytes(&nbtx::Value::Compound(root)).unwrap();
 
     let err = mcstructure::decode(&bytes, "test").unwrap_err();
     assert!(
-        format!("{err}").contains('2'),
-        "error must say two are required: {err}"
+        format!("{err}").contains("block_indices"),
+        "error must name the field: {err}"
     );
 }
 
@@ -374,4 +409,57 @@ fn deeply_nested_nbt_is_refused_rather_than_overflowing_the_stack() {
         format!("{err}").contains("deep.mcstructure"),
         "the refusal must name the file: {err}"
     );
+}
+
+#[test]
+fn a_real_format_2_fixture_decodes() {
+    let s = fixture("format2-fences.mcstructure");
+
+    assert_eq!(s.format_version, 2);
+    assert_eq!(s.size, mcstructure::Size { x: 3, y: 1, z: 3 });
+    assert_eq!(s.layers[0], vec![0, 1, 2, 3, 4, 3, 5, 1, 6]);
+    assert_eq!(
+        s.layers[1],
+        vec![VOID; 9],
+        "the dropped layer reads as void"
+    );
+    assert_eq!(s.palette.len(), 7);
+    assert_eq!(s.palette[0].name, "minecraft:spruce_fence");
+    assert_eq!(
+        s.origin,
+        mcstructure::Coord {
+            x: -49,
+            y: 70,
+            z: 83
+        }
+    );
+}
+
+#[test]
+fn a_real_format_2_fixture_keeps_its_entities_and_block_entities() {
+    let s = fixture("format2-entity.mcstructure");
+
+    assert_eq!(s.format_version, 2);
+    assert_eq!(s.size, mcstructure::Size { x: 5, y: 5, z: 5 });
+    assert_eq!(s.layers[0].len(), 125);
+    assert_eq!(s.entities.len(), 1);
+    assert!(
+        s.block_position_data.contains_key(&5usize),
+        "the structure block's own block_entity_data is at index 5"
+    );
+}
+
+#[test]
+fn a_format_2_file_is_written_back_in_the_format_1_layout() {
+    let s = fixture("format2-fences.mcstructure");
+    let bytes = mcstructure::encode(&s, "test").unwrap();
+    let again = mcstructure::decode(&bytes, "test").unwrap();
+
+    assert_eq!(again.format_version, mcstructure::OUTPUT_FORMAT_VERSION);
+    assert_eq!(again.size, s.size);
+    assert_eq!(again.origin, s.origin);
+    assert_eq!(again.layers, s.layers);
+    assert_eq!(again.palette, s.palette);
+    assert_eq!(again.block_position_data, s.block_position_data);
+    assert_eq!(again.entities, s.entities);
 }

@@ -35,6 +35,9 @@ pub struct BlockState {
 
 #[derive(Debug, Clone)]
 pub struct Structure {
+    /// What the file declared: 1, or 2 for the layout the 2026 game update
+    /// writes. It says how the bytes were spelled, not what they mean — see
+    /// `docs/mcstructure-format-2.md`.
     pub format_version: i32,
     pub size: Size,
     /// Where in the world this was saved. Merge reads this as the piece's
@@ -89,17 +92,24 @@ pub fn decode(bytes: &[u8], what: &str) -> Result<Structure> {
         "block_indices",
         what,
     )?;
-    if raw_layers.len() != 2 {
+    if raw_layers.is_empty() || raw_layers.len() > 2 {
         return Err(bad(
             what,
             format!(
-                "block_indices needs exactly 2 layers, found {}",
+                "block_indices needs 1 or 2 layers, found {}",
                 raw_layers.len()
             ),
         ));
     }
     let layer0 = as_int_vec(&raw_layers[0], "block_indices[0]", what)?;
-    let layer1 = as_int_vec(&raw_layers[1], "block_indices[1]", what)?;
+    // A second layer that is entirely void carries nothing, and format 2 files
+    // leave it out rather than writing it (`docs/mcstructure-format-2.md`).
+    // Rebuilding it here keeps every later stage — merge, encode — working on
+    // the two layers the model promises.
+    let layer1 = match raw_layers.get(1) {
+        Some(raw) => as_int_vec(raw, "block_indices[1]", what)?,
+        None => vec![VOID; layer0.len()],
+    };
     if layer0.len() != layer1.len() {
         return Err(bad(
             what,
