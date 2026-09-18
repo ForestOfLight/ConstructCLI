@@ -838,3 +838,189 @@ fn import_of_a_directory_warns_once_about_the_namespace_not_once_per_file() {
         "{stdout}"
     );
 }
+
+#[test]
+fn import_enables_the_pack_it_wrote_into() {
+    let root = world_with_construct(&[]);
+    let world = root.path().join("minecraftWorlds/Test");
+    add_world_construct(&world, &[]);
+    let src = root.path().join("house.mcstructure");
+    std::fs::write(&src, b"x").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            src.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--path",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let enabled: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(world.join("world_behavior_packs.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        enabled.as_array().unwrap().len(),
+        1,
+        "one entry for the pack that was written into: {enabled}"
+    );
+    assert_eq!(
+        enabled[0]["pack_id"],
+        "8c0c0153-d8b9-482a-889f-aef922b8fe58"
+    );
+    assert_eq!(enabled[0]["version"], serde_json::json!([1, 2, 0]));
+}
+
+#[test]
+fn import_keeps_other_packs_enabled_and_does_not_duplicate_its_own() {
+    let root = world_with_construct(&[]);
+    let world = root.path().join("minecraftWorlds/Test");
+    add_world_construct(&world, &[]);
+    std::fs::write(
+        world.join("world_behavior_packs.json"),
+        r#"[{"pack_id":"11111111-1111-1111-1111-111111111111","version":[3,0,0]},
+            {"pack_id":"8c0c0153-d8b9-482a-889f-aef922b8fe58","version":[1,2,0]}]"#,
+    )
+    .unwrap();
+    let src = root.path().join("house.mcstructure");
+    std::fs::write(&src, b"x").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            src.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--path",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let enabled: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(world.join("world_behavior_packs.json")).unwrap())
+            .unwrap();
+    let ids: Vec<&str> = enabled
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["pack_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            "11111111-1111-1111-1111-111111111111",
+            "8c0c0153-d8b9-482a-889f-aef922b8fe58"
+        ]
+    );
+}
+
+#[test]
+fn import_appends_its_pack_after_the_ones_the_world_already_lists() {
+    let root = world_with_construct(&[]);
+    let world = root.path().join("minecraftWorlds/Test");
+    add_world_construct(&world, &[]);
+    // As Minecraft itself writes the file: leading newline, tabs, spaced colons.
+    std::fs::write(
+        world.join("world_behavior_packs.json"),
+        "\n[\n\t\n\t{\n\t\t\"pack_id\" : \"11111111-1111-1111-1111-111111111111\",\n\t\t\"version\" : [ 3, 0, 0 ]\n\t},\n\t{\n\t\t\"pack_id\" : \"22222222-2222-2222-2222-222222222222\",\n\t\t\"version\" : [ 0, 1, 4 ]\n\t}\n]",
+    )
+    .unwrap();
+    let src = root.path().join("house.mcstructure");
+    std::fs::write(&src, b"x").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            src.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--path",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let enabled: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(world.join("world_behavior_packs.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        enabled,
+        serde_json::json!([
+            {"pack_id": "11111111-1111-1111-1111-111111111111", "version": [3, 0, 0]},
+            {"pack_id": "22222222-2222-2222-2222-222222222222", "version": [0, 1, 4]},
+            {"pack_id": "8c0c0153-d8b9-482a-889f-aef922b8fe58", "version": [1, 2, 0]},
+        ])
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("enabled "),
+        "it should say it enabled the pack: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn import_refreshes_a_stale_version_without_touching_the_other_packs() {
+    let root = world_with_construct(&[]);
+    let world = root.path().join("minecraftWorlds/Test");
+    add_world_construct(&world, &[]);
+    std::fs::write(
+        world.join("world_behavior_packs.json"),
+        r#"[{"pack_id":"8c0c0153-d8b9-482a-889f-aef922b8fe58","version":[1,0,0]},
+            {"pack_id":"11111111-1111-1111-1111-111111111111","version":[3,0,0]}]"#,
+    )
+    .unwrap();
+    let src = root.path().join("house.mcstructure");
+    std::fs::write(&src, b"x").unwrap();
+
+    let out = bin()
+        .args([
+            "import",
+            src.to_str().unwrap(),
+            "--world",
+            "Test",
+            "--path",
+            root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let enabled: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(world.join("world_behavior_packs.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        enabled,
+        serde_json::json!([
+            {"pack_id": "8c0c0153-d8b9-482a-889f-aef922b8fe58", "version": [1, 2, 0]},
+            {"pack_id": "11111111-1111-1111-1111-111111111111", "version": [3, 0, 0]},
+        ])
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("enabled "),
+        "an already-listed pack is not announced as newly enabled: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}

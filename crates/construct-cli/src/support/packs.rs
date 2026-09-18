@@ -26,6 +26,7 @@ pub fn home_for_write(
     out: &mut Out,
 ) -> Result<pack::Home> {
     if let Some(home) = pack::home(world) {
+        enable(world, &home, out)?;
         return Ok(home);
     }
     let construct = pack::for_world(world, installation)?;
@@ -39,6 +40,28 @@ pub fn home_for_write(
         dir: created.dir,
         kind: pack::HomeKind::WorldStructuresPack,
     })
+}
+
+fn enable(world: &World, home: &pack::Home, out: &mut Out) -> Result<()> {
+    let manifest = pack::manifest::read(&home.dir)?;
+    let listed = worldpacks::read(&worldpacks::behavior_path(world))?
+        .iter()
+        .any(|p| p.pack_id == manifest.uuid);
+    worldpacks::upsert(
+        &worldpacks::behavior_path(world),
+        worldpacks::PackRef {
+            pack_id: manifest.uuid,
+            version: manifest.version,
+        },
+    )?;
+    if !listed {
+        out.line(format!(
+            "enabled {} in {}",
+            home.dir.display(),
+            world.display_name
+        ));
+    }
+    Ok(())
 }
 
 pub fn warn_if_another_pack_has_it(
